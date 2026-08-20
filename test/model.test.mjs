@@ -12,6 +12,7 @@ const Model = new Function(
     splitSections, parseArray, parseGitMap, mergePlugins, countRemovable,
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
+    matchesQuery, filterRows, isFiltering, emptyMessage,
     metaLine, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
@@ -239,4 +240,57 @@ test("actionGerund does not produce Updateing", () => {
 
 test("successMessage says that an added plugin is now live", () => {
   assert.match(Model.successMessage("add", "omarchy-clock"), /enabled/)
+})
+
+test("matchesQuery searches name and id, case-insensitively", () => {
+  const row = { name: "Hardware Tooltip", id: "im0001gt.hw-tooltip", description: "Names your CPU and GPU" }
+  assert.equal(Model.matchesQuery(row, "hardware"), true)
+  assert.equal(Model.matchesQuery(row, "TOOLTIP"), true)
+  assert.equal(Model.matchesQuery(row, "im0001gt"), true)
+  assert.equal(Model.matchesQuery(row, "hw-tool"), true)
+  assert.equal(Model.matchesQuery(row, "  tooltip  "), true)
+})
+
+test("matchesQuery does not search descriptions", () => {
+  // A search that matched prose would surface plugins whose names look
+  // nothing like what was typed, which reads as a bug rather than a feature.
+  const row = { name: "Hardware Tooltip", id: "im0001gt.hw-tooltip", description: "Names your CPU and GPU" }
+  assert.equal(Model.matchesQuery(row, "GPU"), false)
+})
+
+test("an empty query matches everything, including a whitespace-only one", () => {
+  const row = { name: "A", id: "b.c" }
+  assert.equal(Model.matchesQuery(row, ""), true)
+  assert.equal(Model.matchesQuery(row, "   "), true)
+  assert.equal(Model.matchesQuery(row, null), true)
+})
+
+test("filterRows applies the kind chip and the search box together", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+
+  assert.deepEqual(Model.filterRows(rows, "all", "").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "all", "acme").map(r => r.id), ["acme.dev", "acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "bar-widget", "acme").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "service", "weather").map(r => r.id), [])
+})
+
+test("filterRows keeps the installed-before-built-in order the sections rely on", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  const filtered = Model.filterRows(rows, "all", "e")
+  const rejoined = [...Model.rowsInGroup(filtered, "installed"), ...Model.rowsInGroup(filtered, "built-in")]
+  assert.deepEqual(rejoined.map(r => r.id), filtered.map(r => r.id))
+})
+
+test("isFiltering knows when either control is narrowing the list", () => {
+  assert.equal(Model.isFiltering("all", ""), false)
+  assert.equal(Model.isFiltering("all", "   "), false)
+  assert.equal(Model.isFiltering("service", ""), true)
+  assert.equal(Model.isFiltering("all", "clock"), true)
+})
+
+test("emptyMessage names whichever control actually excluded everything", () => {
+  assert.match(Model.emptyMessage("all", "zzz"), /No plugins match “zzz”\./)
+  assert.match(Model.emptyMessage("service", "zzz"), /No service plugins match “zzz”\./)
+  assert.match(Model.emptyMessage("service", ""), /No service plugins installed\./)
+  assert.match(Model.emptyMessage("all", ""), /No plugins found\./)
 })

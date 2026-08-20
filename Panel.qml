@@ -55,15 +55,21 @@ Panel {
 
   property string kindFilter: "all"
   readonly property var kindOptions: Model.kindOptions(rows)
+  readonly property string searchQuery: searchField.text
 
   // One flat filtered list drives selection; the two section slices below are
   // views onto it, in the same order, so a single index addresses both.
-  readonly property var visibleRows: Model.filterByKind(rows, kindFilter)
+  readonly property var visibleRows: Model.filterRows(rows, kindFilter, searchQuery)
   readonly property var installedRows: Model.rowsInGroup(visibleRows, "installed")
   readonly property var builtinRows: Model.rowsInGroup(visibleRows, "built-in")
 
   readonly property int installedTotal: Model.countRemovable(rows)
-  readonly property bool filtered: kindFilter !== "all"
+  readonly property bool filtered: Model.isFiltering(kindFilter, searchQuery)
+
+  // Any narrowing rebuilds the list under the selection, so the index is
+  // dropped rather than left pointing at whatever now sits in that slot —
+  // that is how a Delete keypress lands on the wrong plugin.
+  onSearchQueryChanged: resetSelection()
   readonly property var selectedRow: selectedIndex >= 0 && selectedIndex < visibleRows.length
     ? visibleRows[selectedIndex]
     : null
@@ -132,11 +138,16 @@ Panel {
   function setKindFilter(kind) {
     if (kindFilter === kind) return
     kindFilter = kind
-    // The old index pointed into a different list. Dropping it beats silently
-    // moving the selection to an unrelated plugin, which is how a Delete
-    // lands on the wrong thing.
+    resetSelection()
+  }
+
+  function resetSelection() {
     selectedIndex = -1
     listScroll.contentY = 0
+  }
+
+  function clearSearch() {
+    searchField.text = ""
   }
 
   function cycleKindFilter() {
@@ -228,7 +239,12 @@ Panel {
     urlField.selectAll()
   }
 
-  function blurUrlField() {
+  function focusSearchField() {
+    searchField.forceActiveFocus()
+    searchField.selectAll()
+  }
+
+  function returnFocusToList() {
     Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
@@ -316,7 +332,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || urlField.activeFocus
+      blocked: root.confirming || urlField.activeFocus || searchField.activeFocus
 
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveSelection(dy) }
       onActivateRequested: root.startUpdate(root.selectedRow)
@@ -324,7 +340,8 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
-        if (t === "r" || t === "R") root.reload()
+        if (t === "/") root.focusSearchField()
+        else if (t === "r" || t === "R") root.reload()
         else if (t === "a" || t === "A") root.focusUrlField()
         else if (t === "f" || t === "F") root.cycleKindFilter()
         else if (t === "j") root.moveSelection(1)
@@ -405,7 +422,7 @@ Panel {
             onAccepted: root.askAdd()
             Keys.onPressed: function(event) {
               if (event.key !== Qt.Key_Escape) return
-              root.blurUrlField()
+              root.returnFocusToList()
               event.accepted = true
             }
           }
@@ -422,6 +439,68 @@ Panel {
             enabled: !root.busy && Model.isValidGitUrl(urlField.text)
             opacity: enabled ? 1 : 0.4
             onClicked: root.askAdd()
+          }
+        }
+
+        PanelSeparator { foreground: root.contentForeground }
+
+        // ---- Find something you already have. Sits below the add field and
+        //      above the chips because both narrow the list, while the field
+        //      above it installs something new — same reason they are on
+        //      opposite sides of the rule.
+        Item {
+          width: parent.width
+          height: searchField.implicitHeight
+
+          Text {
+            id: searchIcon
+            anchors.left: parent.left
+            anchors.leftMargin: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "󰍉"
+            color: Color.muted
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          TextField {
+            id: searchField
+            anchors.left: searchIcon.right
+            anchors.leftMargin: Style.space(8)
+            anchors.right: clearSearchButton.left
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            placeholderText: "Search by name…"
+            foreground: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+
+            // Enter hands the list back the keyboard with the results in
+            // place, so you can type a name and arrow straight into it.
+            onAccepted: root.returnFocusToList()
+            Keys.onPressed: function(event) {
+              if (event.key !== Qt.Key_Escape) return
+              // Escape clears before it leaves: a search box that keeps a
+              // stale term after you back out of it silently hides plugins.
+              if (searchField.text !== "") root.clearSearch()
+              else root.returnFocusToList()
+              event.accepted = true
+            }
+          }
+
+          PanelActionButton {
+            id: clearSearchButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.searchQuery !== ""
+            iconText: "󰅙"
+            tooltipText: "Clear the search"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onClicked: {
+              root.clearSearch()
+              root.returnFocusToList()
+            }
           }
         }
 
@@ -461,7 +540,7 @@ Panel {
         Flickable {
           id: listScroll
           width: parent.width
-          height: Math.min(Style.space(400), Math.max(Style.space(48), listColumn.implicitHeight))
+          height: Math.min(Style.space(440), Math.max(Style.space(60), listColumn.implicitHeight))
           contentWidth: width
           contentHeight: listColumn.implicitHeight
           clip: true
@@ -476,7 +555,7 @@ Panel {
             Text {
               width: parent.width
               visible: root.visibleRows.length === 0 && root.rows.length > 0
-              text: "No " + Model.kindLabel(root.kindFilter).toLowerCase() + " plugins installed."
+              text: Model.emptyMessage(root.kindFilter, root.searchQuery)
               color: Color.muted
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
@@ -558,7 +637,7 @@ Panel {
         //      saying so costs one line.
         Text {
           width: parent.width
-          text: "↑↓ select   ⏎ update   ⌦ remove   a add   f filter   r refresh"
+          text: "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   r refresh"
           color: Color.muted
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption

@@ -212,6 +212,51 @@ function filterByKind(rows, kind) {
   return out
 }
 
+// ---- Search ---------------------------------------------------------------
+
+// Name and id both, because the id is the namespaced form of the name and
+// typing "hyprmoncfg" should find `crmne.hyprmoncfg`. Descriptions are
+// deliberately excluded: a search that matched prose would surface plugins
+// whose names look nothing like what was typed, which reads as a bug.
+function matchesQuery(row, query) {
+  var needle = String(query || "").trim().toLowerCase()
+  if (needle === "") return true
+  if (!row) return false
+  return String(row.name || "").toLowerCase().indexOf(needle) >= 0
+    || String(row.id || "").toLowerCase().indexOf(needle) >= 0
+}
+
+function filterRows(rows, kind, query) {
+  var byKind = filterByKind(rows, kind)
+  if (String(query || "").trim() === "") return byKind
+
+  var out = []
+  for (var i = 0; i < byKind.length; i++) {
+    if (matchesQuery(byKind[i], query)) out.push(byKind[i])
+  }
+  return out
+}
+
+function isFiltering(kind, query) {
+  return (kind !== undefined && kind !== null && kind !== ALL_KINDS)
+    || String(query || "").trim() !== ""
+}
+
+// Naming what actually excluded everything, so an empty list is never a
+// mystery — a stale search box behind a kind chip is easy to forget about.
+function emptyMessage(kind, query) {
+  var needle = String(query || "").trim()
+  var narrowed = kind && kind !== ALL_KINDS
+
+  if (needle !== "" && narrowed)
+    return "No " + kindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
+  if (needle !== "")
+    return "No plugins match “" + needle + "”."
+  if (narrowed)
+    return "No " + kindLabel(kind).toLowerCase() + " plugins installed."
+  return "No plugins found."
+}
+
 // Wraps around, so the cycle key never dead-ends on the last chip.
 function nextKind(options, current) {
   var list = options || []

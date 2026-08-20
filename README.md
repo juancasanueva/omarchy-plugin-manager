@@ -19,12 +19,24 @@ nothing, and you have to work out which from a badge. Two sections make the
 available actions constant within each one.
 
 Every row shows **what the plugin actually does** — the description from its
-manifest — not just its id. A plugin whose author left the description out
-says so, so you can tell an empty manifest field from a failed read.
+manifest, wrapped across two lines, because one elided line usually cuts off
+before it has said anything. The two lines are reserved even when the text is
+short, so rows keep a uniform height as you filter. A plugin whose author left
+the description out says so, which is how you tell an empty manifest field
+from a failed read.
 
-A **kind filter** across the top narrows both lists at once: widget, panel,
-overlay, menu, service, bar. The chips are built from the kinds actually
-installed, so the row never offers a filter that would match nothing.
+Two controls narrow both lists at once:
+
+- **Search by name** (`/`) — matches the name and the id, so typing
+  `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
+  descriptions: a search that matched prose would surface plugins whose names
+  look nothing like what you typed.
+- **Kind filter** (`f`) — widget, panel, overlay, menu, service, bar. The
+  chips are built from the kinds actually installed, so the row never offers a
+  filter that would match nothing.
+
+When nothing matches, the message names whichever control excluded everything
+— a stale search term sitting behind a kind chip is easy to forget about.
 
 ### The three actions
 
@@ -55,10 +67,11 @@ url cannot become a command. Urls are also validated against `https://`,
 | `↑` `↓` / `k` `j` | Move the selection, across both sections |
 | `Enter` | Update the selected plugin |
 | `Delete` | Remove the selected plugin |
+| `/` | Focus the search box |
 | `a` | Focus the repository url field |
 | `f` | Cycle the kind filter |
 | `r` | Re-read the plugin list |
-| `Esc` | Close the panel |
+| `Esc` | Clear the search, then leave the field, then close the panel |
 
 ## Install
 
@@ -92,9 +105,9 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 |------|------|
 | `manifest.json` | Plugin contract — id, kind, entry point |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
-| `Panel.qml` | The two lists, the filter, the actions, and the confirmations |
+| `Panel.qml` | The two lists, search, filter, actions, and confirmations |
 | `PluginRow.qml` | One row: name, id, kinds, description, and its two buttons |
-| `Model.js` | Pure parsing, merging, grouping, and filtering of the CLI output |
+| `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 
 ## License
 

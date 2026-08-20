@@ -28,7 +28,19 @@ Rectangle {
 
   readonly property string badge: Model.sourceBadge(row)
 
-  height: Style.space(48)
+  // Two lines of description, always — reserved even when the text is short.
+  // Descriptions run long enough that one elided line usually cuts off before
+  // it has said anything, and a block that changes height per row makes the
+  // list jump as you filter.
+  readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * 2)
+
+  FontMetrics {
+    id: descriptionMetrics
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+  }
+
+  height: Math.round(details.implicitHeight + Style.space(16))
   radius: Style.cornerRadius
   color: selected ? Style.selectedFill : (mouse.containsMouse ? Style.hoverFill : "transparent")
 
@@ -54,6 +66,7 @@ Rectangle {
   }
 
   Column {
+    id: details
     anchors.left: stateDot.right
     anchors.leftMargin: Style.space(10)
     anchors.right: actions.left
@@ -90,13 +103,20 @@ Rectangle {
 
     Text {
       width: parent.width
+      // The natural height wins when the text actually wraps, because a
+      // computed two-line box that lands a fraction short fits only one line
+      // and elides — the reserve is a floor, not a ceiling.
+      height: Math.max(implicitHeight, root.descriptionHeight)
       text: Model.descriptionLine(root.row)
       color: Color.muted
       opacity: Model.hasDescription(root.row) ? 1 : 0.55
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       font.italic: !Model.hasDescription(root.row)
+      wrapMode: Text.WordWrap
+      maximumLineCount: 2
       elide: Text.ElideRight
+      verticalAlignment: Text.AlignTop
     }
   }
 
