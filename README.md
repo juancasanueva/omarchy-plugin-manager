@@ -62,6 +62,10 @@ When nothing matches, the message names whichever control excluded everything
 cards, each with a preview tile, a five-line description, a link to the source
 repository, author, star count, and an install button](preview-browse.png)
 
+<sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
+decode too. Without it the second source is skipped and more cards fall back
+to accent tiles — see below.</sub>
+
 The second tab is the [omarchyplugins.com](https://omarchyplugins.com)
 marketplace — 726 community plugins, searchable by name, author, or
 description, filterable by category, sorted by stars. Installing runs the same
