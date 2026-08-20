@@ -455,6 +455,8 @@ function catalogEntries(doc, installedIds) {
       initials: String(p.initials || "").toUpperCase(),
       license: String(p.license || "").trim(),
       thumbnail: p.previewThumbnail ? CATALOG_ASSET_BASE + String(p.previewThumbnail) : "",
+      branch: String(p.listingValidatedBranch || ""),
+      repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: installed.hasOwnProperty(String(p.id))
     }
     entry.installUrl = installUrlFor(entry)
@@ -585,4 +587,28 @@ function browsableUrl(url) {
   var text = normalizeGitUrl(url)
   if (/\s/.test(text)) return ""
   return /^https:\/\/[^\/\s]+\/.+/.test(text) ? text : ""
+}
+
+// Plugin repositories overwhelmingly ship a preview.png at their root — 31 of
+// a 40-repo sample — and PNG is a format Qt always reads. The registry's own
+// thumbnails are WebP, which needs an optional system package, so the repo's
+// own screenshot is tried first and the curated thumbnail is the fallback
+// rather than the other way round.
+function repoPreviewUrl(repo, branch) {
+  var text = normalizeGitUrl(repo).replace(/\.git$/, "").replace(/\/+$/, "")
+  var match = text.match(/^https:\/\/github\.com\/([^\/\s]+\/[^\/\s]+)$/)
+  if (!match) return ""
+
+  var ref = String(branch || "").trim()
+  return "https://raw.githubusercontent.com/" + match[1] + "/" + (ref !== "" ? ref : "main") + "/preview.png"
+}
+
+// Ordered best-first. A card walks this list as each source fails, and lands
+// on the accent tile when none of them decode.
+function previewCandidates(entry, allowWebp) {
+  if (!entry) return []
+  var out = []
+  if (entry.repoPreview) out.push(entry.repoPreview)
+  if (allowWebp && entry.thumbnail) out.push(entry.thumbnail)
+  return out
 }

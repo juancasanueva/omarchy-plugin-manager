@@ -93,18 +93,27 @@ forces a re-fetch.
 The catalog's `installCommand` is **read, never executed**: the url is parsed
 out of it, validated, and passed to the same argv array everything else uses.
 
-### A note on the preview images
+### Where the card previews come from
 
-The registry's previews are WebP, which Qt only decodes when
-`qt6-imageformats` is installed — it is not a dependency of Omarchy or
-Quickshell, so out of the box the cards show the registry's own
-accent-and-initials tiles instead. To get the photographs:
+Each card tries three sources in order and stops at the first that decodes:
+
+1. **The repository's own `preview.png`**, read straight from
+   `raw.githubusercontent.com` at the branch the registry validated. Most
+   plugins ship one — 31 of a 40-repo sample — and PNG is a format Qt always
+   reads.
+2. **The registry's curated thumbnail.** These are WebP, which Qt decodes only
+   when `qt6-imageformats` is installed. It is not a dependency of Omarchy or
+   Quickshell, so on a stock system this step is skipped after the first
+   failure tells the panel so.
+3. **The accent-and-initials tile** the registry ships for listings with no
+   screenshot at all.
+
+Installing `qt6-imageformats` adds the second source, which fills in most of
+what the first one misses:
 
 ```bash
 sudo pacman -S qt6-imageformats
 ```
-
-Then restart the shell. No configuration, and nothing else changes.
 
 ### Verified is a signal, not a promise
 

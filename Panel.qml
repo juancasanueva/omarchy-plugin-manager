@@ -402,7 +402,7 @@ Panel {
     + "fi; "
     + "tmp=$(mktemp); "
     + "if curl -fsSL --max-time 25 " + Model.CATALOG_URL + " "
-    + "   | jq -c '{generatedAt, plugins: [.plugins[] | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,accent,initials,license,previewThumbnail}]}' > \"$tmp\" 2>/dev/null "
+    + "   | jq -c '{generatedAt, plugins: [.plugins[] | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,accent,initials,license,previewThumbnail,listingValidatedBranch}]}' > \"$tmp\" 2>/dev/null "
     + "   && [ -s \"$tmp\" ]; then "
     + "  mv \"$tmp\" \"$file\"; cat \"$file\"; "
     + "else "

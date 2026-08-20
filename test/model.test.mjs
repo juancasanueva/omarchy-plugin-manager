@@ -16,7 +16,7 @@ const Model = new Function(
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor,
-    repoShortLabel, browsableUrl,
+    repoShortLabel, browsableUrl, repoPreviewUrl, previewCandidates,
     metaLine, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
@@ -455,4 +455,29 @@ test("browsableUrl only ever hands https to the browser", () => {
   assert.equal(Model.browsableUrl("https://github.com"), "")
   assert.equal(Model.browsableUrl(""), "")
   assert.equal(Model.browsableUrl(null), "")
+})
+
+test("repoPreviewUrl points at the repo's own preview.png on the validated branch", () => {
+  assert.equal(
+    Model.repoPreviewUrl("https://github.com/acme/thing", "master"),
+    "https://raw.githubusercontent.com/acme/thing/master/preview.png")
+  assert.equal(
+    Model.repoPreviewUrl("https://github.com/acme/thing.git", ""),
+    "https://raw.githubusercontent.com/acme/thing/main/preview.png")
+})
+
+test("repoPreviewUrl only builds urls for github repos it can parse", () => {
+  assert.equal(Model.repoPreviewUrl("https://gitlab.com/acme/thing", "main"), "")
+  assert.equal(Model.repoPreviewUrl("https://github.com/acme", "main"), "")
+  assert.equal(Model.repoPreviewUrl("", "main"), "")
+})
+
+test("previewCandidates tries the repo png before the registry webp", () => {
+  const entry = { repoPreview: "https://raw.example/preview.png", thumbnail: "https://reg.example/x.webp" }
+  assert.deepEqual(Model.previewCandidates(entry, true),
+    ["https://raw.example/preview.png", "https://reg.example/x.webp"])
+  // Once WebP is known undecodable the panel drops it from the walk.
+  assert.deepEqual(Model.previewCandidates(entry, false), ["https://raw.example/preview.png"])
+  assert.deepEqual(Model.previewCandidates({ repoPreview: "", thumbnail: "" }, true), [])
+  assert.deepEqual(Model.previewCandidates(null, true), [])
 })

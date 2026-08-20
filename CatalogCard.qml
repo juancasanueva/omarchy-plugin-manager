@@ -21,8 +21,8 @@ Rectangle {
   property color foreground: Color.foreground
   property string fontFamily: Style.font.family
 
-  // Cleared by the panel the first time a thumbnail fails to decode, so the
-  // other seven hundred cards never attempt a format this Qt cannot read —
+  // Cleared by the panel the first time a WebP thumbnail fails to decode, so
+  // the other seven hundred cards never attempt a format this Qt cannot read —
   // one warning in the log instead of one per visible card.
   property bool previewsEnabled: true
 
@@ -37,6 +37,17 @@ Rectangle {
   // of ragging as you filter.
   readonly property int descriptionLines: 5
   readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * descriptionLines)
+
+  // Sources are tried best-first: the repository's own preview.png, then the
+  // registry's curated WebP thumbnail, then the accent tile. GridView recycles
+  // delegates, so the walk restarts whenever a card is handed a new plugin.
+  readonly property var previewSources: Model.previewCandidates(entry, previewsEnabled)
+  property int previewIndex: 0
+  readonly property string previewSource: previewIndex < previewSources.length
+    ? previewSources[previewIndex]
+    : ""
+
+  onEntryChanged: previewIndex = 0
 
   readonly property string repoUrl: Model.browsableUrl(entry ? entry.repo : "")
   readonly property string repoLabel: Model.repoShortLabel(entry ? entry.repo : "")
@@ -96,8 +107,14 @@ Rectangle {
         Image {
           id: thumbnail
           anchors.fill: parent
-          source: root.previewsEnabled && root.entry && root.entry.thumbnail !== "" ? root.entry.thumbnail : ""
-          onStatusChanged: if (status === Image.Error) root.previewUndecodable()
+          source: root.previewSource
+          onStatusChanged: {
+            if (status !== Image.Error) return
+            // A WebP failure is a fact about this Qt build, not about this
+            // plugin, so it is reported up once and every card stops trying.
+            if (root.previewSource === (root.entry ? root.entry.thumbnail : "")) root.previewUndecodable()
+            root.previewIndex++
+          }
           // Loading 700 thumbnails eagerly would hammer the network from
           // inside the shell process; the grid only ever asks for the cards
           // it is actually showing.
