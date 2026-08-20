@@ -85,7 +85,9 @@ Rectangle {
         text: root.row ? root.row.name : ""
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
+        // A step above the metadata beside it and the blurb below, so the
+        // name reads as the row's heading rather than one more line of text.
+        font.pixelSize: Style.font.subtitle
         elide: Text.ElideRight
         width: Math.min(implicitWidth, parent.width)
       }
