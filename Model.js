@@ -363,3 +363,204 @@ function actionGerund(kind) {
   if (kind === "remove") return "Removing"
   return "Working"
 }
+
+// ---- Marketplace catalog --------------------------------------------------
+//
+// omarchyplugins.com publishes the same resolved catalog its own site renders
+// from: name, description, author, category, stars, verification state, and a
+// curated install command per plugin. We read it, we never execute it — the
+// install url is parsed out and validated, then run through the same argv
+// array the Installed tab uses.
+
+var CATALOG_URL = "https://omarchyplugins.com/catalog.json"
+var CATALOG_ASSET_BASE = "https://omarchyplugins.com/"
+var ALL_CATEGORIES = "all"
+
+// The registry assigns every plugin an accent and a pair of initials — its
+// own fallback tile for listings with no screenshot. We reuse them, which
+// also covers the case where the previews cannot be decoded at all (they are
+// WebP, and Qt only reads it when qt6-imageformats is installed).
+var ACCENT_COLORS = {
+  rose: "#e0708f",
+  violet: "#9d7cd8",
+  cyan: "#4fb3c8",
+  coral: "#e08a63",
+  amber: "#d6a44f",
+  lime: "#8ebf62"
+}
+
+function accentColor(name) {
+  var key = String(name || "").toLowerCase()
+  return ACCENT_COLORS.hasOwnProperty(key) ? ACCENT_COLORS[key] : ACCENT_COLORS.violet
+}
+
+function parseCatalog(raw) {
+  try {
+    var doc = JSON.parse(String(raw || "").trim())
+    if (!doc || !Array.isArray(doc.plugins)) return null
+    return doc
+  } catch (error) {
+    return null
+  }
+}
+
+function installedIdSet(rows) {
+  var set = {}
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (rows[i] && rows[i].id) set[String(rows[i].id)] = true
+  }
+  return set
+}
+
+// The curated installCommand carries the exact clone url — including the .git
+// suffix that `repo` often omits — so the url is taken from there. It is
+// pulled out and validated rather than run: a command string from the network
+// is data, never something to hand to a shell.
+function installUrlFor(entry) {
+  if (!entry) return ""
+  var parts = String(entry.installCommand || "").trim().split(/\s+/)
+  for (var i = 0; i < parts.length; i++) {
+    if (isValidGitUrl(parts[i])) return parts[i]
+  }
+  return isValidGitUrl(entry.repo) ? normalizeGitUrl(entry.repo) : ""
+}
+
+function catalogEntries(doc, installedIds) {
+  if (!doc || !Array.isArray(doc.plugins)) return []
+  var installed = installedIds || {}
+  var out = []
+
+  for (var i = 0; i < doc.plugins.length; i++) {
+    var p = doc.plugins[i]
+    if (!p || !p.id) continue
+    // Built-ins ship with Omarchy and are always present; listing them under
+    // "browse and install" would be offering something you already have.
+    if (p.sourceType === "builtin") continue
+
+    var entry = {
+      id: String(p.id),
+      name: String(p.name || p.id),
+      description: String(p.description || "").trim(),
+      author: String(p.author || "").trim(),
+      version: String(p.version || "").trim(),
+      category: String(p.category || "Other"),
+      kind: String(p.kind || ""),
+      repo: String(p.repo || ""),
+      installCommand: String(p.installCommand || ""),
+      installAvailable: p.installAvailable === true,
+      installNote: String(p.installNote || "").trim(),
+      verified: p.verificationStatus === "verified",
+      stars: Number(p.stars) || 0,
+      accent: String(p.accent || ""),
+      initials: String(p.initials || "").toUpperCase(),
+      license: String(p.license || "").trim(),
+      thumbnail: p.previewThumbnail ? CATALOG_ASSET_BASE + String(p.previewThumbnail) : "",
+      installed: installed.hasOwnProperty(String(p.id))
+    }
+    entry.installUrl = installUrlFor(entry)
+    // A listing with no usable url cannot be installed from here whatever the
+    // registry claims, so the flag follows the url rather than the other way.
+    entry.installable = entry.installAvailable && entry.installUrl !== "" && !entry.installed
+    out.push(entry)
+  }
+
+  out.sort(compareCatalogEntries)
+  return out
+}
+
+// Popularity first: a storefront that opens on an alphabetical list buries
+// everything anyone actually uses.
+function compareCatalogEntries(a, b) {
+  if (a.stars !== b.stars) return b.stars - a.stars
+  var left = a.name.toLowerCase()
+  var right = b.name.toLowerCase()
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
+function catalogCategories(entries) {
+  var seen = {}
+  for (var i = 0; i < (entries || []).length; i++) seen[entries[i].category] = true
+
+  var names = Object.keys(seen).sort()
+  var options = [{ value: ALL_CATEGORIES, label: "All" }]
+  for (var k = 0; k < names.length; k++) options.push({ value: names[k], label: names[k] })
+  return options
+}
+
+// Author and tags join name and id here, unlike the installed-plugin search:
+// browsing is how you find something you cannot already name, so "solitaire"
+// or an author you follow both have to land.
+function matchesCatalogQuery(entry, query) {
+  var needle = String(query || "").trim().toLowerCase()
+  if (needle === "") return true
+  if (!entry) return false
+  return String(entry.name).toLowerCase().indexOf(needle) >= 0
+    || String(entry.id).toLowerCase().indexOf(needle) >= 0
+    || String(entry.author).toLowerCase().indexOf(needle) >= 0
+    || String(entry.description).toLowerCase().indexOf(needle) >= 0
+}
+
+function filterCatalog(entries, category, query) {
+  var out = []
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    if (category && category !== ALL_CATEGORIES && entry.category !== category) continue
+    if (!matchesCatalogQuery(entry, query)) continue
+    out.push(entry)
+  }
+  return out
+}
+
+function catalogEmptyMessage(category, query) {
+  var needle = String(query || "").trim()
+  var narrowed = category && category !== ALL_CATEGORIES
+
+  if (needle !== "" && narrowed) return "No " + category + " plugins match “" + needle + "”."
+  if (needle !== "") return "No plugins match “" + needle + "”."
+  if (narrowed) return "No " + category + " plugins in the catalog."
+  return "The catalog is empty."
+}
+
+function starLabel(count) {
+  var stars = Number(count) || 0
+  if (stars >= 1000) return (Math.round(stars / 100) / 10) + "k"
+  return String(stars)
+}
+
+// What the card's button should say. The registry lists plenty of things that
+// are not one-command installable — suites with their own installers, repos
+// that are not plugin-shaped — and each carries a note saying why. Showing the
+// reason beats showing a button that cannot work.
+function installState(entry) {
+  if (!entry) return "unavailable"
+  if (entry.installed) return "installed"
+  if (entry.installable) return "installable"
+  return "unavailable"
+}
+
+function installBlockedReason(entry) {
+  if (!entry) return ""
+  if (entry.installNote !== "") return entry.installNote
+  if (entry.installUrl === "") return "This listing has no usable clone url."
+  return "This plugin cannot be installed from here."
+}
+
+// Re-stamps install state onto an already-built catalog. Installing something
+// changes which cards should say "installed", and re-deriving the whole list
+// from the raw document to learn that would throw away the sort and the fetch.
+function markInstalled(entries, installedIds) {
+  var installed = installedIds || {}
+  var out = []
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    var isInstalled = installed.hasOwnProperty(entry.id)
+    var copy = {}
+    for (var key in entry) copy[key] = entry[key]
+    copy.installed = isInstalled
+    copy.installable = entry.installAvailable && entry.installUrl !== "" && !isInstalled
+    out.push(copy)
+  }
+  return out
+}

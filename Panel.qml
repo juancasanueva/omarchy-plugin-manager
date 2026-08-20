@@ -66,13 +66,62 @@ Panel {
   readonly property int installedTotal: Model.countRemovable(rows)
   readonly property bool filtered: Model.isFiltering(kindFilter, searchQuery)
 
+  // ---- Browse tab ---------------------------------------------------------
+  //
+  // The marketplace catalog omarchyplugins.com publishes. Fetched on first
+  // visit and cached on disk, so opening the panel costs nothing until you
+  // actually go looking for something new.
+
+  property string activeTab: "installed"   // "installed" | "browse"
+  readonly property bool browsing: activeTab === "browse"
+  readonly property var tabOptions: [
+    { value: "installed", label: "Installed" },
+    { value: "browse", label: "Browse" }
+  ]
+
+  property var catalog: []
+  property bool catalogLoading: false
+  property bool catalogLoaded: false
+  property string catalogError: ""
+  property string categoryFilter: "all"
+
+  // The registry's previews are WebP, which Qt only decodes when
+  // qt6-imageformats is installed. Rather than probing for it, the first card
+  // that fails tells us, and every card falls back to the registry's own
+  // accent-and-initials tile from then on.
+  property bool previewsSupported: true
+
+  readonly property var categoryOptions: Model.catalogCategories(catalog)
+  readonly property var visibleCatalog: Model.filterCatalog(catalog, categoryFilter, searchQuery)
+
+  function switchTab(tab) {
+    if (activeTab === tab) return
+    activeTab = tab
+    resetSelection()
+    if (tab === "browse" && !catalogLoaded && !catalogLoading) loadCatalog(false)
+  }
+
   // Any narrowing rebuilds the list under the selection, so the index is
   // dropped rather than left pointing at whatever now sits in that slot —
   // that is how a Delete keypress lands on the wrong plugin.
   onSearchQueryChanged: resetSelection()
+
+  // Installing something changes which cards should read "installed". Re-stamp
+  // rather than rebuild: the catalog's sort and its fetch both survive.
+  onRowsChanged: {
+    if (catalog.length === 0) return
+    catalog = Model.markInstalled(catalog, Model.installedIdSet(rows))
+  }
   readonly property var selectedRow: selectedIndex >= 0 && selectedIndex < visibleRows.length
     ? visibleRows[selectedIndex]
     : null
+
+  // One selection index serves both tabs; which list it indexes into is the
+  // only thing that changes.
+  readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < visibleCatalog.length
+    ? visibleCatalog[selectedIndex]
+    : null
+  readonly property int selectableCount: browsing ? visibleCatalog.length : visibleRows.length
 
   // ---- In-flight action ---------------------------------------------------
 
@@ -95,12 +144,17 @@ Panel {
   property string pendingId: ""
   property string pendingLabel: ""
   property string pendingUrl: ""
+  property bool pendingVerified: false
   readonly property bool confirming: pendingKind !== ""
 
   readonly property string confirmMessage: {
     if (pendingKind === "add")
       return "Clone and enable " + pendingLabel + "?\n\n"
         + pendingUrl + "\n\n"
+        // Stated as a review rather than a guarantee. A badge that reads as a
+        // safety promise is worse than no badge, because it retires the
+        // judgement the next sentence is asking for.
+        + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
         + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
@@ -144,10 +198,54 @@ Panel {
   function resetSelection() {
     selectedIndex = -1
     listScroll.contentY = 0
+    catalogGrid.contentY = 0
   }
 
   function clearSearch() {
     searchField.text = ""
+  }
+
+  function setCategoryFilter(category) {
+    if (categoryFilter === category) return
+    categoryFilter = category
+    resetSelection()
+  }
+
+  // ---- Catalog ------------------------------------------------------------
+
+  function loadCatalog(force) {
+    if (catalogProc.running) return
+    catalogLoading = true
+    catalogError = ""
+    catalogProc.command = ["bash", "-c", catalogScript, "catalog", force === true ? "1" : "0"]
+    catalogProc.running = true
+  }
+
+  function applyCatalog(raw) {
+    catalogLoading = false
+
+    var doc = Model.parseCatalog(raw)
+    if (!doc) {
+      // Keep whatever was already on screen. An empty grid would claim the
+      // marketplace has nothing in it.
+      catalogError = "Could not read the plugin catalog"
+      return
+    }
+
+    catalog = Model.catalogEntries(doc, Model.installedIdSet(rows))
+    catalogLoaded = true
+    catalogError = ""
+  }
+
+  // Installing from the catalog runs the same argv array as the url field —
+  // the registry's own install command is read for its url and never executed.
+  function askInstall(entry) {
+    if (!entry || !entry.installable || busy) return
+    pendingUrl = entry.installUrl
+    pendingLabel = entry.name
+    pendingId = entry.id
+    pendingVerified = entry.verified === true
+    pendingKind = "add"
   }
 
   function cycleKindFilter() {
@@ -174,6 +272,7 @@ Panel {
     pendingUrl = url
     pendingLabel = Model.repoLabel(url)
     pendingId = ""
+    pendingVerified = false
     pendingKind = "add"
   }
 
@@ -217,10 +316,17 @@ Panel {
 
   // ---- Keyboard -----------------------------------------------------------
 
-  function moveSelection(delta) {
-    if (visibleRows.length === 0) return
-    var next = selectedIndex < 0 ? 0 : selectedIndex + delta
-    selectedIndex = Math.max(0, Math.min(visibleRows.length - 1, next))
+  // In a grid, "down" means the card below, not the next one along — so the
+  // vertical step is a whole row. The list has one column, so its row step is
+  // one either way.
+  function moveSelection(dx, dy) {
+    if (selectableCount === 0) return
+    var step = browsing ? (dx !== 0 ? dx : dy * catalogGrid.columns) : dy
+    if (step === 0) return
+
+    var next = selectedIndex < 0 ? 0 : selectedIndex + step
+    selectedIndex = Math.max(0, Math.min(selectableCount - 1, next))
+    if (browsing) catalogGrid.positionViewAtIndex(selectedIndex, GridView.Contain)
   }
 
   // Called by whichever row just became selected. Asking the item where it
@@ -281,6 +387,42 @@ Panel {
     }
   }
 
+  // Fetch, shrink, cache. The published catalog is 1.6MB of which we need
+  // about a third, and jq — an Omarchy dependency — projects it down before
+  // any of it reaches the shell's JSON parser. A fetch that fails falls back
+  // to the cached copy rather than emptying the grid: a stale storefront is
+  // far more useful than an apparently empty one.
+  readonly property string catalogScript: ""
+    + "set -u; "
+    + "dir=\"$HOME/.cache/omarchy-plugin-manager\"; file=\"$dir/catalog.json\"; "
+    + "mkdir -p \"$dir\"; "
+    + "if [ \"$1\" != 1 ] && [ -s \"$file\" ]; then "
+    + "  age=$(( $(date +%s) - $(stat -c %Y \"$file\") )); "
+    + "  if [ \"$age\" -lt 21600 ]; then cat \"$file\"; exit 0; fi; "
+    + "fi; "
+    + "tmp=$(mktemp); "
+    + "if curl -fsSL --max-time 25 " + Model.CATALOG_URL + " "
+    + "   | jq -c '{generatedAt, plugins: [.plugins[] | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,accent,initials,license,previewThumbnail}]}' > \"$tmp\" 2>/dev/null "
+    + "   && [ -s \"$tmp\" ]; then "
+    + "  mv \"$tmp\" \"$file\"; cat \"$file\"; "
+    + "else "
+    + "  rm -f \"$tmp\"; "
+    + "  if [ -s \"$file\" ]; then cat \"$file\"; else exit 1; fi; "
+    + "fi"
+
+  Process {
+    id: catalogProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyCatalog(text)
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) return
+      root.catalogLoading = false
+      root.catalogError = "Could not reach omarchyplugins.com"
+    }
+  }
+
   Process {
     id: actionProc
     stdout: StdioCollector { waitForEnd: true }
@@ -337,7 +479,9 @@ Panel {
     // forty-odd plugins the list would otherwise grow to the screen edge
     // every time. Past the cap the list scrolls, which it was built to do.
     contentHeight: panel.fittedContentHeight(
-      header.implicitHeight + listColumn.implicitHeight + hints.implicitHeight + Style.space(20),
+      header.implicitHeight
+        + (root.browsing ? Style.space(500) : listColumn.implicitHeight)
+        + hints.implicitHeight + Style.space(20),
       Style.space(500))
 
     PanelKeyCatcher {
@@ -345,9 +489,9 @@ Panel {
       anchors.fill: parent
       blocked: root.confirming || urlField.activeFocus || searchField.activeFocus
 
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveSelection(dy) }
-      onActivateRequested: root.startUpdate(root.selectedRow)
-      onDeleteRequested: root.askRemove(root.selectedRow)
+      onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
+      onActivateRequested: root.browsing ? root.askInstall(root.selectedEntry) : root.startUpdate(root.selectedRow)
+      onDeleteRequested: if (!root.browsing) root.askRemove(root.selectedRow)
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -355,8 +499,10 @@ Panel {
         else if (t === "r" || t === "R") root.reload()
         else if (t === "a" || t === "A") root.focusUrlField()
         else if (t === "f" || t === "F") root.cycleKindFilter()
-        else if (t === "j") root.moveSelection(1)
-        else if (t === "k") root.moveSelection(-1)
+        else if (t === "j") root.moveSelection(0, 1)
+        else if (t === "k") root.moveSelection(0, -1)
+        else if (t === "1") root.switchTab("installed")
+        else if (t === "2") root.switchTab("browse")
       }
 
       // ---- Fixed chrome, pinned to the top.
@@ -388,6 +534,11 @@ Panel {
             anchors.leftMargin: Style.space(10)
             anchors.baseline: title.baseline
             text: {
+              if (root.browsing) {
+                if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
+                if (root.catalog.length === 0) return ""
+                return "showing " + root.visibleCatalog.length + " of " + root.catalog.length
+              }
               if (root.loading && root.rows.length === 0) return "reading…"
               if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
               return root.installedTotal + " installed  ·  " + root.rows.length + " total"
@@ -397,24 +548,44 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
+          ButtonGroup {
+            id: tabs
+            anchors.right: refreshButton.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            options: root.tabOptions
+            value: root.activeTab
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            fontSize: Style.font.caption
+            focusable: false
+            onChanged: function(value) { root.switchTab(value) }
+          }
+
           PanelActionButton {
             id: refreshButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰑐"
-            tooltipText: "Re-read the plugin list"
+            tooltipText: root.browsing ? "Re-fetch the catalog" : "Re-read the plugin list"
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
-            enabled: !root.loading && !root.busy
+            enabled: !root.loading && !root.catalogLoading && !root.busy
             opacity: enabled ? 1 : 0.4
-            onClicked: root.reload()
+            // Forced past the cache: the refresh button exists precisely for
+            // when you believe what is on screen is out of date.
+            onClicked: root.browsing ? root.loadCatalog(true) : root.reload()
           }
         }
 
         // ---- Add: a repository url and one button. Confirmed before it runs.
+        //      Only on the Installed tab — on Browse you install by clicking a
+        //      card, and this is the escape hatch for repos the catalog has
+        //      never heard of.
         Item {
           width: parent.width
-          height: Math.max(urlField.implicitHeight, addButton.height)
+          visible: !root.browsing
+          height: visible ? Math.max(urlField.implicitHeight, addButton.height) : 0
 
           TextField {
             id: urlField
@@ -458,12 +629,17 @@ Panel {
         //      their natural width, the search box taking whatever is left.
         Item {
           width: parent.width
-          height: Math.max(kindFilterGroup.implicitHeight, searchField.implicitHeight)
+          height: Math.max(root.browsing ? categoryDropdown.implicitHeight : kindFilterGroup.implicitHeight,
+                           searchField.implicitHeight)
 
+          // Installed filters on six kinds, which fit as chips. Browse filters
+          // on fourteen categories, which do not — that is a dropdown's job.
           ButtonGroup {
             id: kindFilterGroup
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
+            visible: !root.browsing
+            width: visible ? implicitWidth : 0
             options: root.kindOptions
             value: root.kindFilter
             foreground: root.contentForeground
@@ -473,9 +649,23 @@ Panel {
             onChanged: function(value) { root.setKindFilter(value) }
           }
 
+          Dropdown {
+            id: categoryDropdown
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.browsing
+            width: visible ? Style.spacing.dropdownWidth : 0
+            showLabel: false
+            options: root.categoryOptions
+            value: root.categoryFilter
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onChanged: function(value) { root.setCategoryFilter(value) }
+          }
+
           TextField {
             id: searchField
-            anchors.left: kindFilterGroup.right
+            anchors.left: root.browsing ? categoryDropdown.right : kindFilterGroup.right
             anchors.leftMargin: Style.space(10)
             anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
             anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
@@ -483,7 +673,7 @@ Panel {
             // The glyph rides in the placeholder rather than sitting in its
             // own column, because every pixel on this row belongs to the two
             // controls sharing it.
-            placeholderText: "󰍉  Search by name…"
+            placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
             foreground: root.contentForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -525,10 +715,11 @@ Panel {
           visible: text !== ""
           text: {
             if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
-            if (root.loadError !== "") return root.loadError
+            if (root.browsing && root.catalogError !== "") return root.catalogError
+            if (!root.browsing && root.loadError !== "") return root.loadError
             return root.status
           }
-          color: root.statusIsError || root.loadError !== "" ? Color.urgent : Color.muted
+          color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : Color.muted
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -542,7 +733,9 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        text: "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   r refresh"
+        text: root.browsing
+          ? "←↑↓→ select   ⏎ install   / search   1 installed   r refresh"
+          : "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   2 browse"
         color: Color.muted
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
@@ -555,6 +748,7 @@ Panel {
       //      left over is exactly what it gets.
       Flickable {
         id: listScroll
+        visible: !root.browsing
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: header.bottom
@@ -650,6 +844,76 @@ Panel {
               onClicked: root.selectedIndex = globalIndex
             }
           }
+        }
+      }
+
+      // ---- Browse: the marketplace as a grid of cards. A GridView rather
+      //      than a Repeater because this list is 700-odd entries long and
+      //      every card owns a network image — only the visible ones may be
+      //      built, or opening the tab would fetch the whole storefront.
+      GridView {
+        id: catalogGrid
+        visible: root.browsing
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hints.top
+        anchors.bottomMargin: Style.space(10)
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        cacheBuffer: Math.round(cellHeight * 2)
+
+        readonly property int columns: 3
+        cellWidth: Math.floor(width / columns)
+        cellHeight: Math.round((cellWidth - Style.space(8)) * 9 / 16) + Style.space(104)
+
+        model: root.visibleCatalog
+
+        delegate: Item {
+          required property int index
+          required property var modelData
+
+          width: catalogGrid.cellWidth
+          height: catalogGrid.cellHeight
+
+          CatalogCard {
+            anchors.fill: parent
+            anchors.margins: Style.space(4)
+            entry: modelData
+            selected: root.selectedIndex === index
+            actionsEnabled: !root.busy
+            previewsEnabled: root.previewsSupported
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+
+            onPreviewUndecodable: root.previewsSupported = false
+            onClicked: root.selectedIndex = index
+            onInstallRequested: {
+              root.selectedIndex = index
+              root.askInstall(modelData)
+            }
+          }
+        }
+
+        // Empty and loading are different states and read differently: one
+        // says the fetch is still running, the other that the filters matched
+        // nothing.
+        Text {
+          anchors.centerIn: parent
+          width: parent.width - Style.space(40)
+          visible: root.visibleCatalog.length === 0
+          text: {
+            if (root.catalogLoading) return "Fetching the catalog from omarchyplugins.com…"
+            if (root.catalogError !== "") return root.catalogError
+            if (root.catalog.length === 0) return "No catalog yet."
+            return Model.catalogEmptyMessage(root.categoryFilter, root.searchQuery)
+          }
+          color: Color.muted
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+          horizontalAlignment: Text.AlignHCenter
         }
       }
 

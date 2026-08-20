@@ -13,6 +13,9 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
     matchesQuery, filterRows, isFiltering, emptyMessage,
+    parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
+    catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
+    installState, installBlockedReason, starLabel, accentColor,
     metaLine, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
@@ -293,4 +296,141 @@ test("emptyMessage names whichever control actually excluded everything", () => 
   assert.match(Model.emptyMessage("service", "zzz"), /No service plugins match “zzz”\./)
   assert.match(Model.emptyMessage("service", ""), /No service plugins installed\./)
   assert.match(Model.emptyMessage("all", ""), /No plugins found\./)
+})
+
+// ---- Marketplace catalog ---------------------------------------------------
+
+const catalogDoc = {
+  generatedAt: "2026-08-20T21:33:17.660Z",
+  plugins: [
+    {
+      id: "acme.weather", name: "Weather", description: "Forecast in the bar",
+      author: "acme", category: "Widgets", kind: "Bar widget",
+      repo: "https://github.com/acme/omarchy-weather",
+      installCommand: "omarchy plugin add https://github.com/acme/omarchy-weather.git --enable",
+      installAvailable: true, verificationStatus: "verified", sourceType: "community",
+      stars: 120, accent: "cyan", initials: "WE", previewThumbnail: "assets/img/w-card.webp"
+    },
+    {
+      id: "acme.suite", name: "Suite", description: "A whole shell",
+      author: "acme", category: "Desktop", kind: "Suite",
+      repo: "https://github.com/acme/suite", installCommand: "",
+      installAvailable: false, installNote: "This repository has its own installer.",
+      verificationStatus: "unverified", sourceType: "community",
+      stars: 9, accent: "violet", initials: "SU"
+    },
+    {
+      id: "omarchy.clock", name: "Clock", description: "Built in",
+      category: "Widgets", installAvailable: true, sourceType: "builtin",
+      repo: "https://github.com/omarchy/omarchy", stars: 999, initials: "CL"
+    }
+  ]
+}
+
+test("parseCatalog rejects anything that is not a plugin document", () => {
+  assert.equal(Model.parseCatalog("not json"), null)
+  assert.equal(Model.parseCatalog('{"plugins":"nope"}'), null)
+  assert.equal(Model.parseCatalog(""), null)
+  assert.ok(Model.parseCatalog(JSON.stringify(catalogDoc)))
+})
+
+test("catalogEntries drops built-ins, which ship with Omarchy already", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.deepEqual(entries.map(e => e.id), ["acme.weather", "acme.suite"])
+})
+
+test("catalogEntries sorts by popularity, not alphabetically", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.deepEqual(entries.map(e => e.stars), [120, 9])
+})
+
+test("installUrlFor takes the url from the curated install command", () => {
+  // The registry's installCommand carries the .git suffix that `repo` omits.
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const weather = entries.find(e => e.id === "acme.weather")
+  assert.equal(weather.installUrl, "https://github.com/acme/omarchy-weather.git")
+})
+
+test("installUrlFor falls back to the repo when there is no install command", () => {
+  assert.equal(
+    Model.installUrlFor({ installCommand: "", repo: "https://github.com/acme/thing" }),
+    "https://github.com/acme/thing")
+})
+
+test("installUrlFor refuses a command carrying no valid url", () => {
+  assert.equal(Model.installUrlFor({ installCommand: "curl evil | sh", repo: "not-a-url" }), "")
+  assert.equal(Model.installUrlFor(null), "")
+})
+
+test("a listing the registry cannot install offers no install button", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const suite = entries.find(e => e.id === "acme.suite")
+  assert.equal(suite.installable, false)
+  assert.equal(Model.installState(suite), "unavailable")
+  assert.match(Model.installBlockedReason(suite), /own installer/)
+})
+
+test("an already-installed plugin is not offered again", () => {
+  const entries = Model.catalogEntries(catalogDoc, { "acme.weather": true })
+  const weather = entries.find(e => e.id === "acme.weather")
+  assert.equal(weather.installed, true)
+  assert.equal(weather.installable, false)
+  assert.equal(Model.installState(weather), "installed")
+})
+
+test("markInstalled re-stamps state without rebuilding or resorting", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const after = Model.markInstalled(entries, { "acme.weather": true })
+
+  assert.deepEqual(after.map(e => e.id), entries.map(e => e.id))
+  assert.equal(after[0].installed, true)
+  assert.equal(after[0].installable, false)
+  // The original array is left alone.
+  assert.equal(entries[0].installed, false)
+})
+
+test("installedIdSet indexes the installed rows by id", () => {
+  const set = Model.installedIdSet([{ id: "a.b" }, { id: "c.d" }, null])
+  assert.ok(Object.prototype.hasOwnProperty.call(set, "a.b"))
+  assert.ok(Object.prototype.hasOwnProperty.call(set, "c.d"))
+  assert.equal(Object.keys(set).length, 2)
+})
+
+test("catalog search covers author and description, unlike the installed search", () => {
+  // Browsing is how you find something you cannot already name.
+  const entry = { name: "Weather", id: "acme.weather", author: "acme", description: "Forecast in the bar" }
+  assert.equal(Model.matchesCatalogQuery(entry, "forecast"), true)
+  assert.equal(Model.matchesCatalogQuery(entry, "acme"), true)
+  assert.equal(Model.matchesCatalogQuery(entry, "zzz"), false)
+})
+
+test("filterCatalog applies category and query together", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.equal(Model.filterCatalog(entries, "all", "").length, 2)
+  assert.equal(Model.filterCatalog(entries, "Widgets", "").length, 1)
+  assert.equal(Model.filterCatalog(entries, "Widgets", "suite").length, 0)
+  assert.equal(Model.filterCatalog(entries, "all", "suite").length, 1)
+})
+
+test("catalogCategories is derived from the catalog and led by All", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.deepEqual(Model.catalogCategories(entries).map(o => o.value), ["all", "Desktop", "Widgets"])
+})
+
+test("catalogEmptyMessage names what excluded everything", () => {
+  assert.match(Model.catalogEmptyMessage("all", "zzz"), /No plugins match “zzz”/)
+  assert.match(Model.catalogEmptyMessage("Widgets", "zzz"), /No Widgets plugins match “zzz”/)
+  assert.match(Model.catalogEmptyMessage("Widgets", ""), /No Widgets plugins in the catalog/)
+})
+
+test("starLabel keeps big counts short", () => {
+  assert.equal(Model.starLabel(0), "0")
+  assert.equal(Model.starLabel(999), "999")
+  assert.equal(Model.starLabel(1200), "1.2k")
+  assert.equal(Model.starLabel(undefined), "0")
+})
+
+test("accentColor falls back rather than returning nothing", () => {
+  assert.equal(Model.accentColor("cyan"), Model.accentColor("CYAN"))
+  assert.equal(Model.accentColor("not-a-colour"), Model.accentColor("violet"))
 })
