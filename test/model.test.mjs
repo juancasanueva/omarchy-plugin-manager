@@ -16,6 +16,7 @@ const Model = new Function(
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor,
+    repoShortLabel, browsableUrl,
     metaLine, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
@@ -433,4 +434,25 @@ test("starLabel keeps big counts short", () => {
 test("accentColor falls back rather than returning nothing", () => {
   assert.equal(Model.accentColor("cyan"), Model.accentColor("CYAN"))
   assert.equal(Model.accentColor("not-a-colour"), Model.accentColor("violet"))
+})
+
+test("repoShortLabel drops the host, which is the same on every card", () => {
+  assert.equal(Model.repoShortLabel("https://github.com/akitaonrails/ai-usagebar"), "akitaonrails/ai-usagebar")
+  assert.equal(Model.repoShortLabel("https://github.com/acme/thing.git"), "acme/thing")
+  assert.equal(Model.repoShortLabel("https://github.com/acme/thing/"), "acme/thing")
+  assert.equal(Model.repoShortLabel("git@github.com:acme/thing.git"), "acme/thing")
+  assert.equal(Model.repoShortLabel(""), "")
+})
+
+test("browsableUrl only ever hands https to the browser", () => {
+  // The repo field arrives over the network, so a url that is not a web page
+  // must never reach the launcher.
+  assert.equal(Model.browsableUrl("https://github.com/a/b"), "https://github.com/a/b")
+  assert.equal(Model.browsableUrl("http://github.com/a/b"), "")
+  assert.equal(Model.browsableUrl("javascript:alert(1)"), "")
+  assert.equal(Model.browsableUrl("file:///etc/passwd"), "")
+  assert.equal(Model.browsableUrl("https://github.com/a b"), "")
+  assert.equal(Model.browsableUrl("https://github.com"), "")
+  assert.equal(Model.browsableUrl(""), "")
+  assert.equal(Model.browsableUrl(null), "")
 })

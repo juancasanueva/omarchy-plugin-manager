@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -31,6 +32,22 @@ Rectangle {
 
   readonly property string state_: Model.installState(entry)
   readonly property color accent: Model.accentColor(entry ? entry.accent : "")
+
+  // Five lines of blurb, always reserved, so the cards stay on a grid instead
+  // of ragging as you filter.
+  readonly property int descriptionLines: 5
+  readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * descriptionLines)
+
+  readonly property string repoUrl: Model.browsableUrl(entry ? entry.repo : "")
+  readonly property string repoLabel: Model.repoShortLabel(entry ? entry.repo : "")
+
+  // Argv array through Omarchy's own launcher, so it opens in whichever
+  // browser `omarchy default browser` selected — and the url is checked to be
+  // https before it gets there.
+  function openRepo() {
+    if (repoUrl === "") return
+    Quickshell.execDetached(["omarchy-launch-browser", repoUrl])
+  }
 
   radius: Style.cornerRadius
   color: selected ? Style.selectedFill : (mouse.containsMouse ? Style.hoverFill : Style.normalFill)
@@ -128,18 +145,48 @@ Rectangle {
 
     Text {
       width: parent.width
-      // A floor, not a fixed height: a computed two-line box that lands a
-      // fraction short fits one line and elides.
-      height: Math.max(implicitHeight, Math.ceil(descriptionMetrics.lineSpacing * 2))
+      // A floor, not a fixed height: a computed box that lands a fraction
+      // short of its line count fits one line fewer and elides.
+      height: Math.max(implicitHeight, root.descriptionHeight)
       text: root.entry ? root.entry.description : ""
       color: root.foreground
       opacity: 0.8
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap
-      maximumLineCount: 2
+      maximumLineCount: root.descriptionLines
       elide: Text.ElideRight
       verticalAlignment: Text.AlignTop
+    }
+
+    // ---- The repository, one click away. Reading the source before you run
+    //      it is the whole defence here, so the way to it is on the card
+    //      rather than buried behind a detail view.
+    Item {
+      width: parent.width
+      height: repoLink.implicitHeight
+      visible: root.repoUrl !== ""
+
+      Text {
+        id: repoLink
+        width: parent.width
+        text: "󰊤  " + root.repoLabel
+        color: repoMouse.containsMouse ? Color.accent : Color.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.underline: repoMouse.containsMouse
+        elide: Text.ElideRight
+      }
+
+      MouseArea {
+        id: repoMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        // Swallowed rather than propagated: clicking the link opens the repo,
+        // it does not also select the card underneath.
+        onClicked: root.openRepo()
+      }
     }
 
     // ---- Footer: who wrote it, how popular it is, and the one action.

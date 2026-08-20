@@ -866,7 +866,27 @@ Panel {
 
         readonly property int columns: 3
         cellWidth: Math.floor(width / columns)
-        cellHeight: Math.round((cellWidth - Style.space(8)) * 9 / 16) + Style.space(104)
+
+        // Derived rather than guessed: a 16:9 preview, one line of name, five
+        // of description, one for the repository link, and the footer. A magic
+        // constant here would clip the blurb the moment the user's font size
+        // moved.
+        cellHeight: Math.round((cellWidth - Style.space(8)) * 9 / 16)
+          + Math.ceil(cardNameMetrics.lineSpacing)
+          + Math.ceil(cardTextMetrics.lineSpacing * 6)
+          + Style.space(74)
+
+        FontMetrics {
+          id: cardNameMetrics
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        FontMetrics {
+          id: cardTextMetrics
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
 
         model: root.visibleCatalog
 

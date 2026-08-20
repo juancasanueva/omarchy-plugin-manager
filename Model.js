@@ -564,3 +564,25 @@ function markInstalled(entries, installedIds) {
   }
   return out
 }
+
+// "https://github.com/acme/omarchy-weather" -> "acme/omarchy-weather". The
+// host is the same for effectively every listing, so printing it on each card
+// spends width on the one part that carries no information.
+function repoShortLabel(url) {
+  var text = normalizeGitUrl(url).replace(/\.git$/, "").replace(/\/+$/, "")
+  var match = text.match(/^https?:\/\/[^\/]+\/(.+)$/)
+  if (match) return match[1]
+  var scp = text.match(/^git@[^:]+:(.+)$/)
+  if (scp) return scp[1]
+  return text
+}
+
+// Only http(s) is ever handed to a browser. The repo field arrives over the
+// network, and a url that is not a web page has no business being opened as
+// one — javascript:, file:, and anything else are refused rather than passed
+// through to the launcher.
+function browsableUrl(url) {
+  var text = normalizeGitUrl(url)
+  if (/\s/.test(text)) return ""
+  return /^https:\/\/[^\/\s]+\/.+/.test(text) ? text : ""
+}

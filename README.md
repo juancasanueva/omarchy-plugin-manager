@@ -59,13 +59,20 @@ When nothing matches, the message names whichever control excluded everything
 ## The Browse tab
 
 ![The Browse tab: a category dropdown and catalog search above a grid of plugin
-cards, each with a preview tile, description, author, star count, and an install
-button](preview-browse.png)
+cards, each with a preview tile, a five-line description, a link to the source
+repository, author, star count, and an install button](preview-browse.png)
 
 The second tab is the [omarchyplugins.com](https://omarchyplugins.com)
 marketplace — 726 community plugins, searchable by name, author, or
 description, filterable by category, sorted by stars. Installing runs the same
 `omarchy plugin add` the Installed tab does, behind the same confirmation.
+
+Each card carries five lines of the plugin's own description and a clickable
+link to its source repository, because reading the code before you run it is
+the whole defence here — the way to it belongs on the card, not behind a
+detail view. Links open through `omarchy-launch-browser`, so they land in
+whichever browser `omarchy default browser` selected, and only `https://` urls
+are ever passed to it.
 
 Not everything the registry lists is installable in one command — suites ship
 their own installers, and some repos are not plugin-shaped. Those cards show
