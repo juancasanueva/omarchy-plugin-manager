@@ -327,7 +327,18 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(620))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight)
+
+    // The height the panel would like: fixed chrome plus however tall the
+    // full list would be. fittedContentHeight clamps that to what the screen
+    // allows, and because the list is anchored between the header and the
+    // hints rather than given a height of its own, the clamp comes out of the
+    // list instead of pushing the bottom of the panel off screen.
+    // The cap keeps this a popup rather than a full-height column: with
+    // forty-odd plugins the list would otherwise grow to the screen edge
+    // every time. Past the cap the list scrolls, which it was built to do.
+    contentHeight: panel.fittedContentHeight(
+      header.implicitHeight + listColumn.implicitHeight + hints.implicitHeight + Style.space(20),
+      Style.space(500))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -348,18 +359,16 @@ Panel {
         else if (t === "k") root.moveSelection(-1)
       }
 
-      // Width comes from the panel, height from the children. Anchoring the
-      // fill instead would make the column's height depend on the panel's,
-      // which is itself derived from this column's implicitHeight.
+      // ---- Fixed chrome, pinned to the top.
       Column {
-        id: content
+        id: header
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         spacing: Style.space(10)
 
-        // ---- Header: what this is, how much of it there is, and a way to
-        //      re-read without closing the panel.
+        // What this is, how much of it there is, and a way to re-read without
+        // closing the panel.
         Item {
           width: parent.width
           height: Math.max(title.implicitHeight, refreshButton.height)
@@ -444,36 +453,41 @@ Panel {
 
         PanelSeparator { foreground: root.contentForeground }
 
-        // ---- Find something you already have. Sits below the add field and
-        //      above the chips because both narrow the list, while the field
-        //      above it installs something new — same reason they are on
-        //      opposite sides of the rule.
+        // ---- Both narrowing controls on one line. They do the same job, and
+        //      a panel this tall cannot afford a row each: the kind chips at
+        //      their natural width, the search box taking whatever is left.
         Item {
           width: parent.width
-          height: searchField.implicitHeight
+          height: Math.max(kindFilterGroup.implicitHeight, searchField.implicitHeight)
 
-          Text {
-            id: searchIcon
+          ButtonGroup {
+            id: kindFilterGroup
             anchors.left: parent.left
-            anchors.leftMargin: Style.space(2)
             anchors.verticalCenter: parent.verticalCenter
-            text: "󰍉"
-            color: Color.muted
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.bodySmall
+            options: root.kindOptions
+            value: root.kindFilter
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            fontSize: Style.font.caption
+            focusable: false
+            onChanged: function(value) { root.setKindFilter(value) }
           }
 
           TextField {
             id: searchField
-            anchors.left: searchIcon.right
-            anchors.leftMargin: Style.space(8)
-            anchors.right: clearSearchButton.left
-            anchors.rightMargin: Style.space(8)
+            anchors.left: kindFilterGroup.right
+            anchors.leftMargin: Style.space(10)
+            anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
+            anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
             anchors.verticalCenter: parent.verticalCenter
-            placeholderText: "Search by name…"
+            // The glyph rides in the placeholder rather than sitting in its
+            // own column, because every pixel on this row belongs to the two
+            // controls sharing it.
+            placeholderText: "󰍉  Search by name…"
             foreground: root.contentForeground
             font.family: root.contentFontFamily
-            font.pixelSize: Style.font.bodySmall
+            font.pixelSize: Style.font.caption
+            verticalPadding: Style.spacing.xs
 
             // Enter hands the list back the keyboard with the results in
             // place, so you can type a name and arrow straight into it.
@@ -504,21 +518,6 @@ Panel {
           }
         }
 
-        // ---- Kind filter. Chips come from the kinds actually installed, so
-        //      the row never offers a filter that would match nothing.
-        ButtonGroup {
-          id: kindFilterGroup
-          options: root.kindOptions
-          value: root.kindFilter
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          fontSize: Style.font.caption
-          focusable: false
-          onChanged: function(value) { root.setKindFilter(value) }
-        }
-
-        PanelSeparator { foreground: root.contentForeground }
-
         // ---- Status: the last thing that happened, good or bad. Only takes
         //      up room when there is something to say.
         Text {
@@ -534,114 +533,123 @@ Panel {
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
         }
+      }
 
-        // ---- The two lists, in one scroll region so the sections read as
-        //      parts of a single inventory rather than two separate panes.
-        Flickable {
-          id: listScroll
-          width: parent.width
-          height: Math.min(Style.space(440), Math.max(Style.space(60), listColumn.implicitHeight))
-          contentWidth: width
-          contentHeight: listColumn.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          interactive: contentHeight > height
+      // ---- Key hints, pinned to the bottom so the list above can never push
+      //      them off the card.
+      Text {
+        id: hints
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        text: "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   r refresh"
+        color: Color.muted
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignHCenter
+      }
 
-          Column {
-            id: listColumn
-            width: listScroll.width
-            spacing: Style.space(2)
+      // ---- The two lists, in one scroll region so the sections read as
+      //      parts of a single inventory rather than two separate panes.
+      //      Anchored between the chrome above and below: whatever height is
+      //      left over is exactly what it gets.
+      Flickable {
+        id: listScroll
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hints.top
+        anchors.bottomMargin: Style.space(10)
+        contentWidth: width
+        contentHeight: listColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height
 
-            Text {
-              width: parent.width
-              visible: root.visibleRows.length === 0 && root.rows.length > 0
-              text: Model.emptyMessage(root.kindFilter, root.searchQuery)
-              color: Color.muted
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              topPadding: Style.space(12)
-              bottomPadding: Style.space(12)
-              horizontalAlignment: Text.AlignHCenter
-            }
+        Column {
+          id: listColumn
+          width: listScroll.width
+          spacing: Style.space(2)
 
-            PanelSectionHeader {
-              visible: root.installedRows.length > 0
-              text: Model.sectionHeading(root.visibleRows, "installed")
+          Text {
+            width: parent.width
+            visible: root.visibleRows.length === 0 && root.rows.length > 0
+            text: Model.emptyMessage(root.kindFilter, root.searchQuery)
+            color: Color.muted
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            topPadding: Style.space(12)
+            bottomPadding: Style.space(12)
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          PanelSectionHeader {
+            visible: root.installedRows.length > 0
+            text: Model.sectionHeading(root.visibleRows, "installed")
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bottomPadding: Style.space(4)
+          }
+
+          Repeater {
+            model: root.installedRows
+
+            PluginRow {
+              required property int index
+              required property var modelData
+
+              width: listColumn.width
+              row: modelData
+              selected: root.selectedIndex === index
+              actionsEnabled: !root.busy
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
-              bottomPadding: Style.space(4)
-            }
 
-            Repeater {
-              model: root.installedRows
-
-              PluginRow {
-                required property int index
-                required property var modelData
-
-                width: listColumn.width
-                row: modelData
-                selected: root.selectedIndex === index
-                actionsEnabled: !root.busy
-                foreground: root.contentForeground
-                fontFamily: root.contentFontFamily
-
-                onSelectedChanged: if (selected) root.ensureVisible(this)
-                onClicked: root.selectedIndex = index
-                onUpdateRequested: {
-                  root.selectedIndex = index
-                  root.startUpdate(modelData)
-                }
-                onRemoveRequested: {
-                  root.selectedIndex = index
-                  root.askRemove(modelData)
-                }
+              onSelectedChanged: if (selected) root.ensureVisible(this)
+              onClicked: root.selectedIndex = index
+              onUpdateRequested: {
+                root.selectedIndex = index
+                root.startUpdate(modelData)
               }
-            }
-
-            PanelSectionHeader {
-              visible: root.builtinRows.length > 0
-              text: Model.sectionHeading(root.visibleRows, "built-in")
-              foreground: root.contentForeground
-              fontFamily: root.contentFontFamily
-              topPadding: Style.space(12)
-              bottomPadding: Style.space(4)
-            }
-
-            Repeater {
-              model: root.builtinRows
-
-              PluginRow {
-                required property int index
-                required property var modelData
-
-                // Built-ins follow the installed list in the same flat order,
-                // so their global index is offset by however many came first.
-                readonly property int globalIndex: root.installedRows.length + index
-
-                width: listColumn.width
-                row: modelData
-                selected: root.selectedIndex === globalIndex
-                actionsEnabled: !root.busy
-                foreground: root.contentForeground
-                fontFamily: root.contentFontFamily
-
-                onSelectedChanged: if (selected) root.ensureVisible(this)
-                onClicked: root.selectedIndex = globalIndex
+              onRemoveRequested: {
+                root.selectedIndex = index
+                root.askRemove(modelData)
               }
             }
           }
-        }
 
-        // ---- Key hints. The panel is keyboard-first like every other one;
-        //      saying so costs one line.
-        Text {
-          width: parent.width
-          text: "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   r refresh"
-          color: Color.muted
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-          horizontalAlignment: Text.AlignHCenter
+          PanelSectionHeader {
+            visible: root.builtinRows.length > 0
+            text: Model.sectionHeading(root.visibleRows, "built-in")
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            topPadding: Style.space(12)
+            bottomPadding: Style.space(4)
+          }
+
+          Repeater {
+            model: root.builtinRows
+
+            PluginRow {
+              required property int index
+              required property var modelData
+
+              // Built-ins follow the installed list in the same flat order,
+              // so their global index is offset by however many came first.
+              readonly property int globalIndex: root.installedRows.length + index
+
+              width: listColumn.width
+              row: modelData
+              selected: root.selectedIndex === globalIndex
+              actionsEnabled: !root.busy
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+
+              onSelectedChanged: if (selected) root.ensureVisible(this)
+              onClicked: root.selectedIndex = globalIndex
+            }
+          }
         }
       }
 

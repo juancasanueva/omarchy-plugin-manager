@@ -25,7 +25,7 @@ short, so rows keep a uniform height as you filter. A plugin whose author left
 the description out says so, which is how you tell an empty manifest field
 from a failed read.
 
-Two controls narrow both lists at once:
+Two controls share a row and narrow both lists at once:
 
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search

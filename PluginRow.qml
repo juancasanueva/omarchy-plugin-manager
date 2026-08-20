@@ -108,8 +108,12 @@ Rectangle {
       // and elides — the reserve is a floor, not a ceiling.
       height: Math.max(implicitHeight, root.descriptionHeight)
       text: Model.descriptionLine(root.row)
-      color: Color.muted
-      opacity: Model.hasDescription(root.row) ? 1 : 0.55
+      // The panel foreground, dimmed a little — not Color.muted. The id and
+      // kinds beside the name are glanceable metadata and can afford to
+      // recede; the description is the line you are actually here to read,
+      // and muted renders too close to the background on darker themes.
+      color: root.foreground
+      opacity: Model.hasDescription(root.row) ? 0.85 : 0.45
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       font.italic: !Model.hasDescription(root.row)
