@@ -63,6 +63,11 @@ Panel {
   readonly property var installedRows: Model.rowsInGroup(visibleRows, "installed")
   readonly property var builtinRows: Model.rowsInGroup(visibleRows, "built-in")
 
+  // Checked in the background after the rows are already on screen, so the
+  // panel never waits on the network to show you what you have installed.
+  property bool checkingUpdates: false
+  readonly property int behindCount: Model.countBehind(rows)
+
   readonly property int installedTotal: Model.countRemovable(rows)
   readonly property bool filtered: Model.isFiltering(kindFilter, searchQuery)
 
@@ -185,6 +190,27 @@ Panel {
     loadError = ""
     rows = Model.mergePlugins(listEntries, Model.parseArray(sections.catalog) || [], Model.parseGitMap(sections.git))
     clampSelection()
+    if (pendingUpdateReport !== "") applyUpdateReport(pendingUpdateReport)
+  }
+
+  // ---- Update checks ------------------------------------------------------
+
+  function checkUpdates() {
+    if (updateProc.running) return
+    checkingUpdates = true
+    updateProc.running = true
+  }
+
+  // Held so a report that lands while the rows are being rebuilt is not lost;
+  // a reload after an install would otherwise wipe every badge until the next
+  // check.
+  property string pendingUpdateReport: ""
+
+  function applyUpdateReport(raw) {
+    checkingUpdates = false
+    pendingUpdateReport = raw
+    if (rows.length === 0) return
+    rows = Model.applyUpdateReport(rows, Model.parseUpdateReport(raw))
   }
 
   // ---- Filtering ----------------------------------------------------------
@@ -358,6 +384,7 @@ Panel {
     if (!opened) return
     setStatus("", false)
     reload()
+    checkUpdates()
   }
 
   // ---- Processes ----------------------------------------------------------
@@ -409,6 +436,40 @@ Panel {
     + "  rm -f \"$tmp\"; "
     + "  if [ -s \"$file\" ]; then cat \"$file\"; else exit 1; fi; "
     + "fi"
+
+  // No fetch and no clone: ls-remote asks the remote for one sha and downloads
+  // nothing, so eleven checkouts resolve in about a second. The manifest is
+  // read only for the ones actually behind, pinned to the exact remote commit.
+  readonly property string updateScript: ""
+    + "set -u; export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true; "
+    + "for dir in \"$HOME\"/.config/omarchy/plugins/*/; do "
+    + "  [ -d \"$dir/.git\" ] || continue; "
+    + "  ( path=\"${dir%/}\"; "
+    + "    branch=$(git -C \"$path\" rev-parse --abbrev-ref HEAD 2>/dev/null); "
+    + "    local_sha=$(git -C \"$path\" rev-parse HEAD 2>/dev/null); "
+    + "    remote_sha=$(timeout 12 git -C \"$path\" ls-remote origin \"refs/heads/$branch\" 2>/dev/null | cut -f1); "
+    + "    local_version=$(jq -r '.version // \"\"' \"$path/manifest.json\" 2>/dev/null); "
+    + "    remote_version=\"\"; "
+    + "    if [ -n \"$remote_sha\" ] && [ \"$remote_sha\" != \"$local_sha\" ]; then "
+    + "      origin=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
+    + "      case \"$origin\" in https://github.com/*) "
+    + "        slug=${origin#https://github.com/}; slug=${slug%.git}; "
+    + "        remote_version=$(curl -fsSL --max-time 8 \"https://raw.githubusercontent.com/$slug/$remote_sha/manifest.json\" 2>/dev/null | jq -r '.version // \"\"' 2>/dev/null); "
+    + "      ;; esac; "
+    + "    fi; "
+    + "    printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$path\" \"$local_sha\" \"$remote_sha\" \"$local_version\" \"$remote_version\"; "
+    + "  ) & "
+    + "done; wait"
+
+  Process {
+    id: updateProc
+    command: ["bash", "-c", root.updateScript]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyUpdateReport(text)
+    }
+    onExited: function(exitCode) { root.checkingUpdates = false }
+  }
 
   Process {
     id: catalogProc
@@ -541,7 +602,9 @@ Panel {
               }
               if (root.loading && root.rows.length === 0) return "reading…"
               if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
-              return root.installedTotal + " installed  ·  " + root.rows.length + " total"
+              var summary = root.installedTotal + " installed  ·  " + root.rows.length + " total"
+              if (root.behindCount > 0) return summary + "  ·  " + root.behindCount + " to update"
+              return summary
             }
             color: Color.muted
             font.family: root.contentFontFamily
@@ -574,7 +637,11 @@ Panel {
             opacity: enabled ? 1 : 0.4
             // Forced past the cache: the refresh button exists precisely for
             // when you believe what is on screen is out of date.
-            onClicked: root.browsing ? root.loadCatalog(true) : root.reload()
+            onClicked: {
+              if (root.browsing) { root.loadCatalog(true); return }
+              root.reload()
+              root.checkUpdates()
+            }
           }
         }
 

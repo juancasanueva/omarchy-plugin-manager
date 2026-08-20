@@ -612,3 +612,83 @@ function previewCandidates(entry, allowWebp) {
   if (allowWebp && entry.thumbnail) out.push(entry.thumbnail)
   return out
 }
+
+// ---- Update checks ---------------------------------------------------------
+//
+// Whether a plugin has an update is decided by commits, not by version
+// strings. Authors do not reliably bump the manifest on every change — two of
+// the checkouts this was built against were genuinely behind while reporting
+// the same version at both ends — so a version comparison would have shown
+// nothing for a real update. The local and remote HEAD are the truth; the
+// version pair is shown alongside only when it actually says something.
+
+// "<dir>\t<localSha>\t<remoteSha>\t<localVersion>\t<remoteVersion>" per line.
+function parseUpdateReport(raw) {
+  var map = {}
+  var lines = String(raw || "").split("\n")
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\r$/, "")
+    if (line === "") continue
+
+    var parts = line.split("\t")
+    if (parts.length < 3 || parts[0] === "") continue
+
+    map[parts[0]] = {
+      localSha: parts[1] || "",
+      remoteSha: parts[2] || "",
+      localVersion: parts[3] || "",
+      remoteVersion: parts[4] || ""
+    }
+  }
+  return map
+}
+
+// An unreachable remote reports an empty sha. That is "we could not tell",
+// which must not render as "up to date" — being quietly told nothing is how a
+// stale plugin sits there for months looking current.
+function applyUpdateReport(rows, report) {
+  var byDir = report || {}
+  var out = []
+
+  for (var i = 0; i < (rows || []).length; i++) {
+    var row = rows[i]
+    var info = byDir[row.sourceDir]
+    var copy = {}
+    for (var key in row) copy[key] = row[key]
+
+    copy.localVersion = info ? info.localVersion : ""
+    copy.remoteVersion = info ? info.remoteVersion : ""
+    copy.updateChecked = !!info && info.remoteSha !== "" && info.localSha !== ""
+    copy.behind = copy.updateChecked && info.localSha !== info.remoteSha
+    // Only when both ends name a version and they disagree. Equal versions
+    // across a real update is the common case, not an error.
+    copy.versionChanged = copy.behind
+      && copy.localVersion !== ""
+      && copy.remoteVersion !== ""
+      && copy.localVersion !== copy.remoteVersion
+
+    out.push(copy)
+  }
+  return out
+}
+
+// What the row's badge should say. The version arrow when the numbers differ,
+// otherwise a plain word, because "1.0.0 → 1.0.0" reads as a bug.
+function updateBadge(row) {
+  if (!row || !row.behind) return ""
+  if (row.versionChanged) return row.localVersion + " → " + row.remoteVersion
+  return "update"
+}
+
+function versionLabel(row) {
+  if (!row) return ""
+  var version = String(row.localVersion || "").trim()
+  return version === "" ? "" : "v" + version
+}
+
+function countBehind(rows) {
+  var total = 0
+  for (var i = 0; i < (rows || []).length; i++) if (rows[i].behind) total++
+  return total
+}

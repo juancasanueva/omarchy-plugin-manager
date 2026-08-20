@@ -46,6 +46,26 @@ Two controls share a row and narrow both lists at once:
 When nothing matches, the message names whichever control excluded everything
 — a stale search term sitting behind a kind chip is easy to forget about.
 
+### Knowing what needs updating
+
+Every row shows its installed version, and rows with an update carry an accent
+badge — `1.0.0 → 1.2.0` when the versions differ, or just `update` when they
+do not. The header counts them, so you know before scrolling.
+
+**The signal is commits, not version strings.** Authors do not reliably bump
+`manifest.json`: of the two checkouts that were genuinely behind when this was
+built, both reported the *same* version at each end. A version comparison would
+have shown nothing for either. The catalog is no better — it publishes the
+version at the commit the registry last validated, which can lag a repository
+by several releases.
+
+So the check compares your checkout's `HEAD` against the remote's, using
+`git ls-remote`: one sha per repository, nothing downloaded, about a second for
+a dozen plugins. It runs in the background *after* the rows are on screen, so
+the panel never waits on the network to show you what you already have. A
+remote it cannot reach is reported as unknown rather than as up to date —
+being quietly told nothing is how a stale plugin sits there looking current.
+
 ### The three actions
 
 - **Add** — paste a git repository url; runs

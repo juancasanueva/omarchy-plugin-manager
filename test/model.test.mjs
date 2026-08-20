@@ -17,6 +17,7 @@ const Model = new Function(
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor,
     repoShortLabel, browsableUrl, repoPreviewUrl, previewCandidates,
+    parseUpdateReport, applyUpdateReport, updateBadge, versionLabel, countBehind,
     metaLine, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
@@ -480,4 +481,82 @@ test("previewCandidates tries the repo png before the registry webp", () => {
   assert.deepEqual(Model.previewCandidates(entry, false), ["https://raw.example/preview.png"])
   assert.deepEqual(Model.previewCandidates({ repoPreview: "", thumbnail: "" }, true), [])
   assert.deepEqual(Model.previewCandidates(null, true), [])
+})
+
+// ---- Update checks ---------------------------------------------------------
+
+const baseRows = [
+  { id: "a.behind", sourceDir: "/plugins/a", name: "Behind" },
+  { id: "b.current", sourceDir: "/plugins/b", name: "Current" },
+  { id: "c.unreachable", sourceDir: "/plugins/c", name: "Unreachable" },
+  { id: "d.notgit", sourceDir: "/plugins/d", name: "Not git" }
+]
+
+const report = Model.parseUpdateReport([
+  "/plugins/a\tlocalsha\tremotesha\t1.0.0\t1.2.0",
+  "/plugins/b\tsamesha\tsamesha\t2.0.0\t",
+  "/plugins/c\tlocalsha\t\t3.0.0\t"     // remote unreachable: empty sha
+].join("\n"))
+
+test("parseUpdateReport keys on the plugin directory", () => {
+  assert.deepEqual(Object.keys(report).sort(), ["/plugins/a", "/plugins/b", "/plugins/c"])
+  assert.equal(report["/plugins/a"].remoteVersion, "1.2.0")
+})
+
+test("parseUpdateReport skips malformed lines instead of inventing entries", () => {
+  const parsed = Model.parseUpdateReport("\nno-tabs-here\n\t\t\n/plugins/x\tl\tr\n")
+  assert.deepEqual(Object.keys(parsed), ["/plugins/x"])
+})
+
+test("a differing remote head marks the row behind", () => {
+  const rows = Model.applyUpdateReport(baseRows, report)
+  const behind = rows.find(r => r.id === "a.behind")
+  assert.equal(behind.behind, true)
+  assert.equal(behind.updateChecked, true)
+  assert.equal(behind.versionChanged, true)
+})
+
+test("a matching head is up to date, not behind", () => {
+  const rows = Model.applyUpdateReport(baseRows, report)
+  const current = rows.find(r => r.id === "b.current")
+  assert.equal(current.behind, false)
+  assert.equal(current.updateChecked, true)
+})
+
+test("an unreachable remote is 'not known', never 'up to date'", () => {
+  // Being quietly told nothing is how a stale plugin sits there looking current.
+  const rows = Model.applyUpdateReport(baseRows, report)
+  const unknown = rows.find(r => r.id === "c.unreachable")
+  assert.equal(unknown.updateChecked, false)
+  assert.equal(unknown.behind, false)
+
+  const missing = rows.find(r => r.id === "d.notgit")
+  assert.equal(missing.updateChecked, false)
+  assert.equal(missing.behind, false)
+})
+
+test("applyUpdateReport does not mutate the rows it was given", () => {
+  const rows = Model.applyUpdateReport(baseRows, report)
+  assert.equal(rows[0].behind, true)
+  assert.equal(baseRows[0].behind, undefined)
+})
+
+test("the badge only shows an arrow when the versions actually differ", () => {
+  // Authors do not reliably bump the manifest, so equal versions across a real
+  // update is the common case — "1.0.0 → 1.0.0" would read as a bug.
+  assert.equal(Model.updateBadge({ behind: true, versionChanged: true, localVersion: "1.0.0", remoteVersion: "1.2.0" }), "1.0.0 → 1.2.0")
+  assert.equal(Model.updateBadge({ behind: true, versionChanged: false, localVersion: "1.0.0", remoteVersion: "1.0.0" }), "update")
+  assert.equal(Model.updateBadge({ behind: false }), "")
+  assert.equal(Model.updateBadge(null), "")
+})
+
+test("versionLabel stays silent when no version is known", () => {
+  assert.equal(Model.versionLabel({ localVersion: "1.2.3" }), "v1.2.3")
+  assert.equal(Model.versionLabel({ localVersion: "  " }), "")
+  assert.equal(Model.versionLabel({}), "")
+})
+
+test("countBehind counts only rows a check actually found behind", () => {
+  assert.equal(Model.countBehind(Model.applyUpdateReport(baseRows, report)), 1)
+  assert.equal(Model.countBehind([]), 0)
 })

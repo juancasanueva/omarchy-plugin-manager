@@ -27,6 +27,7 @@ Rectangle {
   signal removeRequested()
 
   readonly property string badge: Model.sourceBadge(row)
+  readonly property bool hasUpdate: row ? row.behind === true : false
 
   // Two lines of description, always — reserved even when the text is short.
   // Descriptions run long enough that one elided line usually cuts off before
@@ -93,7 +94,11 @@ Rectangle {
       }
 
       Text {
-        text: Model.metaLine(root.row)
+        text: {
+          var meta = Model.metaLine(root.row)
+          var version = Model.versionLabel(root.row)
+          return version === "" ? meta : meta + "  ·  " + version
+        }
         color: Color.muted
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -133,9 +138,11 @@ Rectangle {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(4)
 
+    // Where the plugin came from, unless it has an update — then the update
+    // takes the space, because it is the thing worth acting on.
     Text {
       anchors.verticalCenter: parent.verticalCenter
-      visible: root.badge !== ""
+      visible: root.badge !== "" && !root.hasUpdate
       text: root.badge
       color: Color.muted
       font.family: root.fontFamily
@@ -143,12 +150,41 @@ Rectangle {
       rightPadding: Style.space(6)
     }
 
+    Rectangle {
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.hasUpdate
+      width: updateBadge.implicitWidth + Style.space(12)
+      height: updateBadge.implicitHeight + Style.space(4)
+      radius: height / 2
+      color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+
+      Text {
+        id: updateBadge
+        anchors.centerIn: parent
+        text: "󰚰 " + Model.updateBadge(root.row)
+        color: Color.accent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    Item {
+      visible: root.hasUpdate
+      width: Style.space(6)
+      height: 1
+    }
+
     PanelActionButton {
       anchors.verticalCenter: parent.verticalCenter
       visible: root.row ? root.row.updatable === true : false
       iconText: "󰑐"
-      tooltipText: root.row && root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
-      foreground: root.foreground
+      tooltipText: {
+        if (!root.row) return "Update this checkout"
+        if (root.hasUpdate) return "Update available — pull from " + root.row.remote
+        if (root.row.updateChecked === true) return "Up to date with " + root.row.remote
+        return root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
+      }
+      foreground: root.hasUpdate ? Color.accent : root.foreground
       fontFamily: root.fontFamily
       enabled: root.actionsEnabled
       opacity: enabled ? 1 : 0.4
