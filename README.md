@@ -5,6 +5,10 @@ you add, update, and remove them without leaving the bar.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
+![The plugin manager panel: a repository url field, kind filter chips beside a
+search box, and the installed plugins listed with their descriptions, each row
+carrying an update and a remove button](preview.png)
+
 ## What it does
 
 Click the puzzle icon in the bar and you get your plugins in two lists:
