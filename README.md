@@ -7,19 +7,34 @@ you add, update, and remove them without leaving the bar.
 
 ## What it does
 
-Click the puzzle icon in the bar and you get one list:
+Click the puzzle icon in the bar and you get your plugins in two lists:
 
-- **Every discovered plugin**, first-party and third-party, with its enabled
-  state, id, and kinds.
-- **Add** — paste a git repository url and it runs
+- **Installed** — everything under `~/.config/omarchy/plugins`, with an update
+  and a remove button on every row.
+- **Built-in** — everything shipped under `/usr/share/omarchy`. No buttons:
+  these are not ours to pull or delete.
+
+The split is not cosmetic. In one mixed list, most rows carry controls that do
+nothing, and you have to work out which from a badge. Two sections make the
+available actions constant within each one.
+
+Every row shows **what the plugin actually does** — the description from its
+manifest — not just its id. A plugin whose author left the description out
+says so, so you can tell an empty manifest field from a failed read.
+
+A **kind filter** across the top narrows both lists at once: widget, panel,
+overlay, menu, service, bar. The chips are built from the kinds actually
+installed, so the row never offers a filter that would match nothing.
+
+### The three actions
+
+- **Add** — paste a git repository url; runs
   `omarchy plugin add <url> --enable --yes` behind a confirmation.
-- **Update** — for any plugin that is a git checkout, runs
-  `omarchy plugin update <id> --yes`.
+- **Update** — for a plugin that is a git checkout with an origin remote, runs
+  `omarchy plugin update <id> --yes`. A checkout with no origin has nothing to
+  fast-forward from, so it gets no button rather than one that can only fail.
 - **Remove** — for anything under `~/.config/omarchy/plugins`, runs
   `omarchy plugin remove <id> --yes` behind a confirmation.
-
-Built-in plugins under `/usr/share/omarchy` show as `built-in` and have no
-update or remove button — they are not ours to touch.
 
 ## Why it confirms
 
@@ -37,10 +52,11 @@ url cannot become a command. Urls are also validated against `https://`,
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `k` `j` | Move the selection |
+| `↑` `↓` / `k` `j` | Move the selection, across both sections |
 | `Enter` | Update the selected plugin |
 | `Delete` | Remove the selected plugin |
 | `a` | Focus the repository url field |
+| `f` | Cycle the kind filter |
 | `r` | Re-read the plugin list |
 | `Esc` | Close the panel |
 
@@ -76,8 +92,9 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 |------|------|
 | `manifest.json` | Plugin contract — id, kind, entry point |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
-| `Panel.qml` | The list, the actions, and the confirmations |
-| `Model.js` | Pure parsing and merging of the CLI output |
+| `Panel.qml` | The two lists, the filter, the actions, and the confirmations |
+| `PluginRow.qml` | One row: name, id, kinds, description, and its two buttons |
+| `Model.js` | Pure parsing, merging, grouping, and filtering of the CLI output |
 
 ## License
 

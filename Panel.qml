@@ -4,13 +4,19 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The plugin manager's popup: every plugin the shell discovered, in one
-// list, with the three lifecycle actions the CLI already exposes — add a
-// repo, update a checkout, remove an install.
+// The plugin manager's popup: every plugin the shell discovered, split into
+// what you installed and what ships with Omarchy, with the three lifecycle
+// actions the CLI already exposes — add a repo, update a checkout, remove an
+// install.
+//
+// The split is not cosmetic. Built-ins live in /usr/share and can be neither
+// pulled nor deleted, so mixing them into one list means half the rows carry
+// controls that do nothing. Two sections make the available actions constant
+// within each one.
 //
 // The list is read from `omarchy plugin list` and `omarchy plugin catalog`
-// rather than from shell.json, so it shows what the shell actually found,
-// not what the config claims. Actions shell out to the same `omarchy plugin`
+// rather than from shell.json, so it shows what the shell actually found, not
+// what the config claims. Actions shell out to the same `omarchy plugin`
 // commands a terminal would run; nothing here touches the plugin directory
 // itself. Every command runs as an argv array, never through a shell, so a
 // repository url can never become a command.
@@ -47,9 +53,20 @@ Panel {
   property string loadError: ""
   property int selectedIndex: -1
 
-  readonly property int pluginCount: rows.length
-  readonly property int installedCount: Model.countRemovable(rows)
-  readonly property var selectedRow: selectedIndex >= 0 && selectedIndex < rows.length ? rows[selectedIndex] : null
+  property string kindFilter: "all"
+  readonly property var kindOptions: Model.kindOptions(rows)
+
+  // One flat filtered list drives selection; the two section slices below are
+  // views onto it, in the same order, so a single index addresses both.
+  readonly property var visibleRows: Model.filterByKind(rows, kindFilter)
+  readonly property var installedRows: Model.rowsInGroup(visibleRows, "installed")
+  readonly property var builtinRows: Model.rowsInGroup(visibleRows, "built-in")
+
+  readonly property int installedTotal: Model.countRemovable(rows)
+  readonly property bool filtered: kindFilter !== "all"
+  readonly property var selectedRow: selectedIndex >= 0 && selectedIndex < visibleRows.length
+    ? visibleRows[selectedIndex]
+    : null
 
   // ---- In-flight action ---------------------------------------------------
 
@@ -107,7 +124,27 @@ Panel {
 
     loadError = ""
     rows = Model.mergePlugins(listEntries, Model.parseArray(sections.catalog) || [], Model.parseGitMap(sections.git))
-    if (selectedIndex >= rows.length) selectedIndex = rows.length - 1
+    clampSelection()
+  }
+
+  // ---- Filtering ----------------------------------------------------------
+
+  function setKindFilter(kind) {
+    if (kindFilter === kind) return
+    kindFilter = kind
+    // The old index pointed into a different list. Dropping it beats silently
+    // moving the selection to an unrelated plugin, which is how a Delete
+    // lands on the wrong thing.
+    selectedIndex = -1
+    listScroll.contentY = 0
+  }
+
+  function cycleKindFilter() {
+    setKindFilter(Model.nextKind(kindOptions, kindFilter))
+  }
+
+  function clampSelection() {
+    if (selectedIndex >= visibleRows.length) selectedIndex = visibleRows.length - 1
   }
 
   // ---- Actions ------------------------------------------------------------
@@ -170,10 +207,20 @@ Panel {
   // ---- Keyboard -----------------------------------------------------------
 
   function moveSelection(delta) {
-    if (rows.length === 0) return
+    if (visibleRows.length === 0) return
     var next = selectedIndex < 0 ? 0 : selectedIndex + delta
-    selectedIndex = Math.max(0, Math.min(rows.length - 1, next))
-    pluginList.positionViewAtIndex(selectedIndex, ListView.Contain)
+    selectedIndex = Math.max(0, Math.min(visibleRows.length - 1, next))
+  }
+
+  // Called by whichever row just became selected. Asking the item where it
+  // ended up beats computing its offset from row heights and header heights,
+  // which silently goes wrong the moment either changes.
+  function ensureVisible(item) {
+    if (!item) return
+    var top = item.mapToItem(listColumn, 0, 0).y
+    var bottom = top + item.height
+    if (top < listScroll.contentY) listScroll.contentY = top
+    else if (bottom > listScroll.contentY + listScroll.height) listScroll.contentY = bottom - listScroll.height
   }
 
   function focusUrlField() {
@@ -263,7 +310,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentWidth: panel.fittedContentWidth(Style.space(620))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
@@ -279,6 +326,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.reload()
         else if (t === "a" || t === "A") root.focusUrlField()
+        else if (t === "f" || t === "F") root.cycleKindFilter()
         else if (t === "j") root.moveSelection(1)
         else if (t === "k") root.moveSelection(-1)
       }
@@ -313,9 +361,11 @@ Panel {
             anchors.left: title.right
             anchors.leftMargin: Style.space(10)
             anchors.baseline: title.baseline
-            text: root.loading && root.rows.length === 0
-              ? "reading…"
-              : root.installedCount + " installed  ·  " + root.pluginCount + " total"
+            text: {
+              if (root.loading && root.rows.length === 0) return "reading…"
+              if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
+              return root.installedTotal + " installed  ·  " + root.rows.length + " total"
+            }
             color: Color.muted
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -364,7 +414,7 @@ Panel {
             id: addButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: root.busyKind === "add" ? "󰑐" : "󰐕"
+            iconText: root.busyKind === "add" ? "󰇘" : "󰐕"
             tooltipText: "Clone and enable this repository"
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
@@ -373,6 +423,19 @@ Panel {
             opacity: enabled ? 1 : 0.4
             onClicked: root.askAdd()
           }
+        }
+
+        // ---- Kind filter. Chips come from the kinds actually installed, so
+        //      the row never offers a filter that would match nothing.
+        ButtonGroup {
+          id: kindFilterGroup
+          options: root.kindOptions
+          value: root.kindFilter
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          fontSize: Style.font.caption
+          focusable: false
+          onChanged: function(value) { root.setKindFilter(value) }
         }
 
         PanelSeparator { foreground: root.contentForeground }
@@ -393,131 +456,99 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
-        // ---- The list.
-        ListView {
-          id: pluginList
+        // ---- The two lists, in one scroll region so the sections read as
+        //      parts of a single inventory rather than two separate panes.
+        Flickable {
+          id: listScroll
           width: parent.width
-          // Derived from the row count rather than from contentHeight: a
-          // ListView whose height reads its own content height is one
-          // delegate resize away from a binding loop.
-          height: Math.min(Style.space(360), Math.max(Style.space(48), root.rows.length * (Style.space(44) + Style.space(2))))
-          model: root.rows
+          height: Math.min(Style.space(400), Math.max(Style.space(48), listColumn.implicitHeight))
+          contentWidth: width
+          contentHeight: listColumn.implicitHeight
           clip: true
           boundsBehavior: Flickable.StopAtBounds
-          spacing: Style.space(2)
+          interactive: contentHeight > height
 
-          delegate: Rectangle {
-            id: row
+          Column {
+            id: listColumn
+            width: listScroll.width
+            spacing: Style.space(2)
 
-            required property int index
-            required property var modelData
-
-            readonly property bool selected: root.selectedIndex === index
-            readonly property bool rowBusy: root.busy && root.busyId === modelData.name
-
-            width: pluginList.width
-            height: Style.space(44)
-            radius: Style.cornerRadius
-            color: selected ? Style.selectedFill : (rowMouse.containsMouse ? Style.hoverFill : "transparent")
-
-            MouseArea {
-              id: rowMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              onClicked: root.selectedIndex = row.index
+            Text {
+              width: parent.width
+              visible: root.visibleRows.length === 0 && root.rows.length > 0
+              text: "No " + Model.kindLabel(root.kindFilter).toLowerCase() + " plugins installed."
+              color: Color.muted
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              topPadding: Style.space(12)
+              bottomPadding: Style.space(12)
+              horizontalAlignment: Text.AlignHCenter
             }
 
-            // Enabled marker. A plugin the shell discovered but is not
-            // running looks different from one that is; the dot is the whole
-            // difference, so it sits first.
-            Rectangle {
-              id: stateDot
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(10)
-              anchors.verticalCenter: parent.verticalCenter
-              width: Style.space(6)
-              height: width
-              radius: width / 2
-              color: row.modelData.enabled ? Color.accent : Color.muted
-              opacity: row.modelData.enabled ? 1 : 0.5
+            PanelSectionHeader {
+              visible: root.installedRows.length > 0
+              text: Model.sectionHeading(root.visibleRows, "installed")
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              bottomPadding: Style.space(4)
             }
 
-            Column {
-              anchors.left: stateDot.right
-              anchors.leftMargin: Style.space(10)
-              anchors.right: actions.left
-              anchors.rightMargin: Style.space(10)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
+            Repeater {
+              model: root.installedRows
 
-              Text {
-                width: parent.width
-                text: row.modelData.name
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
-              }
+              PluginRow {
+                required property int index
+                required property var modelData
 
-              Text {
-                width: parent.width
-                text: Model.subtitle(row.modelData)
-                color: Color.muted
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-            }
-
-            Row {
-              id: actions
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(8)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(4)
-
-              // Built-in versus installed. Which one a plugin is decides
-              // whether the two buttons beside it do anything, so it is
-              // worth stating rather than leaving to be inferred from
-              // greyed-out icons.
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: row.modelData.firstParty ? "built-in" : (row.modelData.gitManaged ? "git" : "local")
-                color: Color.muted
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                rightPadding: Style.space(6)
-              }
-
-              PanelActionButton {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: row.modelData.updatable
-                iconText: row.rowBusy && root.busyKind === "update" ? "󰇘" : "󰑐"
-                tooltipText: row.modelData.remote !== "" ? "Update from " + row.modelData.remote : "Update this checkout"
+                width: listColumn.width
+                row: modelData
+                selected: root.selectedIndex === index
+                actionsEnabled: !root.busy
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                enabled: !root.busy
-                opacity: enabled ? 1 : 0.4
-                onClicked: {
-                  root.selectedIndex = row.index
-                  root.startUpdate(row.modelData)
+
+                onSelectedChanged: if (selected) root.ensureVisible(this)
+                onClicked: root.selectedIndex = index
+                onUpdateRequested: {
+                  root.selectedIndex = index
+                  root.startUpdate(modelData)
+                }
+                onRemoveRequested: {
+                  root.selectedIndex = index
+                  root.askRemove(modelData)
                 }
               }
+            }
 
-              PanelActionButton {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: row.modelData.removable
-                iconText: "󰩹"
-                tooltipText: "Remove this plugin"
+            PanelSectionHeader {
+              visible: root.builtinRows.length > 0
+              text: Model.sectionHeading(root.visibleRows, "built-in")
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              topPadding: Style.space(12)
+              bottomPadding: Style.space(4)
+            }
+
+            Repeater {
+              model: root.builtinRows
+
+              PluginRow {
+                required property int index
+                required property var modelData
+
+                // Built-ins follow the installed list in the same flat order,
+                // so their global index is offset by however many came first.
+                readonly property int globalIndex: root.installedRows.length + index
+
+                width: listColumn.width
+                row: modelData
+                selected: root.selectedIndex === globalIndex
+                actionsEnabled: !root.busy
                 foreground: root.contentForeground
-                hoverColor: Color.urgent
                 fontFamily: root.contentFontFamily
-                enabled: !root.busy
-                opacity: enabled ? 1 : 0.4
-                onClicked: {
-                  root.selectedIndex = row.index
-                  root.askRemove(row.modelData)
-                }
+
+                onSelectedChanged: if (selected) root.ensureVisible(this)
+                onClicked: root.selectedIndex = globalIndex
               }
             }
           }
@@ -527,7 +558,7 @@ Panel {
         //      saying so costs one line.
         Text {
           width: parent.width
-          text: "↑↓ select   ⏎ update   ⌦ remove   a add   r refresh"
+          text: "↑↓ select   ⏎ update   ⌦ remove   a add   f filter   r refresh"
           color: Color.muted
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption

@@ -10,7 +10,10 @@ const Model = new Function(
   source + `
   return {
     splitSections, parseArray, parseGitMap, mergePlugins, countRemovable,
-    subtitle, normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
+    rowsInGroup, groupLabel, sectionHeading,
+    kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
+    metaLine, descriptionLine, hasDescription, sourceBadge,
+    normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage
   }`
 )()
@@ -136,9 +139,85 @@ test("repoLabel names the repository, not the whole url", () => {
   assert.equal(Model.repoLabel("nonsense"), "nonsense")
 })
 
-test("subtitle says so when a plugin declares no kind", () => {
-  assert.equal(Model.subtitle({ id: "a.b", kinds: [] }), "a.b  ·  no kind")
-  assert.equal(Model.subtitle({ id: "a.b", kinds: ["bar-widget", "service"] }), "a.b  ·  bar-widget, service")
+test("mergePlugins tags each row with the section it belongs to", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  assert.equal(rows.find(r => r.id === "omarchy.clock").group, "built-in")
+  assert.equal(rows.find(r => r.id === "acme.weather").group, "installed")
+})
+
+test("rowsInGroup slices the flat list without reordering it", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  const installed = Model.rowsInGroup(rows, "installed")
+  const builtin = Model.rowsInGroup(rows, "built-in")
+
+  assert.deepEqual(installed.map(r => r.id), ["acme.dev", "acme.weather"])
+  assert.deepEqual(builtin.map(r => r.id), ["omarchy.clock"])
+
+  // The two slices must rejoin into the original order, because one flat
+  // selection index addresses both sections.
+  assert.deepEqual([...installed, ...builtin].map(r => r.id), rows.map(r => r.id))
+})
+
+test("sectionHeading counts what is actually on screen", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  assert.equal(Model.sectionHeading(rows, "installed"), "INSTALLED  ·  2")
+  assert.equal(Model.sectionHeading(rows, "built-in"), "BUILT-IN  ·  1")
+  assert.equal(Model.sectionHeading(Model.filterByKind(rows, "service"), "installed"), "INSTALLED  ·  1")
+})
+
+test("kindOptions is derived from installed plugins, not a fixed list", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  assert.deepEqual(Model.kindOptions(rows), [
+    { value: "all", label: "All" },
+    { value: "bar-widget", label: "Widget" },
+    { value: "service", label: "Service" }
+  ])
+})
+
+test("kindOptions gives an unknown kind a chip rather than hiding it", () => {
+  const rows = Model.mergePlugins(
+    [{ id: "a.b", name: "B", kinds: ["hologram"], firstParty: false }], [], {})
+  assert.deepEqual(Model.kindOptions(rows).map(o => o.value), ["all", "hologram"])
+  assert.equal(Model.kindLabel("hologram"), "hologram")
+})
+
+test("filterByKind keeps plugins that declare the kind among several", () => {
+  const rows = Model.mergePlugins(
+    [{ id: "a.b", name: "B", kinds: ["service", "bar-widget"], firstParty: false }], [], {})
+  assert.equal(Model.filterByKind(rows, "service").length, 1)
+  assert.equal(Model.filterByKind(rows, "bar-widget").length, 1)
+  assert.equal(Model.filterByKind(rows, "panel").length, 0)
+  assert.equal(Model.filterByKind(rows, "all").length, 1)
+  assert.equal(Model.filterByKind(rows, "").length, 1)
+})
+
+test("nextKind wraps so the cycle key never dead-ends", () => {
+  const options = [{ value: "all" }, { value: "bar-widget" }, { value: "service" }]
+  assert.equal(Model.nextKind(options, "all"), "bar-widget")
+  assert.equal(Model.nextKind(options, "service"), "all")
+  assert.equal(Model.nextKind(options, "gone"), "all")
+  assert.equal(Model.nextKind([], "all"), "all")
+})
+
+test("metaLine pairs the id with readable kind labels", () => {
+  assert.equal(Model.metaLine({ id: "a.b", kinds: [] }), "a.b  ·  no kind")
+  assert.equal(Model.metaLine({ id: "a.b", kinds: ["bar-widget", "service"] }), "a.b  ·  Widget · Service")
+})
+
+test("descriptionLine says a missing description is the manifest's doing", () => {
+  assert.equal(Model.descriptionLine({ description: "Does a thing" }), "Does a thing")
+  assert.match(Model.descriptionLine({ description: "   " }), /manifest/)
+  assert.match(Model.descriptionLine({}), /manifest/)
+  assert.equal(Model.hasDescription({ description: "Does a thing" }), true)
+  assert.equal(Model.hasDescription({ description: "  " }), false)
+})
+
+test("sourceBadge stays silent for built-ins, whose section already said it", () => {
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  assert.equal(Model.sourceBadge(rows.find(r => r.id === "omarchy.clock")), "")
+  assert.equal(Model.sourceBadge(rows.find(r => r.id === "acme.weather")), "git")
+  assert.equal(Model.sourceBadge(rows.find(r => r.id === "acme.dev")), "git")
+  assert.equal(Model.sourceBadge({ firstParty: false, gitManaged: false }), "local")
 })
 
 test("lastLine picks the last thing stderr actually said", () => {

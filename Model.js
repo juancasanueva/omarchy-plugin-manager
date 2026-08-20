@@ -10,6 +10,15 @@ var SECTION_LIST = "===list==="
 var SECTION_CATALOG = "===catalog==="
 var SECTION_GIT = "===git==="
 
+// The two lists the panel draws. What you installed is what you can act on;
+// the built-ins are the backdrop. Splitting them means the buttons in a
+// section are the same buttons all the way down, instead of half the rows
+// having greyed-out controls for reasons you have to infer.
+var GROUP_INSTALLED = "installed"
+var GROUP_BUILT_IN = "built-in"
+
+var ALL_KINDS = "all"
+
 // The loader emits three fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
 function splitSections(raw) {
@@ -98,6 +107,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap) {
       kinds: toStringList(item.kinds && item.kinds.length ? item.kinds : meta.kinds),
       enabled: item.enabled === true,
       firstParty: firstParty,
+      group: firstParty ? GROUP_BUILT_IN : GROUP_INSTALLED,
       clonedFrom: String(item.clonedFrom || ""),
       sourceDir: sourceDir,
       remote: gitManaged ? String(git[sourceDir]) : "",
@@ -133,10 +143,109 @@ function countRemovable(rows) {
   return total
 }
 
-function subtitle(row) {
+// ---- Grouping -------------------------------------------------------------
+
+// mergePlugins already sorts installed ahead of built-in, so each group is a
+// contiguous run and these two slices reassemble into the original order —
+// which is what lets one flat selection index address both lists.
+function rowsInGroup(rows, group) {
+  var out = []
+  for (var i = 0; i < (rows || []).length; i++) if (rows[i].group === group) out.push(rows[i])
+  return out
+}
+
+function groupLabel(group) {
+  return group === GROUP_BUILT_IN ? "Built-in" : "Installed"
+}
+
+function sectionHeading(rows, group) {
+  var count = rowsInGroup(rows, group).length
+  return groupLabel(group).toUpperCase() + "  ·  " + count
+}
+
+// ---- Kinds ----------------------------------------------------------------
+
+// Short chip labels. "bar-widget" is the id the manifest uses, but a row of
+// full kind names does not fit across the panel.
+var KIND_LABELS = {
+  "bar-widget": "Widget",
+  "panel": "Panel",
+  "overlay": "Overlay",
+  "menu": "Menu",
+  "service": "Service",
+  "bar": "Bar"
+}
+
+function kindLabel(kind) {
+  var name = String(kind)
+  return KIND_LABELS.hasOwnProperty(name) ? KIND_LABELS[name] : name
+}
+
+function kindsLabel(kinds) {
+  var parts = []
+  for (var i = 0; i < (kinds || []).length; i++) parts.push(kindLabel(kinds[i]))
+  return parts.length ? parts.join(" · ") : "no kind"
+}
+
+// Derived from what is actually installed rather than from a fixed list, so a
+// kind this build has never heard of still gets a chip instead of being
+// quietly unfilterable.
+function kindOptions(rows) {
+  var seen = {}
+  for (var i = 0; i < (rows || []).length; i++) {
+    var kinds = rows[i].kinds || []
+    for (var j = 0; j < kinds.length; j++) seen[String(kinds[j])] = true
+  }
+
+  var names = Object.keys(seen).sort()
+  var options = [{ value: ALL_KINDS, label: "All" }]
+  for (var k = 0; k < names.length; k++) options.push({ value: names[k], label: kindLabel(names[k]) })
+  return options
+}
+
+function filterByKind(rows, kind) {
+  if (!kind || kind === ALL_KINDS) return rows || []
+  var out = []
+  for (var i = 0; i < (rows || []).length; i++) {
+    if ((rows[i].kinds || []).indexOf(kind) >= 0) out.push(rows[i])
+  }
+  return out
+}
+
+// Wraps around, so the cycle key never dead-ends on the last chip.
+function nextKind(options, current) {
+  var list = options || []
+  if (list.length === 0) return ALL_KINDS
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].value === current) return list[(i + 1) % list.length].value
+  }
+  return list[0].value
+}
+
+// ---- Row text -------------------------------------------------------------
+
+function metaLine(row) {
   if (!row) return ""
-  var kinds = row.kinds.length ? row.kinds.join(", ") : "no kind"
-  return row.id + "  ·  " + kinds
+  return row.id + "  ·  " + kindsLabel(row.kinds)
+}
+
+// A plugin with no description is a fact worth stating: it means the author
+// left it out of the manifest, not that the panel failed to read it.
+function descriptionLine(row) {
+  if (!row) return ""
+  var text = String(row.description || "").trim()
+  return text !== "" ? text : "No description in this plugin's manifest."
+}
+
+function hasDescription(row) {
+  return !!row && String(row.description || "").trim() !== ""
+}
+
+// Built-ins live in /usr/share and are never removed or pulled, so the badge
+// would only ever repeat what their section header already said.
+function sourceBadge(row) {
+  if (!row || row.firstParty) return ""
+  return row.gitManaged ? "git" : "local"
 }
 
 function normalizeGitUrl(raw) {
