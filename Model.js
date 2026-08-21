@@ -233,6 +233,29 @@ function kindLabel(kind) {
   return KIND_LABELS.hasOwnProperty(name) ? KIND_LABELS[name] : name
 }
 
+// A plugin that replaces the whole bar and one that mounts inside it both
+// answer "what is in my bar?", so two chips asked the same question twice.
+// They fold into one for filtering only — a row still names its own kind.
+var FILTER_KIND_ALIASES = {
+  "bar": "bar-widget"
+}
+
+function filterKind(kind) {
+  var name = String(kind)
+  return FILTER_KIND_ALIASES.hasOwnProperty(name) ? FILTER_KIND_ALIASES[name] : name
+}
+
+// The merged chip covers two kinds, so it cannot borrow either one's row
+// label without claiming to be narrower than it is.
+var FILTER_KIND_LABELS = {
+  "bar-widget": "Bar-widget"
+}
+
+function filterKindLabel(kind) {
+  var name = filterKind(kind)
+  return FILTER_KIND_LABELS.hasOwnProperty(name) ? FILTER_KIND_LABELS[name] : kindLabel(name)
+}
+
 function kindsLabel(kinds) {
   var parts = []
   for (var i = 0; i < (kinds || []).length; i++) parts.push(kindLabel(kinds[i]))
@@ -246,20 +269,29 @@ function kindOptions(rows) {
   var seen = {}
   for (var i = 0; i < (rows || []).length; i++) {
     var kinds = rows[i].kinds || []
-    for (var j = 0; j < kinds.length; j++) seen[String(kinds[j])] = true
+    for (var j = 0; j < kinds.length; j++) seen[filterKind(kinds[j])] = true
   }
 
   var names = Object.keys(seen).sort()
   var options = [{ value: ALL_KINDS, label: "All" }]
-  for (var k = 0; k < names.length; k++) options.push({ value: names[k], label: kindLabel(names[k]) })
+  for (var k = 0; k < names.length; k++) options.push({ value: names[k], label: filterKindLabel(names[k]) })
   return options
+}
+
+function hasFilterKind(row, wanted) {
+  var kinds = (row && row.kinds) || []
+  for (var i = 0; i < kinds.length; i++) {
+    if (filterKind(kinds[i]) === wanted) return true
+  }
+  return false
 }
 
 function filterByKind(rows, kind) {
   if (!kind || kind === ALL_KINDS) return rows || []
+  var wanted = filterKind(kind)
   var out = []
   for (var i = 0; i < (rows || []).length; i++) {
-    if ((rows[i].kinds || []).indexOf(kind) >= 0) out.push(rows[i])
+    if (hasFilterKind(rows[i], wanted)) out.push(rows[i])
   }
   return out
 }
@@ -301,11 +333,11 @@ function emptyMessage(kind, query) {
   var narrowed = kind && kind !== ALL_KINDS
 
   if (needle !== "" && narrowed)
-    return "No " + kindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
+    return "No " + filterKindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
   if (needle !== "")
     return "No plugins match “" + needle + "”."
   if (narrowed)
-    return "No " + kindLabel(kind).toLowerCase() + " plugins installed."
+    return "No " + filterKindLabel(kind).toLowerCase() + " plugins installed."
   return "No plugins found."
 }
 

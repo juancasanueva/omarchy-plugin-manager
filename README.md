@@ -53,9 +53,11 @@ Two controls share a row and narrow both lists at once:
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
   look nothing like what you typed.
-- **Kind filter** (`f`) — widget, panel, overlay, menu, service, bar. The
+- **Kind filter** (`f`) — bar-widget, panel, overlay, menu, service. The
   chips are built from the kinds actually installed, so the row never offers a
-  filter that would match nothing.
+  filter that would match nothing. A plugin that replaces the whole bar and one
+  that mounts inside it share the **Bar-widget** chip, because both answer the
+  same question; each row still names its own kind.
 
 When nothing matches, the message names whichever control excluded everything
 — a stale search term sitting behind a kind chip is easy to forget about.

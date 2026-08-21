@@ -11,7 +11,7 @@ const Model = new Function(
   return {
     splitSections, parseArray, parseGitMap, parseManifestMeta, mergePlugins, countRemovable,
     rowsInGroup, groupLabel, sectionHeading,
-    kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
+    kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     matchesQuery, filterRows, isFiltering, emptyMessage,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled, plainText,
     catalogAssetUrl,
@@ -390,7 +390,7 @@ test("kindOptions is derived from installed plugins, not a fixed list", () => {
   const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
   assert.deepEqual(Model.kindOptions(rows), [
     { value: "all", label: "All" },
-    { value: "bar-widget", label: "Widget" },
+    { value: "bar-widget", label: "Bar-widget" },
     { value: "service", label: "Service" }
   ])
 })
@@ -400,6 +400,39 @@ test("kindOptions gives an unknown kind a chip rather than hiding it", () => {
     [{ id: "a.b", name: "B", kinds: ["hologram"], firstParty: false }], [], {})
   assert.deepEqual(Model.kindOptions(rows).map(o => o.value), ["all", "hologram"])
   assert.equal(Model.kindLabel("hologram"), "hologram")
+})
+
+test("the bar and widget chips are merged into one that covers both kinds", () => {
+  const rows = Model.mergePlugins([
+    { id: "a.whole", name: "Whole", kinds: ["bar"], firstParty: false },
+    { id: "a.mounted", name: "Mounted", kinds: ["bar-widget"], firstParty: false },
+    { id: "a.daemon", name: "Daemon", kinds: ["service"], firstParty: false }
+  ], [], {})
+
+  assert.deepEqual(Model.kindOptions(rows), [
+    { value: "all", label: "All" },
+    { value: "bar-widget", label: "Bar-widget" },
+    { value: "service", label: "Service" }
+  ])
+
+  assert.deepEqual(
+    Model.filterByKind(rows, "bar-widget").map(r => r.id),
+    ["a.mounted", "a.whole"])
+})
+
+test("the merged chip is reachable by either kind it covers", () => {
+  const rows = Model.mergePlugins(
+    [{ id: "a.whole", name: "Whole", kinds: ["bar"], firstParty: false }], [], {})
+  assert.equal(Model.filterByKind(rows, "bar").length, 1)
+  assert.equal(Model.filterKind("bar"), "bar-widget")
+  assert.equal(Model.filterKind("service"), "service")
+})
+
+test("rows still name their own kind — merging is a filter concern only", () => {
+  assert.equal(Model.kindLabel("bar"), "Bar")
+  assert.equal(Model.kindLabel("bar-widget"), "Widget")
+  assert.equal(Model.filterKindLabel("bar-widget"), "Bar-widget")
+  assert.equal(Model.filterKindLabel("service"), "Service")
 })
 
 test("filterByKind keeps plugins that declare the kind among several", () => {
@@ -532,6 +565,7 @@ test("emptyMessage names whichever control actually excluded everything", () => 
   assert.match(Model.emptyMessage("service", "zzz"), /No service plugins match “zzz”\./)
   assert.match(Model.emptyMessage("service", ""), /No service plugins installed\./)
   assert.match(Model.emptyMessage("all", ""), /No plugins found\./)
+  assert.match(Model.emptyMessage("bar-widget", ""), /No bar-widget plugins installed\./)
 })
 
 // ---- Marketplace catalog ---------------------------------------------------
