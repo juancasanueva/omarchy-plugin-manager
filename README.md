@@ -218,6 +218,54 @@ Then move it if it did not land where you want it:
 omarchy bar move io.github.juancasanueva.plugin-manager --section right
 ```
 
+## Remove
+
+```bash
+omarchy plugin remove io.github.juancasanueva.plugin-manager --yes
+```
+
+That deletes `~/.config/omarchy/plugins/io.github.juancasanueva.plugin-manager`
+and takes the widget out of your bar. Nothing is left behind: the only other
+thing this plugin writes is a catalog cache, which you can drop with
+
+```bash
+rm -rf ~/.cache/omarchy-plugin-manager
+```
+
+To take it off the bar without uninstalling it, use the panel's own disable
+button, or:
+
+```bash
+omarchy plugin disable io.github.juancasanueva.plugin-manager
+```
+
+## Requirements
+
+Everything this plugin runs is already part of a standard Omarchy install. It
+shells out to `omarchy` and `omarchy-shell` for every action it takes, plus:
+
+| Command | Used for |
+|---------|----------|
+| `git` | reading each checkout's origin and comparing `HEAD` against the remote |
+| `jq` | parsing plugin manifests and projecting the marketplace catalog |
+| `curl` | fetching the catalog and remote manifests |
+| `notify-send` | reporting an install's outcome, since the panel is torn down by one |
+| `bash`, coreutils | the loading and install scripts |
+| `omarchy-launch-browser` | opening repository links in your chosen browser |
+
+Optional: **`qt6-imageformats`** turns on the registry's WebP card thumbnails
+(see [above](#where-the-card-previews-come-from)). Without it the panel falls
+back to repository `preview.png` files and accent tiles.
+
+### What it writes
+
+Nothing, directly. Every change to your configuration goes through the
+`omarchy plugin` commands, and only on an explicit click: enabling or
+disabling a plugin edits `~/.config/omarchy/shell.json` through
+`omarchy plugin enable`/`disable`, and installing or removing one goes through
+`omarchy plugin add`/`remove`. Its own cache lives in
+`~/.cache/omarchy-plugin-manager/`.
+
 ## Develop
 
 The plugin directory must live at
