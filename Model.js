@@ -88,6 +88,27 @@ function parseManifestMeta(raw) {
   return map
 }
 
+// Text that came from somewhere else — a public registry, a stranger's
+// manifest, a checkout's git config — on its way to a Text item.
+//
+// Qt's Text defaults to `Text.AutoText`, which inspects the string and renders
+// anything tag-shaped as rich text. `<img src="https://…">` in a plugin name
+// is therefore a fetch, made by the long-lived shell process, chosen by
+// whoever wrote the listing. The shell's own Ui components set no textFormat
+// either, so this cannot be fixed only at the components this plugin owns:
+// untrusted text is cleaned as it enters the model, once, and every sink
+// downstream is safe by construction.
+//
+// Angle brackets go rather than get escaped: an escaped entity still trips
+// AutoText's sniffing, and nothing legitimate in a plugin name or blurb needs
+// them. Newlines go too — a one-line label is a place to hide the rest of a
+// confirmation prompt.
+function plainText(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/[<>]/g, "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+}
+
 function indexById(entries) {
   var byId = {}
   for (var i = 0; i < (entries || []).length; i++) {
@@ -99,7 +120,7 @@ function indexById(entries) {
 
 function toStringList(value) {
   var out = []
-  for (var i = 0; i < (value || []).length; i++) out.push(String(value[i]))
+  for (var i = 0; i < (value || []).length; i++) out.push(plainText(value[i]))
   return out
 }
 
@@ -126,12 +147,12 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
 
     rows.push({
       id: id,
-      name: String(item.name || id),
-      author: String(manifest.author || ""),
+      name: plainText(item.name || id),
+      author: plainText(manifest.author),
       // Read at load time so every row can state its version, not just the
       // git-managed ones an update check happens to reach.
-      localVersion: String(manifest.version || ""),
-      description: String(meta.description || ""),
+      localVersion: plainText(manifest.version),
+      description: plainText(meta.description),
       kinds: toStringList(item.kinds && item.kinds.length ? item.kinds : meta.kinds),
       enabled: item.enabled === true,
       // A bar has no off, only a successor — the shell says so per plugin
@@ -139,9 +160,9 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       canDisable: item.canDisable === true,
       firstParty: firstParty,
       group: firstParty ? GROUP_BUILT_IN : GROUP_INSTALLED,
-      clonedFrom: String(item.clonedFrom || ""),
+      clonedFrom: plainText(item.clonedFrom),
       sourceDir: sourceDir,
-      remote: gitManaged ? String(git[sourceDir]) : "",
+      remote: gitManaged ? plainText(git[sourceDir]) : "",
       gitManaged: gitManaged,
       // Built-ins live in /usr/share and are not ours to delete. Everything
       // under the user plugin directory — installed or cloned — is.
@@ -517,6 +538,16 @@ function actionGerund(kind) {
 
 var CATALOG_URL = "https://omarchyplugins.com/catalog.json"
 var CATALOG_ASSET_BASE = "https://omarchyplugins.com/"
+
+// The registry publishes thumbnails as paths under its own host. Anything
+// absolute or protocol-relative in that field is pointing the shell's image
+// loader somewhere the registry does not control, so it gets no request at
+// all rather than a request to a url built by concatenation.
+function catalogAssetUrl(path) {
+  var text = plainText(path).trim()
+  if (text === "" || text.indexOf("//") === 0 || /^[a-z][a-z0-9+.-]*:/i.test(text)) return ""
+  return CATALOG_ASSET_BASE + text.replace(/^\/+/, "")
+}
 var ALL_CATEGORIES = "all"
 
 // The registry assigns every plugin an accent and a pair of initials — its
@@ -600,23 +631,23 @@ function catalogEntries(doc, installedIds) {
     if (p.sourceType === "builtin") continue
 
     var entry = {
-      id: String(p.id),
-      name: String(p.name || p.id),
-      description: String(p.description || "").trim(),
-      author: String(p.author || "").trim(),
-      version: String(p.version || "").trim(),
-      category: String(p.category || "Other"),
-      kind: String(p.kind || ""),
-      repo: String(p.repo || ""),
-      installCommand: String(p.installCommand || ""),
+      id: plainText(p.id),
+      name: plainText(p.name || p.id),
+      description: plainText(p.description).trim(),
+      author: plainText(p.author).trim(),
+      version: plainText(p.version).trim(),
+      category: plainText(p.category || "Other"),
+      kind: plainText(p.kind),
+      repo: plainText(p.repo),
+      installCommand: plainText(p.installCommand),
       installAvailable: p.installAvailable === true,
-      installNote: String(p.installNote || "").trim(),
+      installNote: plainText(p.installNote).trim(),
       verified: p.verificationStatus === "verified",
       stars: Number(p.stars) || 0,
       accent: String(p.accent || ""),
-      initials: String(p.initials || "").toUpperCase(),
-      license: String(p.license || "").trim(),
-      thumbnail: p.previewThumbnail ? CATALOG_ASSET_BASE + String(p.previewThumbnail) : "",
+      initials: plainText(p.initials).toUpperCase(),
+      license: plainText(p.license).trim(),
+      thumbnail: catalogAssetUrl(p.previewThumbnail),
       branch: String(p.listingValidatedBranch || ""),
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: installed.hasOwnProperty(String(p.id))

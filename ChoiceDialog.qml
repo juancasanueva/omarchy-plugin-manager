@@ -104,6 +104,8 @@ Item {
 
         Text {
           id: messageText
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: parent.top
@@ -147,6 +149,8 @@ Item {
 
               Text {
                 id: label
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: modelData
                 color: selected ? root.selectedText : root.foreground

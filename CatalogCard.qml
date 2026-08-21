@@ -95,6 +95,8 @@ Rectangle {
         }
 
         Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           visible: thumbnail.status !== Image.Ready
           text: root.entry ? root.entry.initials : ""
@@ -142,6 +144,8 @@ Rectangle {
 
         Text {
           id: installedLabel
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           // A ringed check, not the bare one verified wears: two identical
           // glyphs on the same preview would read as one badge repeated.
@@ -167,6 +171,8 @@ Rectangle {
 
         Text {
           id: verifiedLabel
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰄬 verified"
           color: Color.accent
@@ -178,6 +184,8 @@ Rectangle {
 
     // ---- Name and author.
     Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       width: parent.width
       text: root.entry ? root.entry.name : ""
       color: root.foreground
@@ -187,6 +195,8 @@ Rectangle {
     }
 
     Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       width: parent.width
       // A floor, not a fixed height: a computed box that lands a fraction
       // short of its line count fits one line fewer and elides.
@@ -212,6 +222,8 @@ Rectangle {
 
       Text {
         id: repoLink
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
         width: parent.width
         text: "󰊤  " + root.repoLabel
         color: repoMouse.containsMouse ? Color.accent : Color.muted
@@ -239,6 +251,8 @@ Rectangle {
 
       Text {
         id: meta
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
         anchors.left: parent.left
         // The button is the only thing on the right, so when it is gone the
         // author and star count get the width back rather than eliding

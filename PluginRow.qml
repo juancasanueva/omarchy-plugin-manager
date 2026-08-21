@@ -113,6 +113,8 @@ Rectangle {
     // full width rather than against whatever the metadata beside it left over.
     Text {
       id: name
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       width: parent.width
       text: root.row ? root.row.name : ""
       color: root.foreground
@@ -127,6 +129,8 @@ Rectangle {
     // three facts you check before updating or removing something, on one
     // glanceable line under the name.
     Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       width: parent.width
       text: {
         var meta = Model.metaLine(root.row)
@@ -140,6 +144,8 @@ Rectangle {
     }
 
     Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       width: parent.width
       // The natural height wins when the text actually wraps, because a
       // computed two-line box that lands a fraction short fits only one line
@@ -173,6 +179,8 @@ Rectangle {
 
       Text {
         id: repoLink
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
         width: parent.width
         text: "󰊤  " + root.repoLabel
         color: repoMouse.containsMouse ? Color.accent : Color.muted
@@ -204,6 +212,8 @@ Rectangle {
     // Where the plugin came from, unless it has an update — then the update
     // takes the space, because it is the thing worth acting on.
     Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
       visible: root.badge !== "" && !root.hasUpdate
       text: root.badge
@@ -223,6 +233,8 @@ Rectangle {
 
       Text {
         id: updateBadge
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         text: "󰚰 " + Model.updateBadge(root.row)
         color: Color.accent

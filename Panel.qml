@@ -804,6 +804,8 @@ Panel {
 
           Text {
             id: title
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
             anchors.verticalCenter: parent.verticalCenter
             text: "Plugins"
             color: root.contentForeground
@@ -813,6 +815,8 @@ Panel {
           }
 
           Text {
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
             anchors.left: title.right
             anchors.leftMargin: Style.space(10)
             anchors.baseline: title.baseline
@@ -1000,6 +1004,8 @@ Panel {
         // ---- Status: the last thing that happened, good or bad. Only takes
         //      up room when there is something to say.
         Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           width: parent.width
           visible: text !== ""
           text: {
@@ -1019,6 +1025,8 @@ Panel {
       //      them off the card.
       Text {
         id: hints
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -1056,6 +1064,8 @@ Panel {
           spacing: Style.space(2)
 
           Text {
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
             width: parent.width
             visible: root.visibleRows.length === 0 && root.rows.length > 0
             text: Model.emptyMessage(root.kindFilter, root.searchQuery)
@@ -1227,6 +1237,8 @@ Panel {
         // says the fetch is still running, the other that the filters matched
         // nothing.
         Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           width: parent.width - Style.space(40)
           visible: root.visibleCatalog.length === 0

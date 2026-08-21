@@ -13,7 +13,8 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
     matchesQuery, filterRows, isFiltering, emptyMessage,
-    parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
+    parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled, plainText,
+    catalogAssetUrl,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
     repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, repoPreviewUrl, previewCandidates,
@@ -69,6 +70,35 @@ test("parseArray tells a failed command apart from an empty result", () => {
   assert.equal(Model.parseArray(""), null)
 })
 
+// ---- Untrusted display text ----------------------------------------------
+//
+// Every Text in Qt defaults to Text.AutoText, which sniffs its content and
+// renders anything tag-shaped as rich text — including `<img src=…>`, which
+// fetches. Names, descriptions, authors and notes all arrive from a public
+// registry or from a stranger's manifest, and they are drawn inside a shell
+// process that outlives every panel. So they are stripped of anything that
+// could open a tag before they are ever stored.
+
+test("plainText removes what could be read as markup", () => {
+  assert.equal(Model.plainText('<img src="https://evil/beacon">'), 'img src="https://evil/beacon"')
+  assert.equal(Model.plainText("<b>Bold</b>"), "bBold/b")
+  assert.equal(Model.plainText("<!DOCTYPE html>"), "!DOCTYPE html")
+})
+
+test("plainText leaves ordinary text alone", () => {
+  assert.equal(Model.plainText("AT&T Monitor"), "AT&T Monitor")
+  assert.equal(Model.plainText("Battery — 80% · charging"), "Battery — 80% · charging")
+  assert.equal(Model.plainText(""), "")
+  assert.equal(Model.plainText(null), "")
+})
+
+// A newline or a carriage return in a one-line label lets crafted text push
+// the rest of a confirmation off the visible area.
+test("plainText flattens control characters into spaces", () => {
+  assert.equal(Model.plainText("Weather\nRemove everything?"), "Weather Remove everything?")
+  assert.equal(Model.plainText("a\r\nb\tc"), "a b c")
+})
+
 test("parseGitMap keeps a checkout whose origin remote is empty", () => {
   const map = Model.parseGitMap("/plugins/withremote\thttps://example.com/a.git\n/plugins/noremote\t\n")
   assert.equal(map["/plugins/withremote"], "https://example.com/a.git")
@@ -93,6 +123,18 @@ const catalogEntries = [
   { id: "acme.dev", sourceDir: "/plugins/acme.dev", description: "Dev" }
 ]
 const gitMap = { "/plugins/acme.weather": "https://example.com/weather.git", "/plugins/acme.dev": "" }
+
+test("mergePlugins strips markup out of everything a manifest supplied", () => {
+  const rows = Model.mergePlugins(
+    [{ id: "evil.one", name: '<img src="https://evil/n">', kinds: ["bar-widget"], enabled: true }],
+    [{ id: "evil.one", sourceDir: "/plugins/evil.one", description: '<img src="https://evil/d">' }],
+    {},
+    { "evil.one": { author: '<img src="https://evil/a">', version: "<b>9</b>" } })
+  const row = rows[0]
+  for (const field of [row.name, row.description, row.author, row.localVersion]) {
+    assert.ok(!/[<>]/.test(field), "left markup in: " + field)
+  }
+})
 
 test("mergePlugins puts installed plugins ahead of built-ins", () => {
   const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
