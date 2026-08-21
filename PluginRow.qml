@@ -74,14 +74,20 @@ Rectangle {
   }
 
   // Enabled marker. A plugin the shell discovered but is not running looks
-  // different from one that is, and the dot is the whole difference.
+  // different from one that is, and this bar is the whole difference.
+  //
+  // Full height rather than a dot beside the name: the row is four lines tall
+  // now, and a mark that only meets the first of them reads as belonging to
+  // the title instead of to the plugin.
   Rectangle {
-    id: stateDot
+    id: stateBar
     anchors.left: parent.left
     anchors.leftMargin: Style.space(10)
-    anchors.verticalCenter: parent.verticalCenter
-    width: Style.space(6)
-    height: width
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.topMargin: Style.space(6)
+    anchors.bottomMargin: Style.space(6)
+    width: Style.space(3)
     radius: width / 2
     color: root.row && root.row.enabled ? Color.accent : Color.muted
     opacity: root.row && root.row.enabled ? 1 : 0.5
@@ -89,8 +95,10 @@ Rectangle {
 
   Column {
     id: details
-    anchors.left: stateDot.right
-    anchors.leftMargin: Style.space(10)
+    anchors.left: stateBar.right
+    // Wider than the gap the dot needed: a 3px rule sitting flush against the
+    // text would read as a border on the row rather than as a state marker.
+    anchors.leftMargin: Style.space(12)
     anchors.right: actions.left
     anchors.rightMargin: Style.space(10)
     anchors.verticalCenter: parent.verticalCenter
