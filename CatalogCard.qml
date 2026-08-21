@@ -126,6 +126,32 @@ Rectangle {
         }
       }
 
+      // Already yours. Top-left, opposite verified, so a card can carry both
+      // without the two ever fighting for the same corner — and on the preview
+      // rather than in the footer, because whether you already have it is the
+      // first thing you want to know about a card, not the last.
+      Rectangle {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.margins: Style.space(6)
+        visible: root.state_ === "installed"
+        width: installedLabel.implicitWidth + Style.space(10)
+        height: installedLabel.implicitHeight + Style.space(4)
+        radius: height / 2
+        color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
+
+        Text {
+          id: installedLabel
+          anchors.centerIn: parent
+          // A ringed check, not the bare one verified wears: two identical
+          // glyphs on the same preview would read as one badge repeated.
+          text: "󰗠 installed"
+          color: Model.installedTint(Color.background)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       // Verified is the registry's own security-baseline review. It is worth
       // one glyph and nothing more: it is a signal, not a guarantee, and the
       // install dialog says so in words.
@@ -214,8 +240,11 @@ Rectangle {
       Text {
         id: meta
         anchors.left: parent.left
-        anchors.right: installButton.left
-        anchors.rightMargin: Style.space(6)
+        // The button is the only thing on the right, so when it is gone the
+        // author and star count get the width back rather than eliding
+        // against a hidden item.
+        anchors.right: installButton.visible ? installButton.left : parent.right
+        anchors.rightMargin: installButton.visible ? Style.space(6) : 0
         anchors.verticalCenter: parent.verticalCenter
         text: {
           if (!root.entry) return ""
@@ -228,16 +257,6 @@ Rectangle {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
-      }
-
-      Text {
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        visible: root.state_ === "installed"
-        text: "installed"
-        color: Color.muted
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
       }
 
       PanelActionButton {

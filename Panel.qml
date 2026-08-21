@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -150,17 +151,43 @@ Panel {
   property string pendingLabel: ""
   property string pendingUrl: ""
   property bool pendingVerified: false
-  readonly property bool confirming: pendingKind !== ""
+  readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
+
+  // ---- Pending placement --------------------------------------------------
+  //
+  // Enabling a bar widget is a different question from the yes/no ones above:
+  // not "are you sure" but "where". It gets its own dialog rather than a
+  // default section, because a widget dropped into a section the user did not
+  // choose is a widget they have to go hunting for.
+  readonly property bool placing: pendingKind === "place"
+
+  // Whether the plugin being added takes a place in the bar. Read off the
+  // registry listing, since the manifest that would say so is not on disk yet.
+  property bool pendingPlacementNeeded: false
+
+  // Held past the command, so the success line can name where the widget
+  // actually landed rather than just saying it is on.
+  property string pendingSection: ""
+
+  // The section chosen for a plugin that is not installed yet. Held from the
+  // moment the question is answered until the install command is built, since
+  // by the time the clone lands this panel no longer exists to be asked.
+  property string pendingPlacement: ""
+
+  readonly property var placementChoices: Model.placementOptions()
+  readonly property string placementMessage:
+    "Where in the bar should " + pendingLabel + " go?"
 
   readonly property string confirmMessage: {
     if (pendingKind === "add")
-      return "Clone and enable " + pendingLabel + "?\n\n"
+      return "Clone " + pendingLabel + "?\n\n"
         + pendingUrl + "\n\n"
         // Stated as a review rather than a guarantee. A badge that reads as a
         // safety promise is worse than no badge, because it retires the
         // judgement the next sentence is asking for.
         + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
         + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
+        + "\n\nYou will be asked where to put it once it is cloned."
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
     return ""
@@ -188,7 +215,11 @@ Panel {
     }
 
     loadError = ""
-    rows = Model.mergePlugins(listEntries, Model.parseArray(sections.catalog) || [], Model.parseGitMap(sections.git))
+    rows = Model.mergePlugins(
+      listEntries,
+      Model.parseArray(sections.catalog) || [],
+      Model.parseGitMap(sections.git),
+      Model.parseManifestMeta(sections.manifest))
     clampSelection()
     if (pendingUpdateReport !== "") applyUpdateReport(pendingUpdateReport)
   }
@@ -271,6 +302,7 @@ Panel {
     pendingLabel = entry.name
     pendingId = entry.id
     pendingVerified = entry.verified === true
+    pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
     pendingKind = "add"
   }
 
@@ -297,8 +329,12 @@ Panel {
     }
     pendingUrl = url
     pendingLabel = Model.repoLabel(url)
+    // A bare url says nothing about what is inside it. The plugin is cloned
+    // and left off; the row it becomes carries its own Enable button, which
+    // asks the same question once there is a manifest to answer it from.
     pendingId = ""
     pendingVerified = false
+    pendingPlacementNeeded = false
     pendingKind = "add"
   }
 
@@ -310,17 +346,98 @@ Panel {
     pendingKind = "remove"
   }
 
+  // Enabling is not destructive and needs no "are you sure" — but a bar widget
+  // has to be told where it goes, and only the user knows that.
+  function askEnable(row) {
+    if (!Model.canEnable(row) || busy) return
+
+    if (!Model.needsPlacement(row)) {
+      // A service, an overlay, or a whole-bar plugin: nothing to place, so the
+      // question would have exactly one answer.
+      startEnable(row, "")
+      return
+    }
+
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingKind = "place"
+  }
+
+  function startEnable(row, section) {
+    var command = Model.enableCommand(row, section)
+    if (command.length === 0) return
+    pendingSection = section
+    runAction("enable", row.name, command)
+  }
+
+  function confirmPlacement(section) {
+    // Two questions share this dialog: where to put a plugin being installed,
+    // and where to put one already sitting in the list switched off.
+    if (pendingPlacementNeeded) {
+      startAdd(section)
+      return
+    }
+
+    var row = Model.findRow(rows, pendingId)
+    var label = pendingLabel
+    cancelPending()
+    if (!row) {
+      // The list was reloaded out from under the question — enabling a row
+      // that is no longer there would either fail or, worse, hit whatever now
+      // carries that id.
+      setStatus("Could not enable " + label + ": it is no longer in the list", true)
+      return
+    }
+    startEnable(row, section)
+  }
+
   function cancelPending() {
     pendingKind = ""
     pendingId = ""
     pendingLabel = ""
     pendingUrl = ""
+    pendingPlacementNeeded = false
   }
 
+  // Confirmation answered. A bar widget still owes us one more answer, and it
+  // has to be collected now: cloning a plugin makes the shell rebuild every
+  // plugin widget, this panel included, so there is no "after the install" in
+  // which to ask anything.
   function confirmPending() {
-    if (pendingKind === "add") runAction("add", pendingLabel, ["omarchy", "plugin", "add", pendingUrl, "--enable", "--yes"])
-    else if (pendingKind === "remove") runAction("remove", pendingLabel, ["omarchy", "plugin", "remove", pendingId, "--yes"])
+    if (pendingKind === "add") {
+      if (pendingId !== "" && pendingPlacementNeeded) {
+        pendingKind = "place"
+        return
+      }
+      startAdd("")
+    } else if (pendingKind === "remove") {
+      runAction("remove", pendingLabel, ["omarchy", "plugin", "remove", pendingId, "--yes"])
+      cancelPending()
+    }
+  }
+
+  // Clone, then place — as one detached command.
+  //
+  // Detached is not an optimisation, it is the requirement. The moment the
+  // clone lands in ~/.config/omarchy/plugins the shell tears every plugin
+  // widget down and rebuilds it, this panel among them, and a Process owned by
+  // a destroyed panel cannot be relied on to finish. The placement would be
+  // the half that got dropped.
+  //
+  // What is given up is the status line, which nobody was going to read on a
+  // panel that no longer exists. The script reports through a desktop
+  // notification instead, which outlives all of this.
+  function startAdd(section) {
+    var url = pendingUrl
+    var label = pendingLabel
+    var id = pendingId
     cancelPending()
+
+    // Positional arguments, never text spliced into the script, so no url can
+    // become a command.
+    Quickshell.execDetached(["bash", "-c", installScript, "install", url, id, section, label])
+    setStatus(Model.actionGerund("add") + " " + label + "…", false)
   }
 
   // Update needs no confirmation: it is a fast-forward of a checkout the user
@@ -390,29 +507,82 @@ Panel {
   // ---- Processes ----------------------------------------------------------
 
   // One round trip for the whole picture: enabled state from `plugin list`,
-  // source directories and descriptions from `plugin catalog`, and which
-  // checkouts a pull can reach from the filesystem. The section markers print
-  // unconditionally so a failed command shows up as unparseable output rather
-  // than as a silently short list.
+  // source directories and descriptions from `plugin catalog`, which checkouts
+  // a pull can reach from the filesystem, and the author and version each
+  // manifest declares. The section markers print unconditionally so a failed
+  // command shows up as unparseable output rather than as a silently short
+  // list.
+  //
+  // The catalog is fetched once and reused: it is also the only list of every
+  // manifest path on the system, built-ins included, and running the command
+  // twice would double the slowest step of the load.
   Process {
     id: loadProc
     command: ["bash", "-c",
-      "printf '===list===\\n'; "
+      "catalog=$(omarchy plugin catalog); "
+      + "printf '===list===\\n'; "
       + "omarchy plugin list --json; "
       + "printf '\\n===catalog===\\n'; "
-      + "omarchy plugin catalog; "
+      + "printf '%s' \"$catalog\"; "
       + "printf '\\n===git===\\n'; "
       + "for dir in \"$HOME\"/.config/omarchy/plugins/*/; do "
       + "  [ -d \"$dir/.git\" ] || continue; "
       + "  path=\"${dir%/}\"; "
       + "  printf '%s\\t%s\\n' \"$path\" \"$(git -C \"$path\" remote get-url origin 2>/dev/null)\"; "
-      + "done"
+      + "done; "
+      + "printf '\\n===manifest===\\n'; "
+      // One jq over every manifest at once rather than one process per plugin.
+      // Fields the manifest omits print as empty columns, which is what the
+      // parser expects; a manifest that will not parse simply contributes no
+      // line and its row falls back to the id namespace.
+      + "printf '%s' \"$catalog\" | jq -r '.[].manifestPath // empty' "
+      + "  | tr '\\n' '\\0' "
+      + "  | xargs -0 -r jq -r '[.id, (.author // \"\"), (.version // \"\")] | @tsv' 2>/dev/null"
     ]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyLoad(text)
     }
   }
+
+  // Clone, wait for the shell to notice, then place. Upstream's own
+  // `--enable` path cannot be used for this: it reads the section from an
+  // interactive `gum choose` that returns immediately under `--yes`, so it
+  // would land the widget in whatever section the author nominated. The panel
+  // asks first and passes the answer through here instead.
+  //
+  // Everything variable arrives as a positional argument, never spliced into
+  // the text: $1 url, $2 plugin id, $3 section (any of which may be empty).
+  readonly property string installScript: ""
+    // pipefail matters here: the error text is taken through `| tail -1`, and
+    // without it the pipeline would report tail's exit status — which always
+    // succeeds — and every failed install would be announced as a success.
+    + "set -u -o pipefail; "
+    + "url=\"$1\"; id=\"$2\"; section=\"$3\"; label=\"$4\"; "
+    + "note() { notify-send -a 'Plugin Manager' \"$1\" \"$2\"; }; "
+    // stderr is captured and stdout dropped, then reduced to its last line:
+    // the omarchy scripts put the reason there, and a notification body is no
+    // place for a git transcript.
+    + "if ! err=$(omarchy plugin add \"$url\" --yes 2>&1 >/dev/null | tail -1); then "
+    + "  note \"Could not install $label\" \"$err\"; exit 1; "
+    + "fi; "
+    // No id means the url field, which cannot know what it is about to clone.
+    // The plugin is added and left off; its row carries an Enable button.
+    + "if [ -z \"$id\" ]; then "
+    + "  note \"Added $label\" 'Enable it from the plugin manager.'; exit 0; "
+    + "fi; "
+    // The shell rescans asynchronously and `omarchy plugin enable` fails
+    // outright on an id it has not discovered yet — the same wait upstream
+    // does before its own enable.
+    + "for _ in $(seq 40); do "
+    + "  omarchy plugin list --json | jq -e --arg id \"$id\" 'any(.[]; .id == $id)' >/dev/null 2>&1 && break; "
+    + "  sleep 0.05; "
+    + "done; "
+    + "if ! err=$(omarchy plugin enable \"$id\" ${section:+\"$section\"} 2>&1 >/dev/null | tail -1); then "
+    + "  note \"Added $label, but could not enable it\" \"$err\"; exit 1; "
+    + "fi; "
+    + "if [ -n \"$section\" ]; then note \"Installed $label\" \"Placed in the $section section of the bar.\"; "
+    + "else note \"Installed $label\" 'Enabled.'; fi"
 
   // Fetch, shrink, cache. The published catalog is 1.6MB of which we need
   // about a third, and jq — an Omarchy dependency — projects it down before
@@ -510,7 +680,9 @@ Panel {
       root.busyId = ""
 
       if (exitCode === 0) {
-        root.setStatus(Model.successMessage(kind, label), false)
+        root.setStatus(kind === "enable"
+          ? Model.enableMessage(label, root.pendingSection)
+          : Model.successMessage(kind, label), false)
         if (kind === "add") urlField.text = ""
       } else {
         root.setStatus(Model.failureMessage(kind, root.actionStderr, exitCode), true)
@@ -548,7 +720,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || urlField.activeFocus || searchField.activeFocus
+      blocked: root.confirming || root.placing || urlField.activeFocus || searchField.activeFocus
 
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
       onActivateRequested: root.browsing ? root.askInstall(root.selectedEntry) : root.startUpdate(root.selectedRow)
@@ -877,6 +1049,10 @@ Panel {
                 root.selectedIndex = index
                 root.askRemove(modelData)
               }
+              onEnableRequested: {
+                root.selectedIndex = index
+                root.askEnable(modelData)
+              }
             }
           }
 
@@ -909,6 +1085,12 @@ Panel {
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
               onClicked: root.selectedIndex = globalIndex
+              // A built-in cannot be pulled or deleted, but it can certainly
+              // be sitting there switched off — same problem, same answer.
+              onEnableRequested: {
+                root.selectedIndex = globalIndex
+                root.askEnable(modelData)
+              }
             }
           }
         }
@@ -1026,6 +1208,30 @@ Panel {
 
         onCanceled: root.cancelPending()
         onConfirmed: root.confirmPending()
+      }
+
+      ChoiceDialog {
+        id: placement
+        anchors.fill: parent
+        z: 10
+        opened: root.placing
+        message: root.placementMessage
+        choices: root.placementChoices
+        background: Color.popups.background
+        foreground: root.contentForeground
+        fontFamily: root.contentFontFamily
+
+        onOpenedChanged: {
+          if (opened) forceActiveFocus()
+          else Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+        }
+
+        Keys.onPressed: function(event) {
+          if (placement.handleKey(event)) event.accepted = true
+        }
+
+        onCanceled: root.cancelPending()
+        onChosen: function(value) { root.confirmPlacement(value) }
       }
     }
   }

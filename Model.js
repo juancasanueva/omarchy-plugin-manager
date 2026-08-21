@@ -9,6 +9,7 @@
 var SECTION_LIST = "===list==="
 var SECTION_CATALOG = "===catalog==="
 var SECTION_GIT = "===git==="
+var SECTION_MANIFEST = "===manifest==="
 
 // The two lists the panel draws. What you installed is what you can act on;
 // the built-ins are the backdrop. Splitting them means the buttons in a
@@ -19,20 +20,22 @@ var GROUP_BUILT_IN = "built-in"
 
 var ALL_KINDS = "all"
 
-// The loader emits three fixed sections in order. Anything else — a truncated
+// The loader emits four fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
 function splitSections(raw) {
   var text = String(raw || "")
   var atList = text.indexOf(SECTION_LIST)
   var atCatalog = text.indexOf(SECTION_CATALOG)
   var atGit = text.indexOf(SECTION_GIT)
-  if (atList < 0 || atCatalog < 0 || atGit < 0) return null
-  if (!(atList < atCatalog && atCatalog < atGit)) return null
+  var atManifest = text.indexOf(SECTION_MANIFEST)
+  if (atList < 0 || atCatalog < 0 || atGit < 0 || atManifest < 0) return null
+  if (!(atList < atCatalog && atCatalog < atGit && atGit < atManifest)) return null
 
   return {
     list: text.slice(atList + SECTION_LIST.length, atCatalog),
     catalog: text.slice(atCatalog + SECTION_CATALOG.length, atGit),
-    git: text.slice(atGit + SECTION_GIT.length)
+    git: text.slice(atGit + SECTION_GIT.length, atManifest),
+    manifest: text.slice(atManifest + SECTION_MANIFEST.length)
   }
 }
 
@@ -67,6 +70,24 @@ function parseGitMap(raw) {
   return map
 }
 
+// "<id>\t<author>\t<version>" per line, straight out of each manifest.json.
+// Both trailing fields are routinely empty — a manifest is allowed to name
+// neither — so, as with the git map, only the line ending may be trimmed.
+function parseManifestMeta(raw) {
+  var map = {}
+  var lines = String(raw || "").split("\n")
+
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].replace(/\r$/, "").split("\t")
+    if (parts.length < 2 || parts[0] === "") continue
+    map[parts[0]] = {
+      author: String(parts[1] || "").trim(),
+      version: String(parts[2] || "").trim()
+    }
+  }
+  return map
+}
+
 function indexById(entries) {
   var byId = {}
   for (var i = 0; i < (entries || []).length; i++) {
@@ -83,11 +104,13 @@ function toStringList(value) {
 }
 
 // `list` carries enabled/first-party state, `catalog` carries the source
-// directory and description, and `gitMap` says which checkouts a pull can
-// reach. One row per plugin, joined on id.
-function mergePlugins(listEntries, catalogEntries, gitMap) {
+// directory and description, `gitMap` says which checkouts a pull can reach,
+// and `manifestMeta` carries what only the manifest knows — who wrote it and
+// what version is on disk. One row per plugin, joined on id.
+function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
   var catalog = indexById(catalogEntries)
   var git = gitMap || {}
+  var manifests = manifestMeta || {}
   var rows = []
 
   for (var i = 0; i < (listEntries || []).length; i++) {
@@ -99,10 +122,15 @@ function mergePlugins(listEntries, catalogEntries, gitMap) {
     var sourceDir = String(meta.sourceDir || "")
     var gitManaged = sourceDir !== "" && git.hasOwnProperty(sourceDir)
     var firstParty = item.firstParty === true
+    var manifest = manifests[id] || {}
 
     rows.push({
       id: id,
       name: String(item.name || id),
+      author: String(manifest.author || ""),
+      // Read at load time so every row can state its version, not just the
+      // git-managed ones an update check happens to reach.
+      localVersion: String(manifest.version || ""),
       description: String(meta.description || ""),
       kinds: toStringList(item.kinds && item.kinds.length ? item.kinds : meta.kinds),
       enabled: item.enabled === true,
@@ -269,9 +297,27 @@ function nextKind(options, current) {
 
 // ---- Row text -------------------------------------------------------------
 
+// Who published this. The manifest is the honest source, but plenty of them
+// leave `author` out — and an Omarchy id is namespaced by its publisher, so
+// the prefix says the same thing. An id with no namespace says nothing, and
+// echoing it back as an author would be a guess dressed up as a fact.
+function authorLabel(row) {
+  if (!row) return ""
+  var author = String(row.author || "").trim()
+  if (author !== "") return author
+  var id = String(row.id || "")
+  var dot = id.indexOf(".")
+  return dot > 0 ? id.slice(0, dot) : ""
+}
+
+// The line under the name: who made it and what it plugs into. The id is not
+// here — the name above says which plugin this is, and the namespace already
+// surfaces as the author.
 function metaLine(row) {
   if (!row) return ""
-  return row.id + "  ·  " + kindsLabel(row.kinds)
+  var author = authorLabel(row)
+  var kinds = kindsLabel(row.kinds)
+  return author === "" ? kinds : author + "  ·  " + kinds
 }
 
 // A plugin with no description is a fact worth stating: it means the author
@@ -333,17 +379,88 @@ function lastLine(text) {
   return ""
 }
 
+// ---- Enabling -------------------------------------------------------------
+//
+// Installing a plugin and running it are two different things. `omarchy plugin
+// add` clones the folder and registers the manifest; a bar widget still has no
+// place in the bar until someone says which section it goes in. That is why a
+// freshly installed widget sits in the list greyed out — it is not broken, it
+// is unplaced — and why the section has to be asked for rather than guessed.
+
+var BAR_SECTIONS = ["left", "center", "right"]
+
+// Before an install there is no manifest to read, so the registry's own
+// human-readable kind is all there is to go on: "Bar widget", "Service + Bar
+// widget", "Menu + Bar widget". "Bar" alone is a whole-bar replacement and
+// takes no place in a section — and it is a prefix of "Bar widget", so this
+// matches the phrase rather than the word.
+function catalogNeedsPlacement(entry) {
+  if (!entry) return false
+  return String(entry.kind || "").toLowerCase().indexOf("bar widget") >= 0
+}
+
+// By id, never by index: a background reload can rebuild the list while a
+// question about one of its rows is still on screen.
+function findRow(rows, id) {
+  var wanted = String(id || "")
+  if (wanted === "") return null
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (rows[i] && String(rows[i].id) === wanted) return rows[i]
+  }
+  return null
+}
+
+function canEnable(row) {
+  return !!row && String(row.id || "") !== "" && row.enabled !== true
+}
+
+// A bar widget takes a place in a section. A plugin whose kind is `bar` IS the
+// bar — it replaces the one in use rather than sitting inside it — and
+// `omarchy plugin enable` fails outright if handed a placement for one.
+function needsPlacement(row) {
+  if (!row) return false
+  var kinds = row.kinds || []
+  if (kinds.indexOf("bar") >= 0) return false
+  return kinds.indexOf("bar-widget") >= 0
+}
+
+function placementOptions() {
+  return [
+    { value: "left", label: "Left" },
+    { value: "center", label: "Center" },
+    { value: "right", label: "Right" }
+  ]
+}
+
+// The section reaches a CLI as an argv element. It comes from a fixed set of
+// buttons today, but it is checked against the same fixed set here anyway —
+// the guarantee should live with the command, not with whichever UI happens to
+// be calling it.
+function enableCommand(row, section) {
+  if (!row || String(row.id || "") === "") return []
+  var command = ["omarchy", "plugin", "enable", String(row.id)]
+  if (BAR_SECTIONS.indexOf(String(section || "")) >= 0) command.push(String(section))
+  return command
+}
+
+function enableMessage(label, section) {
+  if (BAR_SECTIONS.indexOf(String(section || "")) < 0) return "Enabled " + label
+  return "Enabled " + label + " in the " + section + " section"
+}
+
 function actionVerb(kind) {
   if (kind === "add") return "Add"
   if (kind === "update") return "Update"
   if (kind === "remove") return "Remove"
+  if (kind === "enable") return "Enable"
   return "Action"
 }
 
 function successMessage(kind, label) {
-  if (kind === "add") return "Added " + label + " — enabled"
+  if (kind === "add") return "Added " + label
   if (kind === "update") return "Updated " + label
   if (kind === "remove") return "Removed " + label
+  if (kind === "enable") return "Enabled " + label
   return "Done"
 }
 
@@ -361,6 +478,7 @@ function actionGerund(kind) {
   if (kind === "add") return "Adding"
   if (kind === "update") return "Updating"
   if (kind === "remove") return "Removing"
+  if (kind === "enable") return "Enabling"
   return "Working"
 }
 
@@ -387,6 +505,25 @@ var ACCENT_COLORS = {
   coral: "#e08a63",
   amber: "#d6a44f",
   lime: "#8ebf62"
+}
+
+// "Installed" has to read as installed at a glance, and green is the only
+// colour that says that without a caption. Omarchy themes carry no success
+// role to borrow — foreground, background, accent, urgent, muted, and that is
+// all — so the badge brings its own, in the two shades it takes to stay
+// legible at both ends of the theme range (>=5:1 against either default).
+var INSTALLED_ON_DARK = "#5fb37a"
+var INSTALLED_ON_LIGHT = "#1f7a4d"
+
+function installedTint(background) {
+  if (!background) return INSTALLED_ON_DARK
+  // Weighted for how the eye actually reads brightness: a full-blue panel is
+  // dark and a full-green one is light, which neither an average nor a max
+  // would get right.
+  var lightness = 0.2126 * Number(background.r || 0)
+    + 0.7152 * Number(background.g || 0)
+    + 0.0722 * Number(background.b || 0)
+  return lightness > 0.5 ? INSTALLED_ON_LIGHT : INSTALLED_ON_DARK
 }
 
 function accentColor(name) {
@@ -594,6 +731,30 @@ function browsableUrl(url) {
 // thumbnails are WebP, which needs an optional system package, so the repo's
 // own screenshot is tried first and the curated thumbnail is the fallback
 // rather than the other way round.
+// An installed plugin names its origin the way git does — an scp-style
+// `git@host:owner/repo.git`, an ssh:// url, a trailing .git — none of which a
+// browser opens. This converts what it recognises and then hands the result
+// to browsableUrl, so there stays exactly one place that decides whether a
+// string is safe to launch.
+function repoWebUrl(url) {
+  var text = normalizeGitUrl(url)
+  if (text === "") return ""
+
+  var scp = text.match(/^[^@\s]+@([^:\s]+):(.+)$/)
+  if (scp) text = "https://" + scp[1] + "/" + scp[2]
+  else text = text.replace(/^ssh:\/\/(?:[^@\/\s]+@)?/, "https://")
+
+  return browsableUrl(text.replace(/\.git$/, "").replace(/\/+$/, ""))
+}
+
+// Where the row's plugin lives on the web. The origin remote first: that is
+// where an update actually pulls from. `clonedFrom` is only a record of how
+// the plugin first arrived, and a checkout can be repointed since.
+function rowRepoUrl(row) {
+  if (!row) return ""
+  return repoWebUrl(row.remote) || repoWebUrl(row.clonedFrom)
+}
+
 function repoPreviewUrl(repo, branch) {
   var text = normalizeGitUrl(repo).replace(/\.git$/, "").replace(/\/+$/, "")
   var match = text.match(/^https:\/\/github\.com\/([^\/\s]+\/[^\/\s]+)$/)
@@ -657,7 +818,9 @@ function applyUpdateReport(rows, report) {
     var copy = {}
     for (var key in row) copy[key] = row[key]
 
-    copy.localVersion = info ? info.localVersion : ""
+    // The git pass only reaches checkouts with a remote. Everything else keeps
+    // the version the manifest already gave it at load time.
+    copy.localVersion = info && info.localVersion !== "" ? info.localVersion : String(row.localVersion || "")
     copy.remoteVersion = info ? info.remoteVersion : ""
     copy.updateChecked = !!info && info.remoteSha !== "" && info.localSha !== ""
     copy.behind = copy.updateChecked && info.localSha !== info.remoteSha

@@ -9,23 +9,25 @@ const source = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
 const Model = new Function(
   source + `
   return {
-    splitSections, parseArray, parseGitMap, mergePlugins, countRemovable,
+    splitSections, parseArray, parseGitMap, parseManifestMeta, mergePlugins, countRemovable,
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind,
     matchesQuery, filterRows, isFiltering, emptyMessage,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
-    installState, installBlockedReason, starLabel, accentColor,
-    repoShortLabel, browsableUrl, repoPreviewUrl, previewCandidates,
+    installState, installBlockedReason, starLabel, accentColor, installedTint,
+    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, repoPreviewUrl, previewCandidates,
     parseUpdateReport, applyUpdateReport, updateBadge, versionLabel, countBehind,
-    metaLine, descriptionLine, hasDescription, sourceBadge,
+    metaLine, authorLabel, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
-    actionVerb, actionGerund, successMessage, failureMessage
+    actionVerb, actionGerund, successMessage, failureMessage,
+    needsPlacement, canEnable, placementOptions, enableCommand, enableMessage, findRow,
+    catalogNeedsPlacement
   }`
 )()
 
-const payload = (list, catalog, git) =>
-  `===list===\n${list}\n===catalog===\n${catalog}\n===git===\n${git}`
+const payload = (list, catalog, git, manifest = "") =>
+  `===list===\n${list}\n===catalog===\n${catalog}\n===git===\n${git}\n===manifest===\n${manifest}`
 
 test("splitSections rejects output that is missing a section", () => {
   assert.equal(Model.splitSections("===list===\n[]"), null)
@@ -33,14 +35,30 @@ test("splitSections rejects output that is missing a section", () => {
 })
 
 test("splitSections rejects sections that arrive out of order", () => {
-  assert.equal(Model.splitSections("===git===\n===list===\n===catalog===\n"), null)
+  assert.equal(Model.splitSections("===git===\n===list===\n===catalog===\n===manifest===\n"), null)
+})
+
+test("splitSections rejects output that stops before the manifest section", () => {
+  assert.equal(Model.splitSections("===list===\n[]\n===catalog===\n[]\n===git===\n"), null)
 })
 
 test("splitSections returns each section's body", () => {
-  const sections = Model.splitSections(payload("[1]", "[2]", "a\tb"))
+  const sections = Model.splitSections(payload("[1]", "[2]", "a\tb", "x\ty\tz"))
   assert.equal(sections.list.trim(), "[1]")
   assert.equal(sections.catalog.trim(), "[2]")
   assert.equal(sections.git.trim(), "a\tb")
+  assert.equal(sections.manifest.trim(), "x\ty\tz")
+})
+
+test("parseManifestMeta reads the author and version of each manifest", () => {
+  const meta = Model.parseManifestMeta("acme.weather\tAcme Corp\t1.2.3\nacme.dev\t\t\n")
+  assert.deepEqual(meta["acme.weather"], { author: "Acme Corp", version: "1.2.3" })
+  assert.deepEqual(meta["acme.dev"], { author: "", version: "" })
+})
+
+test("parseManifestMeta skips blank and separator-less lines", () => {
+  const meta = Model.parseManifestMeta("\nno-tabs-here\nacme.weather\tAcme\t1.0.0\n")
+  assert.deepEqual(Object.keys(meta), ["acme.weather"])
 })
 
 test("parseArray tells a failed command apart from an empty result", () => {
@@ -111,12 +129,124 @@ test("mergePlugins survives a plugin the catalog never mentioned", () => {
   assert.equal(rows[0].updatable, false)
 })
 
+test("mergePlugins carries the author and version out of each manifest", () => {
+  const meta = { "acme.weather": { author: "Acme Corp", version: "2.0.1" } }
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap, meta)
+  const weather = rows.find(r => r.id === "acme.weather")
+  assert.equal(weather.author, "Acme Corp")
+  assert.equal(weather.localVersion, "2.0.1")
+
+  const dev = rows.find(r => r.id === "acme.dev")
+  assert.equal(dev.author, "")
+  assert.equal(dev.localVersion, "")
+})
+
 test("mergePlugins ignores entries with no id", () => {
   assert.deepEqual(Model.mergePlugins([null, {}, { name: "x" }], [], {}), [])
 })
 
 test("countRemovable counts only what lives in the user plugin directory", () => {
   assert.equal(Model.countRemovable(Model.mergePlugins(listEntries, catalogEntries, gitMap)), 2)
+})
+
+// ---- Enabling ------------------------------------------------------------
+
+test("canEnable offers the action only to plugins that are off", () => {
+  assert.equal(Model.canEnable({ id: "a.b", enabled: false, kinds: ["bar-widget"] }), true)
+  assert.equal(Model.canEnable({ id: "a.b", enabled: true, kinds: ["bar-widget"] }), false)
+  assert.equal(Model.canEnable(null), false)
+})
+
+test("needsPlacement asks where only for widgets that take a place in the bar", () => {
+  assert.equal(Model.needsPlacement({ kinds: ["bar-widget"] }), true)
+  assert.equal(Model.needsPlacement({ kinds: ["service", "bar-widget"] }), true)
+  assert.equal(Model.needsPlacement({ kinds: ["service"] }), false)
+  assert.equal(Model.needsPlacement({ kinds: ["overlay"] }), false)
+  assert.equal(Model.needsPlacement(null), false)
+})
+
+// A whole-bar plugin replaces the bar rather than sitting in a section, and
+// `omarchy plugin enable` fails outright if handed a placement for one.
+test("needsPlacement refuses to place a plugin that IS the bar", () => {
+  assert.equal(Model.needsPlacement({ kinds: ["bar"] }), false)
+  assert.equal(Model.needsPlacement({ kinds: ["bar", "bar-widget"] }), false)
+})
+
+test("placementOptions offers the three sections the bar actually has", () => {
+  assert.deepEqual(Model.placementOptions().map(o => o.value), ["left", "center", "right"])
+})
+
+test("enableCommand passes the section only when one was chosen", () => {
+  assert.deepEqual(
+    Model.enableCommand({ id: "a.b", kinds: ["bar-widget"] }, "right"),
+    ["omarchy", "plugin", "enable", "a.b", "right"])
+  assert.deepEqual(
+    Model.enableCommand({ id: "a.b", kinds: ["service"] }, ""),
+    ["omarchy", "plugin", "enable", "a.b"])
+})
+
+// The section is what the user picked from a fixed list, never free text —
+// but this builds an argv array that reaches a CLI, so it is checked here too
+// rather than trusted because the UI happens to be a set of buttons today.
+test("enableCommand drops a section that is not one of the three", () => {
+  assert.deepEqual(
+    Model.enableCommand({ id: "a.b", kinds: ["bar-widget"] }, "--yes"),
+    ["omarchy", "plugin", "enable", "a.b"])
+  assert.deepEqual(
+    Model.enableCommand({ id: "a.b", kinds: ["bar-widget"] }, "Right"),
+    ["omarchy", "plugin", "enable", "a.b"])
+})
+
+test("enableCommand refuses a row with no id", () => {
+  assert.deepEqual(Model.enableCommand(null, "left"), [])
+  assert.deepEqual(Model.enableCommand({ id: "" }, "left"), [])
+})
+
+test("enableMessage names the section it put the widget in", () => {
+  assert.equal(Model.successMessage("enable", "Weather"), "Enabled Weather")
+  assert.equal(Model.enableMessage("Weather", "right"), "Enabled Weather in the right section")
+  assert.equal(Model.enableMessage("Alt+Tab", ""), "Enabled Alt+Tab")
+})
+
+test("the enable action reports failure in its own words", () => {
+  assert.equal(Model.actionVerb("enable"), "Enable")
+  assert.equal(Model.actionGerund("enable"), "Enabling")
+})
+
+// The placement question outlives the list underneath it: a background reload
+// can land while the dialog is open, and answering must not enable whatever
+// now happens to sit at that position.
+test("findRow looks a plugin up by id rather than by position", () => {
+  const rows = [{ id: "a.b" }, { id: "c.d" }]
+  assert.equal(Model.findRow(rows, "c.d").id, "c.d")
+  assert.equal(Model.findRow(rows, "gone"), null)
+  assert.equal(Model.findRow(rows, ""), null)
+  assert.equal(Model.findRow(null, "a.b"), null)
+})
+
+// The panel is a plugin, and cloning one into ~/.config/omarchy/plugins makes
+// the shell tear every plugin widget down and rebuild it — this panel with
+// them. So anything that has to be asked about an install must be asked BEFORE
+// the install starts, which means reading the kind off the registry listing
+// rather than off the manifest that does not exist yet.
+test("catalogNeedsPlacement reads the registry's own words for the kind", () => {
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Bar widget" }), true)
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Service + Bar widget" }), true)
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Menu + Bar widget" }), true)
+})
+
+// "Bar" is a whole-bar replacement, and it is a prefix of "Bar widget" — so
+// this has to match the phrase, not the word.
+test("catalogNeedsPlacement does not place a plugin that IS the bar", () => {
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Bar" }), false)
+})
+
+test("catalogNeedsPlacement stays quiet about kinds it cannot vouch for", () => {
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Service" }), false)
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Overlay" }), false)
+  assert.equal(Model.catalogNeedsPlacement({ kind: "Suite" }), false)
+  assert.equal(Model.catalogNeedsPlacement({ kind: "" }), false)
+  assert.equal(Model.catalogNeedsPlacement(null), false)
 })
 
 test("isValidGitUrl accepts the three shapes git actually clones", () => {
@@ -205,9 +335,26 @@ test("nextKind wraps so the cycle key never dead-ends", () => {
   assert.equal(Model.nextKind([], "all"), "all")
 })
 
-test("metaLine pairs the id with readable kind labels", () => {
-  assert.equal(Model.metaLine({ id: "a.b", kinds: [] }), "a.b  ·  no kind")
-  assert.equal(Model.metaLine({ id: "a.b", kinds: ["bar-widget", "service"] }), "a.b  ·  Widget · Service")
+test("metaLine pairs the author with readable kind labels", () => {
+  assert.equal(Model.metaLine({ id: "a.b", author: "Ada", kinds: [] }), "Ada  ·  no kind")
+  assert.equal(Model.metaLine({ id: "a.b", author: "Ada", kinds: ["bar-widget", "service"] }), "Ada  ·  Widget · Service")
+})
+
+// A manifest with no author still names its namespace in the id, and that
+// namespace is the handle the plugin was published under.
+test("metaLine falls back to the id namespace when no author is declared", () => {
+  assert.equal(Model.metaLine({ id: "agx.screen-time", kinds: ["bar-widget"] }), "agx  ·  Widget")
+})
+
+test("metaLine drops the author segment when nothing names one", () => {
+  assert.equal(Model.metaLine({ id: "ghost", kinds: ["service"] }), "Service")
+})
+
+test("authorLabel prefers the manifest author over the id namespace", () => {
+  assert.equal(Model.authorLabel({ id: "agx.screen-time", author: "  agx  " }), "agx")
+  assert.equal(Model.authorLabel({ id: "agx.screen-time" }), "agx")
+  assert.equal(Model.authorLabel({ id: "ghost" }), "")
+  assert.equal(Model.authorLabel(null), "")
 })
 
 test("descriptionLine says a missing description is the manifest's doing", () => {
@@ -243,8 +390,10 @@ test("actionGerund does not produce Updateing", () => {
   assert.equal(Model.actionVerb("add"), "Add")
 })
 
-test("successMessage says that an added plugin is now live", () => {
-  assert.match(Model.successMessage("add", "omarchy-clock"), /enabled/)
+// Adding no longer enables — placement is a separate, asked-for step — so the
+// message must not claim the plugin is running.
+test("successMessage reports an add as added, not as live", () => {
+  assert.equal(Model.successMessage("add", "omarchy-clock"), "Added omarchy-clock")
 })
 
 test("matchesQuery searches name and id, case-insensitively", () => {
@@ -432,6 +581,25 @@ test("starLabel keeps big counts short", () => {
   assert.equal(Model.starLabel(undefined), "0")
 })
 
+// Omarchy themes define foreground, background, accent, urgent and muted —
+// there is no success role to borrow, so the installed badge brings its own
+// green and only has to survive both ends of the theme range.
+test("installedTint darkens the green for a light theme background", () => {
+  assert.equal(Model.installedTint({ r: 0.06, g: 0.07, b: 0.08 }), "#5fb37a")
+  assert.equal(Model.installedTint({ r: 0.98, g: 0.98, b: 0.98 }), "#1f7a4d")
+})
+
+test("installedTint reads lightness, not any single channel", () => {
+  // Pure blue is dark despite a full channel; pure green is light despite two
+  // empty ones. A naive max() or average would get both of these backwards.
+  assert.equal(Model.installedTint({ r: 0, g: 0, b: 1 }), "#5fb37a")
+  assert.equal(Model.installedTint({ r: 0, g: 1, b: 0 }), "#1f7a4d")
+})
+
+test("installedTint assumes a dark panel when handed nothing", () => {
+  assert.equal(Model.installedTint(null), "#5fb37a")
+})
+
 test("accentColor falls back rather than returning nothing", () => {
   assert.equal(Model.accentColor("cyan"), Model.accentColor("CYAN"))
   assert.equal(Model.accentColor("not-a-colour"), Model.accentColor("violet"))
@@ -456,6 +624,36 @@ test("browsableUrl only ever hands https to the browser", () => {
   assert.equal(Model.browsableUrl("https://github.com"), "")
   assert.equal(Model.browsableUrl(""), "")
   assert.equal(Model.browsableUrl(null), "")
+})
+
+// An installed checkout names its origin in git's own vocabulary, which is
+// not a web address: ssh remotes and the .git suffix both have to be turned
+// into something a browser can open.
+test("repoWebUrl turns a git remote into a page you can open", () => {
+  assert.equal(Model.repoWebUrl("https://github.com/a/b.git"), "https://github.com/a/b")
+  assert.equal(Model.repoWebUrl("git@github.com:a/b.git"), "https://github.com/a/b")
+  assert.equal(Model.repoWebUrl("ssh://git@github.com/a/b.git"), "https://github.com/a/b")
+  assert.equal(Model.repoWebUrl("https://gitlab.com/group/sub/proj/"), "https://gitlab.com/group/sub/proj")
+})
+
+test("repoWebUrl refuses anything that is not a repository on the web", () => {
+  assert.equal(Model.repoWebUrl(""), "")
+  assert.equal(Model.repoWebUrl("/home/me/plugins/local"), "")
+  assert.equal(Model.repoWebUrl("javascript:alert(1)"), "")
+  assert.equal(Model.repoWebUrl("file:///etc/passwd"), "")
+  assert.equal(Model.repoWebUrl("git@github.com:a b.git"), "")
+  assert.equal(Model.repoWebUrl("https://github.com"), "")
+})
+
+test("rowRepoUrl prefers the live origin over what the plugin was cloned from", () => {
+  // The origin is where an update will actually pull from; clonedFrom is only
+  // a record of how it first arrived, and a checkout can be repointed.
+  assert.equal(
+    Model.rowRepoUrl({ remote: "git@github.com:a/live.git", clonedFrom: "https://github.com/a/old" }),
+    "https://github.com/a/live")
+  assert.equal(Model.rowRepoUrl({ remote: "", clonedFrom: "https://github.com/a/old" }), "https://github.com/a/old")
+  assert.equal(Model.rowRepoUrl({ remote: "", clonedFrom: "" }), "")
+  assert.equal(Model.rowRepoUrl(null), "")
 })
 
 test("repoPreviewUrl points at the repo's own preview.png on the validated branch", () => {
@@ -533,6 +731,16 @@ test("an unreachable remote is 'not known', never 'up to date'", () => {
   const missing = rows.find(r => r.id === "d.notgit")
   assert.equal(missing.updateChecked, false)
   assert.equal(missing.behind, false)
+})
+
+// The manifest read at load time is the only version a built-in or a
+// non-git checkout ever gets; an update pass that skipped it must not blank it.
+test("applyUpdateReport keeps a manifest version the git pass never saw", () => {
+  const rows = Model.applyUpdateReport(
+    [{ id: "e.local", sourceDir: "/plugins/e.local", localVersion: "3.1.4" }],
+    report
+  )
+  assert.equal(rows[0].localVersion, "3.1.4")
 })
 
 test("applyUpdateReport does not mutate the rows it was given", () => {
