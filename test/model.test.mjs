@@ -21,8 +21,8 @@ const Model = new Function(
     metaLine, authorLabel, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage,
-    needsPlacement, canEnable, placementOptions, enableCommand, enableMessage, findRow,
-    canDisable, disableCommand,
+    needsPlacement, canEnable, placementOptions, enableCommand, findRow,
+    canDisable, disableCommand, enableNote, disableNote,
     catalogNeedsPlacement
   }`
 )()
@@ -186,6 +186,20 @@ test("disableCommand names the plugin and nothing else", () => {
   assert.deepEqual(Model.disableCommand(null), [])
 })
 
+// Enabling or disabling a bar widget rewrites bar.layout, which makes the bar
+// rebuild its widgets — this panel among them. The status line it would have
+// written is destroyed before anyone reads it, so the outcome is announced
+// where it survives.
+test("enableNote says where the widget landed", () => {
+  assert.equal(Model.enableNote("right"), "It has a place in the right section of the bar now.")
+  assert.equal(Model.enableNote(""), "It is switched on now.")
+  assert.equal(Model.enableNote("nonsense"), "It is switched on now.")
+})
+
+test("disableNote makes clear nothing was uninstalled", () => {
+  assert.equal(Model.disableNote(), "It is off the bar, but still installed.")
+})
+
 test("the disable action reports in its own words", () => {
   assert.equal(Model.actionVerb("disable"), "Disable")
   assert.equal(Model.actionGerund("disable"), "Disabling")
@@ -235,12 +249,6 @@ test("enableCommand drops a section that is not one of the three", () => {
 test("enableCommand refuses a row with no id", () => {
   assert.deepEqual(Model.enableCommand(null, "left"), [])
   assert.deepEqual(Model.enableCommand({ id: "" }, "left"), [])
-})
-
-test("enableMessage names the section it put the widget in", () => {
-  assert.equal(Model.successMessage("enable", "Weather"), "Enabled Weather")
-  assert.equal(Model.enableMessage("Weather", "right"), "Enabled Weather in the right section")
-  assert.equal(Model.enableMessage("Alt+Tab", ""), "Enabled Alt+Tab")
 })
 
 test("the enable action reports failure in its own words", () => {

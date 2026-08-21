@@ -165,10 +165,6 @@ Panel {
   // registry listing, since the manifest that would say so is not on disk yet.
   property bool pendingPlacementNeeded: false
 
-  // Held past the command, so the success line can name where the widget
-  // actually landed rather than just saying it is on.
-  property string pendingSection: ""
-
   // The section chosen for a plugin that is not installed yet. Held from the
   // moment the question is answered until the install command is built, since
   // by the time the clone lands this panel no longer exists to be asked.
@@ -387,16 +383,27 @@ Panel {
   }
 
   function startDisable(row) {
-    var command = Model.disableCommand(row)
+    runDetached(Model.successMessage("disable", row.name),
+                Model.disableNote(),
+                Model.disableCommand(row))
+  }
+
+  // Detached, and announced through a notification rather than the status
+  // line — for the same reason installing is. Switching a bar widget on or off
+  // rewrites `bar.layout`; the bar rebuilds its widgets, and this panel is one
+  // of them. It is gone before `onExited` could fire, so a status message here
+  // is written to something nobody can read, and a Process owned by a
+  // destroyed panel is not a safe place for the command itself either.
+  function runDetached(summary, detail, command) {
     if (command.length === 0) return
-    runAction("disable", row.name, command)
+    Quickshell.execDetached(["bash", "-c", noticeScript, "notice", summary, detail].concat(command))
+    setStatus(summary, false)
   }
 
   function startEnable(row, section) {
-    var command = Model.enableCommand(row, section)
-    if (command.length === 0) return
-    pendingSection = section
-    runAction("enable", row.name, command)
+    runDetached(Model.successMessage("enable", row.name),
+                Model.enableNote(section),
+                Model.enableCommand(row, section))
   }
 
   function confirmPlacement(section) {
@@ -450,6 +457,17 @@ Panel {
       cancelPending()
     }
   }
+
+  // Run a command, then say what happened where the answer will still exist:
+  // $1 summary, $2 detail, and everything after that is the command itself,
+  // passed as separate arguments so none of it is ever parsed as shell.
+  readonly property string noticeScript: ""
+    + "set -u -o pipefail; "
+    + "summary=\"$1\"; detail=\"$2\"; shift 2; "
+    + "if ! err=$(\"$@\" 2>&1 >/dev/null | tail -1); then "
+    + "  notify-send -a 'Plugin Manager' \"$summary failed\" \"$err\"; exit 1; "
+    + "fi; "
+    + "notify-send -a 'Plugin Manager' \"$summary\" \"$detail\""
 
   // Clone, then place — as one detached command.
   //
@@ -714,9 +732,7 @@ Panel {
       root.busyId = ""
 
       if (exitCode === 0) {
-        root.setStatus(kind === "enable"
-          ? Model.enableMessage(label, root.pendingSection)
-          : Model.successMessage(kind, label), false)
+        root.setStatus(Model.successMessage(kind, label), false)
         if (kind === "add") urlField.text = ""
       } else {
         root.setStatus(Model.failureMessage(kind, root.actionStderr, exitCode), true)

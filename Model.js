@@ -426,6 +426,19 @@ function canDisable(row) {
   return !!row && String(row.id || "") !== "" && row.enabled === true && row.canDisable === true
 }
 
+// Both of these end up in a desktop notification rather than the panel's own
+// status line: switching a bar widget on or off rewrites `bar.layout`, the bar
+// rebuilds its widgets, and this panel is torn down with them before it could
+// show anything.
+function enableNote(section) {
+  if (BAR_SECTIONS.indexOf(String(section || "")) < 0) return "It is switched on now."
+  return "It has a place in the " + section + " section of the bar now."
+}
+
+function disableNote() {
+  return "It is off the bar, but still installed."
+}
+
 function disableCommand(row) {
   if (!row || String(row.id || "") === "") return []
   return ["omarchy", "plugin", "disable", String(row.id)]
@@ -455,11 +468,6 @@ function enableCommand(row, section) {
   var command = ["omarchy", "plugin", "enable", String(row.id)]
   if (BAR_SECTIONS.indexOf(String(section || "")) >= 0) command.push(String(section))
   return command
-}
-
-function enableMessage(label, section) {
-  if (BAR_SECTIONS.indexOf(String(section || "")) < 0) return "Enabled " + label
-  return "Enabled " + label + " in the " + section + " section"
 }
 
 function actionVerb(kind) {
