@@ -1,13 +1,15 @@
 # Plugin Manager
 
 An Omarchy bar widget that manages your plugins from the bar: browse the
-marketplace, install from it, and update or remove what you already have.
+marketplace, install from it — choosing where in the bar each widget goes —
+and enable, disable, update, or remove what you already have.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
 ![The plugin manager panel: a repository url field, kind filter chips beside a
-search box, and the installed plugins listed with their descriptions, each row
-carrying an update and a remove button](preview.png)
+search box, and the installed plugins listed with an on/off bar down the left
+of each row, the author, kind and version under the name, the description, a
+link to the repository, and the row's action buttons](preview.png)
 
 ## What it does
 
@@ -17,21 +19,33 @@ Click the puzzle icon and you get two tabs.
 
 What the shell actually found, in two sections:
 
-- **Installed** — everything under `~/.config/omarchy/plugins`, with an update
-  and a remove button on every row.
-- **Built-in** — everything shipped under `/usr/share/omarchy`. No buttons:
-  these are not ours to pull or delete.
+- **Installed** — everything under `~/.config/omarchy/plugins`, with update
+  and remove buttons alongside the on/off switch.
+- **Built-in** — everything shipped under `/usr/share/omarchy`. These can be
+  switched on and off like any other plugin, but not pulled or deleted: they
+  are not ours to change.
 
 The split is not cosmetic. In one mixed list, most rows carry controls that do
 nothing, and you have to work out which from a badge. Two sections make the
 available actions constant within each one.
 
-Every row shows **what the plugin actually does** — the description from its
-manifest, wrapped across two lines, because one elided line usually cuts off
+A bar down the left of each row says whether the plugin is on. For a bar
+widget "on" means exactly one thing — it has a place in the bar — because
+that is what the shell itself reports.
+
+Under the name, every row states **who wrote it, what it plugs into, and
+which version is on disk** — read from each plugin's own `manifest.json` at
+load time, so it is there for every plugin rather than only the git checkouts
+an update check happens to reach. Under that is **what the plugin actually
+does** — the description from its manifest, wrapped across two lines, because
+one elided line usually cuts off
 before it has said anything. The two lines are reserved even when the text is
 short, so rows keep a uniform height as you filter. A plugin whose author left
 the description out says so, which is how you tell an empty manifest field
-from a failed read.
+from a failed read. Last comes a link to the plugin's own repository:
+reading what you are running is the whole defence here, and it should not get
+harder once a plugin is installed. Git remotes are converted to something a
+browser can open, so ssh and `git@host:path` checkouts link too.
 
 Two controls share a row and narrow both lists at once:
 
@@ -48,9 +62,9 @@ When nothing matches, the message names whichever control excluded everything
 
 ### Knowing what needs updating
 
-Every row shows its installed version, and rows with an update carry an accent
-badge — `1.0.0 → 1.2.0` when the versions differ, or just `update` when they
-do not. The header counts them, so you know before scrolling.
+Rows with an update carry an accent badge — `1.0.0 → 1.2.0` when the versions
+differ, or just `update` when they do not. The header counts them, so you know
+before scrolling.
 
 **The signal is commits, not version strings.** Authors do not reliably bump
 `manifest.json`: of the two checkouts that were genuinely behind when this was
@@ -66,10 +80,19 @@ the panel never waits on the network to show you what you already have. A
 remote it cannot reach is reported as unknown rather than as up to date —
 being quietly told nothing is how a stale plugin sits there looking current.
 
-### The three actions
+### The actions
 
-- **Add** — paste a git repository url; runs
-  `omarchy plugin add <url> --enable --yes` behind a confirmation.
+- **Add** — paste a git repository url; runs `omarchy plugin add <url> --yes`
+  behind a confirmation. The plugin is cloned and left switched off, because a
+  bare url says nothing about what is inside it; the row it becomes carries
+  the switch.
+- **Enable** — for a plugin that is off. A bar widget is asked *where* it goes
+  first, and lands in the section you picked. Anything else simply goes on.
+- **Disable** — takes a widget out of the bar and leaves the plugin on disk.
+  Whether a plugin can be switched off is the shell's call, not this panel's:
+  a whole bar has no off, only a successor. Disabling this panel closes the
+  window you are clicking in, so that one confirms and hands you the command
+  to undo it.
 - **Update** — for a plugin that is a git checkout with an origin remote, runs
   `omarchy plugin update <id> --yes`. A checkout with no origin has nothing to
   fast-forward from, so it gets no button rather than one that can only fail.
@@ -101,7 +124,18 @@ are ever passed to it.
 Not everything the registry lists is installable in one command — suites ship
 their own installers, and some repos are not plugin-shaped. Those cards show
 the registry's own explanation instead of a button that could only fail.
-Plugins you already have say `installed` rather than offering themselves again.
+Plugins you already have carry an `installed` badge on the preview, beside the
+`verified` one, rather than offering themselves again.
+
+### Installing asks where it goes
+
+Cloning a plugin makes the shell tear every plugin widget down and rebuild it
+— this panel among them. There is no "after the install" in which a plugin's
+own window can ask you anything, so the section question comes *before*
+anything is cloned, off the kind the registry publishes. Both answers in hand,
+the install runs detached and reports through a desktop notification, because
+a process owned by a destroyed panel cannot be relied on to finish and the
+placement is the half that would be dropped.
 
 ### Where the catalog comes from
 
@@ -178,10 +212,10 @@ url cannot become a command. Urls are also validated against `https://`,
 omarchy plugin add https://github.com/juancasanueva/omarchy-plugin-manager.git --enable
 ```
 
-Then place it in the bar if it did not land where you want it:
+Then move it if it did not land where you want it:
 
 ```bash
-omarchy bar move io.github.juancasanueva.plugin-manager right
+omarchy bar move io.github.juancasanueva.plugin-manager --section right
 ```
 
 ## Develop
@@ -205,8 +239,9 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `manifest.json` | Plugin contract — id, kind, entry point |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | Both tabs, search, filters, actions, and confirmations |
-| `PluginRow.qml` | One row: name, id, kinds, description, and its two buttons |
+| `PluginRow.qml` | One row: name, author/kind/version, description, repository link, and its buttons |
 | `CatalogCard.qml` | One marketplace card: preview, blurb, stars, install |
+| `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 
 ## License

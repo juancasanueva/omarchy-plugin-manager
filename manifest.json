@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "id": "io.github.juancasanueva.plugin-manager",
   "name": "Plugin Manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Juan Casanueva",
   "license": "MIT",
-  "description": "List, add, update, and remove Omarchy shell plugins from the bar",
+  "description": "Browse, install, place, enable, update, and remove Omarchy shell plugins from the bar",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
     "displayName": "Plugin Manager",
-    "description": "List, add, update, and remove Omarchy shell plugins",
+    "description": "Browse, install, place, and manage Omarchy shell plugins",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"
