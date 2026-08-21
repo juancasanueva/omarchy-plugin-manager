@@ -134,6 +134,9 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       description: String(meta.description || ""),
       kinds: toStringList(item.kinds && item.kinds.length ? item.kinds : meta.kinds),
       enabled: item.enabled === true,
+      // A bar has no off, only a successor — the shell says so per plugin
+      // rather than making every caller work it out from kinds again.
+      canDisable: item.canDisable === true,
       firstParty: firstParty,
       group: firstParty ? GROUP_BUILT_IN : GROUP_INSTALLED,
       clonedFrom: String(item.clonedFrom || ""),
@@ -417,6 +420,17 @@ function canEnable(row) {
 // A bar widget takes a place in a section. A plugin whose kind is `bar` IS the
 // bar — it replaces the one in use rather than sitting inside it — and
 // `omarchy plugin enable` fails outright if handed a placement for one.
+// The exact inverse of enable: it takes a widget out of the bar layout and
+// leaves the plugin on disk, so it is not destructive and asks nothing.
+function canDisable(row) {
+  return !!row && String(row.id || "") !== "" && row.enabled === true && row.canDisable === true
+}
+
+function disableCommand(row) {
+  if (!row || String(row.id || "") === "") return []
+  return ["omarchy", "plugin", "disable", String(row.id)]
+}
+
 function needsPlacement(row) {
   if (!row) return false
   var kinds = row.kinds || []
@@ -453,6 +467,7 @@ function actionVerb(kind) {
   if (kind === "update") return "Update"
   if (kind === "remove") return "Remove"
   if (kind === "enable") return "Enable"
+  if (kind === "disable") return "Disable"
   return "Action"
 }
 
@@ -461,6 +476,7 @@ function successMessage(kind, label) {
   if (kind === "update") return "Updated " + label
   if (kind === "remove") return "Removed " + label
   if (kind === "enable") return "Enabled " + label
+  if (kind === "disable") return "Disabled " + label
   return "Done"
 }
 
@@ -479,6 +495,7 @@ function actionGerund(kind) {
   if (kind === "update") return "Updating"
   if (kind === "remove") return "Removing"
   if (kind === "enable") return "Enabling"
+  if (kind === "disable") return "Disabling"
   return "Working"
 }
 

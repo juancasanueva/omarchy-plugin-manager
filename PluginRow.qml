@@ -31,6 +31,7 @@ Rectangle {
   signal updateRequested()
   signal removeRequested()
   signal enableRequested()
+  signal disableRequested()
 
   readonly property string badge: Model.sourceBadge(row)
   readonly property bool hasUpdate: row ? row.behind === true : false
@@ -38,6 +39,10 @@ Rectangle {
   // Installed but switched off. For a bar widget that means it has no place
   // in the bar yet, which is the state the grey dot is reporting.
   readonly property bool canEnable: Model.canEnable(row)
+
+  // Off the bar, still on disk. The inverse of the button above it, and the
+  // only way back from an enable that turned out to be the wrong idea.
+  readonly property bool canDisable: Model.canDisable(row)
 
   readonly property string repoUrl: Model.rowRepoUrl(row)
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
@@ -237,7 +242,7 @@ Rectangle {
     PanelActionButton {
       anchors.verticalCenter: parent.verticalCenter
       visible: root.canEnable
-      iconText: "󰐥"
+      iconText: "󰚥"
       tooltipText: Model.needsPlacement(root.row)
         ? "Enable — choose where in the bar it goes"
         : "Enable this plugin"
@@ -246,6 +251,20 @@ Rectangle {
       enabled: root.actionsEnabled
       opacity: enabled ? 1 : 0.4
       onClicked: root.enableRequested()
+    }
+
+    PanelActionButton {
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.canDisable
+      iconText: "󰚦"
+      tooltipText: Model.needsPlacement(root.row)
+        ? "Disable — take it out of the bar, keep it installed"
+        : "Disable this plugin, keep it installed"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: root.actionsEnabled
+      opacity: enabled ? 1 : 0.4
+      onClicked: root.disableRequested()
     }
 
     PanelActionButton {

@@ -190,6 +190,11 @@ Panel {
         + "\n\nYou will be asked where to put it once it is cloned."
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
+    if (pendingKind === "disable")
+      return "Disable " + pendingLabel + "?\n\n"
+        + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
+        + "nothing is uninstalled, but you will need a terminal to put it back:\n\n"
+        + "omarchy plugin enable " + moduleName + " right"
     return ""
   }
 
@@ -364,6 +369,29 @@ Panel {
     pendingKind = "place"
   }
 
+  // Disabling takes a widget out of the bar and leaves it on disk, so it is
+  // reversible from the row it just greyed out — no confirmation needed. With
+  // one exception: this panel's own row, whose Enable button leaves with it.
+  function askDisable(row) {
+    if (!Model.canDisable(row) || busy) return
+
+    if (row.id === moduleName) {
+      pendingId = row.id
+      pendingLabel = row.name
+      pendingUrl = ""
+      pendingKind = "disable"
+      return
+    }
+
+    startDisable(row)
+  }
+
+  function startDisable(row) {
+    var command = Model.disableCommand(row)
+    if (command.length === 0) return
+    runAction("disable", row.name, command)
+  }
+
   function startEnable(row, section) {
     var command = Model.enableCommand(row, section)
     if (command.length === 0) return
@@ -405,6 +433,12 @@ Panel {
   // plugin widget, this panel included, so there is no "after the install" in
   // which to ask anything.
   function confirmPending() {
+    if (pendingKind === "disable") {
+      var row = Model.findRow(rows, pendingId)
+      cancelPending()
+      if (row) startDisable(row)
+      return
+    }
     if (pendingKind === "add") {
       if (pendingId !== "" && pendingPlacementNeeded) {
         pendingKind = "place"
@@ -1053,6 +1087,10 @@ Panel {
                 root.selectedIndex = index
                 root.askEnable(modelData)
               }
+              onDisableRequested: {
+                root.selectedIndex = index
+                root.askDisable(modelData)
+              }
             }
           }
 
@@ -1090,6 +1128,10 @@ Panel {
               onEnableRequested: {
                 root.selectedIndex = globalIndex
                 root.askEnable(modelData)
+              }
+              onDisableRequested: {
+                root.selectedIndex = globalIndex
+                root.askDisable(modelData)
               }
             }
           }
@@ -1192,7 +1234,9 @@ Panel {
         z: 10
         opened: root.confirming
         message: root.confirmMessage
-        confirmText: root.pendingKind === "remove" ? "Remove" : "Add"
+        confirmText: Model.actionVerb(root.pendingKind) === "Action"
+          ? "Add"
+          : Model.actionVerb(root.pendingKind)
         background: Color.popups.background
         foreground: root.contentForeground
         fontFamily: root.contentFontFamily

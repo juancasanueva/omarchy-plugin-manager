@@ -22,6 +22,7 @@ const Model = new Function(
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage,
     needsPlacement, canEnable, placementOptions, enableCommand, enableMessage, findRow,
+    canDisable, disableCommand,
     catalogNeedsPlacement
   }`
 )()
@@ -129,6 +130,18 @@ test("mergePlugins survives a plugin the catalog never mentioned", () => {
   assert.equal(rows[0].updatable, false)
 })
 
+// A bar has no off, only a successor, so the shell reports canDisable: false
+// for one. The row has to carry that or the panel offers a verb the CLI will
+// refuse.
+test("mergePlugins carries whether a plugin can be switched off", () => {
+  const rows = Model.mergePlugins(
+    [{ id: "a.bar", name: "Bar", kinds: ["bar"], enabled: true, canDisable: false },
+     { id: "b.widget", name: "Widget", kinds: ["bar-widget"], enabled: true, canDisable: true }],
+    [], {})
+  assert.equal(rows.find(r => r.id === "a.bar").canDisable, false)
+  assert.equal(rows.find(r => r.id === "b.widget").canDisable, true)
+})
+
 test("mergePlugins carries the author and version out of each manifest", () => {
   const meta = { "acme.weather": { author: "Acme Corp", version: "2.0.1" } }
   const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap, meta)
@@ -155,6 +168,28 @@ test("canEnable offers the action only to plugins that are off", () => {
   assert.equal(Model.canEnable({ id: "a.b", enabled: false, kinds: ["bar-widget"] }), true)
   assert.equal(Model.canEnable({ id: "a.b", enabled: true, kinds: ["bar-widget"] }), false)
   assert.equal(Model.canEnable(null), false)
+})
+
+// Disable takes a widget out of the bar and leaves the plugin on disk. It is
+// the exact inverse of enable, and the only thing it cannot be applied to is a
+// whole-bar plugin: a bar has no off, only a successor.
+test("canDisable offers the action only to plugins that are on", () => {
+  assert.equal(Model.canDisable({ id: "a.b", enabled: true, canDisable: true }), true)
+  assert.equal(Model.canDisable({ id: "a.b", enabled: false, canDisable: true }), false)
+  assert.equal(Model.canDisable({ id: "a.b", enabled: true, canDisable: false }), false)
+  assert.equal(Model.canDisable(null), false)
+})
+
+test("disableCommand names the plugin and nothing else", () => {
+  assert.deepEqual(Model.disableCommand({ id: "a.b" }), ["omarchy", "plugin", "disable", "a.b"])
+  assert.deepEqual(Model.disableCommand({ id: "" }), [])
+  assert.deepEqual(Model.disableCommand(null), [])
+})
+
+test("the disable action reports in its own words", () => {
+  assert.equal(Model.actionVerb("disable"), "Disable")
+  assert.equal(Model.actionGerund("disable"), "Disabling")
+  assert.equal(Model.successMessage("disable", "Active window"), "Disabled Active window")
 })
 
 test("needsPlacement asks where only for widgets that take a place in the bar", () => {
