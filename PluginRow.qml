@@ -40,9 +40,15 @@ Rectangle {
   // in the bar yet, which is the state the grey dot is reporting.
   readonly property bool canEnable: Model.canEnable(row)
 
-  // Off the bar, still on disk. The inverse of the button above it, and the
-  // only way back from an enable that turned out to be the wrong idea.
+  // Off the bar, still on disk. The inverse of enable, and the only way back
+  // from one that turned out to be the wrong idea.
   readonly property bool canDisable: Model.canDisable(row)
+
+  // The switch is drawn for every row, but it only moves for a row the shell
+  // will actually act on. A plugin that is on and cannot be switched off still
+  // gets to say so — a row with no control at all reads as a rendering gap
+  // rather than as a deliberate "this one stays on".
+  readonly property bool canToggle: canEnable || canDisable
 
   readonly property string repoUrl: Model.rowRepoUrl(row)
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
@@ -249,34 +255,50 @@ Rectangle {
       height: 1
     }
 
-    // First in the row, because on a disabled plugin it is the only action
-    // that changes anything you can see.
-    PanelActionButton {
+    // On or off, in one control. Two icon buttons that swapped places with each
+    // other made the reader decode a glyph to learn the current state and then
+    // decode it again to work out what clicking would do; a switch shows the
+    // state and the action at once, and it is the control the rest of the shell
+    // already uses for on and off.
+    //
+    // It sits where those two buttons sat rather than at the far edge: update
+    // and remove keep their positions, and the destructive one keeps the corner
+    // it has always had.
+    //
+    // `checked` is bound straight to the row, never flipped locally. Enabling a
+    // bar widget asks where it goes first, and a knob that threw itself across
+    // before that question was answered would be reporting a state the shell
+    // has not reached — and would stay wrong if the question was cancelled.
+    ToggleSwitch {
+      id: enabledSwitch
       anchors.verticalCenter: parent.verticalCenter
-      visible: root.canEnable
-      iconText: "󰚥"
-      tooltipText: Model.needsPlacement(root.row)
-        ? "Enable — choose where in the bar it goes"
-        : "Enable this plugin"
+      visible: root.row !== null
+      checked: root.row ? root.row.enabled === true : false
+      // Two different reasons a click does nothing, kept apart because the kit
+      // keeps them apart. `interactive` is the structural one — this row has no
+      // off — and it dims. `busy` is the passing one, a command already in
+      // flight: it swallows the click but leaves hover and the tooltip alone,
+      // so the switch does not blink every time a background refresh runs.
+      interactive: root.canToggle
+      busy: !root.actionsEnabled
+      opacity: root.canToggle ? 1 : 0.4
       foreground: root.foreground
-      fontFamily: root.fontFamily
-      enabled: root.actionsEnabled
-      opacity: enabled ? 1 : 0.4
-      onClicked: root.enableRequested()
-    }
+      onToggled: root.canDisable ? root.disableRequested() : root.enableRequested()
 
-    PanelActionButton {
-      anchors.verticalCenter: parent.verticalCenter
-      visible: root.canDisable
-      iconText: "󰚦"
-      tooltipText: Model.needsPlacement(root.row)
-        ? "Disable — take it out of the bar, keep it installed"
-        : "Disable this plugin, keep it installed"
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      enabled: root.actionsEnabled
-      opacity: enabled ? 1 : 0.4
-      onClicked: root.disableRequested()
+      PanelToolTip {
+        visible: enabledSwitch.containsMouse
+        text: {
+          if (root.canDisable) {
+            return Model.needsPlacement(root.row)
+              ? "Disable — take it out of the bar, keep it installed"
+              : "Disable this plugin, keep it installed"
+          }
+          return Model.needsPlacement(root.row)
+            ? "Enable — choose where in the bar it goes"
+            : "Enable this plugin"
+        }
+        fontFamily: root.fontFamily
+      }
     }
 
     PanelActionButton {

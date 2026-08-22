@@ -9,7 +9,8 @@ and enable, disable, update, or remove what you already have.
 ![The plugin manager panel: a repository url field, kind filter chips beside a
 search box, and the installed plugins listed with an on/off bar down the left
 of each row, the author, kind and version under the name, the description, a
-link to the repository, and the row's action buttons](preview.png)
+link to the repository, and an on/off switch beside the row's action
+buttons](preview.png)
 
 ## What it does
 
@@ -88,13 +89,21 @@ being quietly told nothing is how a stale plugin sits there looking current.
   behind a confirmation. The plugin is cloned and left switched off, because a
   bare url says nothing about what is inside it; the row it becomes carries
   the switch.
-- **Enable** — for a plugin that is off. A bar widget is asked *where* it goes
-  first, and lands in the section you picked. Anything else simply goes on.
-- **Disable** — takes a widget out of the bar and leaves the plugin on disk.
+- **Enable / disable** — one switch per row, not a pair of icons that trade
+  places. An icon that changes with the state makes you read the glyph to
+  learn where the plugin stands and read it again to work out what clicking
+  will do; a switch is already showing you both. Switching one on asks a bar
+  widget *where* it goes first and lands it in the section you picked;
+  anything else simply goes on. Switching one off takes a widget out of the
+  bar and leaves the plugin on disk. The knob only moves once the shell has
+  actually done it, so cancelling the placement question leaves the switch
+  where it was rather than lying about a plugin that never went on.
+
   Whether a plugin can be switched off is the shell's call, not this panel's:
-  a whole bar has no off, only a successor. Disabling this panel closes the
-  window you are clicking in, so that one confirms and hands you the command
-  to undo it.
+  a whole bar has no off, only a successor. Those rows still draw the switch,
+  dimmed and fixed on — a row with no control at all reads as something that
+  failed to render. Disabling this panel closes the window you are clicking
+  in, so that one confirms and hands you the command to undo it.
 - **Update** — for a plugin that is a git checkout with an origin remote, runs
   `omarchy plugin update <id> --yes`. A checkout with no origin has nothing to
   fast-forward from, so it gets no button rather than one that can only fail.
@@ -289,7 +298,7 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `manifest.json` | Plugin contract — id, kind, entry point |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | Both tabs, search, filters, actions, and confirmations |
-| `PluginRow.qml` | One row: name, author/kind/version, description, repository link, and its buttons |
+| `PluginRow.qml` | One row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
 | `CatalogCard.qml` | One marketplace card: preview, blurb, stars, install |
 | `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
