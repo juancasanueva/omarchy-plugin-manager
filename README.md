@@ -48,6 +48,12 @@ reading what you are running is the whole defence here, and it should not get
 harder once a plugin is installed. Git remotes are converted to something a
 browser can open, so ssh and `git@host:path` checkouts link too.
 
+A row that shows that link needs no badge saying it came from git — the link
+already said so. So the `git` / `local` badge appears only on rows that have
+no link, where it is the one thing separating a checkout whose origin has
+gone missing from a folder somebody dropped in by hand. Both lose the link
+and the update button; without the badge they would look identical.
+
 Two controls share a row and narrow both lists at once:
 
 - **Search by name** (`/`) — matches the name and the id, so typing

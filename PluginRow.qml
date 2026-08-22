@@ -215,13 +215,22 @@ Rectangle {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(4)
 
-    // Where the plugin came from, unless it has an update — then the update
-    // takes the space, because it is the thing worth acting on.
+    // Where the plugin came from, but only when nothing else already said it.
+    //
+    // A row that draws its repository link underneath has already told you it
+    // is a git checkout, and repeating that in a badge is one more thing to
+    // read for no fact gained. What the badge is actually for is the row with
+    // no link: a checkout whose origin has gone missing and a folder somebody
+    // dropped in by hand both lose the link and the update button, and without
+    // this they would render identically despite being different things.
+    //
+    // It also yields to an update chip, because that is the thing worth acting
+    // on and the space is the same.
     Text {
       // Never rich text: AutoText would fetch what a crafted string points at.
       textFormat: Text.PlainText
       anchors.verticalCenter: parent.verticalCenter
-      visible: root.badge !== "" && !root.hasUpdate
+      visible: root.badge !== "" && !root.hasUpdate && root.repoUrl === ""
       text: root.badge
       color: Color.muted
       font.family: root.fontFamily
