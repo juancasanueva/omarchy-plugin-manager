@@ -38,11 +38,13 @@ Under the name, every row states **who wrote it, what it plugs into, and
 which version is on disk** — read from each plugin's own `manifest.json` at
 load time, so it is there for every plugin rather than only the git checkouts
 an update check happens to reach. Under that is **what the plugin actually
-does** — the description from its manifest, wrapped across two lines, because
-one elided line usually cuts off
-before it has said anything. The two lines are reserved even when the text is
-short, so rows keep a uniform height as you filter. A plugin whose author left
-the description out says so, which is how you tell an empty manifest field
+does** — the description from its manifest, wrapped across as many lines as it
+takes. It used to be pinned at two, which was wrong in both directions: a
+one-line blurb paid for a blank line it never used, and anything longer was
+cut off mid-sentence with no way to read the rest. Rows therefore differ in
+height, and that is the better trade — an uneven list is something you can
+see past, a truncated sentence is not. A plugin whose author left the
+description out says so, which is how you tell an empty manifest field
 from a failed read. Last comes a link to the plugin's own repository:
 reading what you are running is the whole defence here, and it should not get
 harder once a plugin is installed. Git remotes are converted to something a

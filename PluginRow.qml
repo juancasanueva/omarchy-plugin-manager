@@ -61,18 +61,6 @@ Rectangle {
     Quickshell.execDetached(["omarchy-launch-browser", repoUrl])
   }
 
-  // Two lines of description, always — reserved even when the text is short.
-  // Descriptions run long enough that one elided line usually cuts off before
-  // it has said anything, and a block that changes height per row makes the
-  // list jump as you filter.
-  readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * 2)
-
-  FontMetrics {
-    id: descriptionMetrics
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-  }
-
   height: Math.round(details.implicitHeight + Style.space(16))
   radius: Style.cornerRadius
   color: selected ? Style.selectedFill : (mouse.containsMouse ? Style.hoverFill : "transparent")
@@ -149,14 +137,20 @@ Rectangle {
       elide: Text.ElideRight
     }
 
+    // As many lines as the description actually needs — no reserve underneath
+    // it and no ceiling over it.
+    //
+    // This used to be pinned at two lines, which was wrong in both directions:
+    // a one-line blurb paid for a blank line it never used, and anything
+    // longer was cut off mid-sentence with no way to read the rest. A
+    // description is the line you opened this list to read, so a row that
+    // hides half of it has failed at the one job it had. Rows now differ in
+    // height, which is the price, and it is the cheaper mistake: an uneven
+    // list is something you can see past, a truncated sentence is not.
     Text {
       // Never rich text: AutoText would fetch what a crafted string points at.
       textFormat: Text.PlainText
       width: parent.width
-      // The natural height wins when the text actually wraps, because a
-      // computed two-line box that lands a fraction short fits only one line
-      // and elides — the reserve is a floor, not a ceiling.
-      height: Math.max(implicitHeight, root.descriptionHeight)
       text: Model.descriptionLine(root.row)
       // The panel foreground, dimmed a little — not Color.muted. The author
       // and kinds above are glanceable metadata and can afford to recede; the
@@ -168,8 +162,6 @@ Rectangle {
       font.pixelSize: Style.font.caption
       font.italic: !Model.hasDescription(root.row)
       wrapMode: Text.WordWrap
-      maximumLineCount: 2
-      elide: Text.ElideRight
       verticalAlignment: Text.AlignTop
     }
 
