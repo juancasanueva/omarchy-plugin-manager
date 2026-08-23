@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -24,6 +23,7 @@ Rectangle {
   property var row: null
   property bool selected: false
   property bool actionsEnabled: true
+  property bool updateEnabled: true
   property bool showSeparator: false
   property color foreground: Color.foreground
   property string fontFamily: Style.font.family
@@ -33,6 +33,8 @@ Rectangle {
   signal removeRequested()
   signal enableRequested()
   signal disableRequested()
+  signal githubNavigationRequested(var candidates, string fallbackUrl)
+  signal repositoryNavigationRequested(string url)
 
   readonly property string badge: Model.sourceBadge(row)
   readonly property bool hasUpdate: row ? row.behind === true : false
@@ -55,19 +57,24 @@ Rectangle {
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
   readonly property string metadata: Model.metaLine(row)
   readonly property string versionText: Model.versionLabel(row)
-  readonly property string versionUrl: Model.versionTagUrl(row)
+  readonly property var versionReleaseCandidates: Model.versionReleaseCandidates(row)
+  readonly property string versionFallbackUrl: Model.versionFallbackUrl(row)
+  readonly property string compareUrl: Model.updateCompareUrl(row)
+  readonly property var updateReleaseCandidates: Model.updateReleaseCandidates(row)
 
-  // Argv array through Omarchy's own launcher, so it opens in whichever
-  // browser `omarchy default browser` selected — and the url has already been
-  // checked to be https before it gets there.
   function openRepo() {
     if (repoUrl === "") return
-    Quickshell.execDetached(["omarchy-launch-browser", repoUrl])
+    repositoryNavigationRequested(repoUrl)
   }
 
   function openVersion() {
-    if (versionUrl === "") return
-    Quickshell.execDetached(["omarchy-launch-browser", versionUrl])
+    if (versionFallbackUrl === "") return
+    githubNavigationRequested(versionReleaseCandidates, versionFallbackUrl)
+  }
+
+  function openComparison() {
+    if (compareUrl === "") return
+    githubNavigationRequested(updateReleaseCandidates, compareUrl)
   }
 
   height: Math.round(details.implicitHeight + Style.space(16))
@@ -204,17 +211,17 @@ Rectangle {
         MouseArea {
           id: versionMouse
           anchors.fill: parent
-          enabled: root.versionUrl !== ""
+          enabled: root.versionFallbackUrl !== ""
           hoverEnabled: enabled
           cursorShape: Qt.PointingHandCursor
-          // Swallowed rather than propagated: opening the tag does not also
+          // Swallowed rather than propagated: opening the version does not also
           // select the row underneath.
           onClicked: root.openVersion()
         }
 
         PanelToolTip {
           visible: versionMouse.containsMouse
-          text: "Open this exact installed tag on GitHub"
+          text: "Open " + root.versionText + " on GitHub"
           fontFamily: root.fontFamily
         }
       }
@@ -302,6 +309,25 @@ Rectangle {
         color: Color.accent
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+        font.underline: updateBadgeMouse.containsMouse
+      }
+
+      MouseArea {
+        id: updateBadgeMouse
+        anchors.fill: parent
+        enabled: root.compareUrl !== ""
+        hoverEnabled: enabled
+        cursorShape: Qt.PointingHandCursor
+        // The comparison is navigation, not the update action or row selection.
+        onClicked: root.openComparison()
+      }
+
+      PanelToolTip {
+        visible: updateBadgeMouse.containsMouse
+        text: root.updateReleaseCandidates.length > 0
+          ? "Open " + root.row.remoteVersion + " on GitHub"
+          : "View changes on GitHub"
+        fontFamily: root.fontFamily
       }
     }
 
@@ -369,7 +395,7 @@ Rectangle {
       }
       foreground: root.hasUpdate ? Color.accent : root.foreground
       fontFamily: root.fontFamily
-      enabled: root.actionsEnabled
+      enabled: root.actionsEnabled && root.updateEnabled
       opacity: enabled ? 1 : 0.4
       onClicked: root.updateRequested()
     }

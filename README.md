@@ -8,7 +8,7 @@ and enable, disable, update, or remove what you already have.
 
 ![The Installed tab: a puzzle icon and Plugins heading above an add-repository
 field, labelled Kind and Status dropdowns, a Search field, and separated plugin
-rows whose locally proven GitHub version tags link beside switches and actions](preview.png)
+rows whose GitHub checkout versions link beside switches and actions](preview.png)
 
 ## What it does
 
@@ -43,11 +43,16 @@ description out says so, which is how you tell an empty manifest field
 from a failed read. After the description comes **who wrote it, what it plugs
 into, and which version is on disk** — read from each plugin's own
 `manifest.json` at load time, so it is there for every plugin rather than only
-the git checkouts an update check happens to reach. When a Git checkout's
-current `HEAD` has the exact `<version>` or `v<version>` tag and its repository
-is on GitHub, that version links to the tag's source tree. Otherwise it remains
-plain text: the panel never infers a tag or GitHub Release from a version label,
-and it makes no network request to establish the relationship. Last comes a
+the git checkouts an update check happens to reach. For a user Git checkout with
+a current GitHub origin, that version is also the Release name to look up.
+Clicking it checks `v<version>` first, then `<version>`. The first published
+GitHub Release opens. If neither exists, navigation falls back in exactness
+order: a matching local version tag at `HEAD`, the loaded `HEAD` commit, then
+the validated repository root. The checkout does not need a local tag to make
+the version interactive; the tag is provenance for the best fallback, not
+proof that GitHub published a Release. Built-ins and rows without this current
+Git checkout contract remain plain. The bounded GitHub API checks happen only
+after the click — opening the panel makes no Release API request. Last comes a
 link to the plugin's own repository:
 reading what you are running is the whole defence here, and it should not get
 harder once a plugin is installed. Git remotes are converted to something a
@@ -80,7 +85,15 @@ When nothing matches, the message names whichever control excluded everything
 
 Rows with an update carry an accent badge — `1.0.0 → 1.2.0` when the versions
 differ, or just `update` when they do not. The header counts them, so you know
-before scrolling.
+before scrolling. When the current origin is a valid GitHub repository and both
+commits are known, the badge always has GitHub's exact commit comparison as its
+fallback. If the remote manifest names a different version, clicking the badge
+checks published Releases named `v<remoteVersion>` and then `<remoteVersion>`.
+The first match opens; two 404s, a rate limit, timeout, malformed response, or
+other probe failure opens the exact comparison instead. The API result proves
+only that the displayed target version has a published Release; navigation is
+still built locally and never trusts a response-provided URL. Same-version
+updates skip Release lookup and keep the tooltip **View changes on GitHub**.
 
 **The signal is commits, not version strings.** Authors do not reliably bump
 `manifest.json`: of the two checkouts that were genuinely behind when this was
@@ -89,12 +102,14 @@ have shown nothing for either. The catalog is no better — it publishes the
 version at the commit the registry last validated, which can lag a repository
 by several releases.
 
-So the check compares your checkout's `HEAD` against the remote's, using
-`git ls-remote`: one sha per repository, nothing downloaded, about a second for
-a dozen plugins. It runs in the background *after* the rows are on screen, so
-the panel never waits on the network to show you what you already have. A
-remote it cannot reach is reported as unknown rather than as up to date —
-being quietly told nothing is how a stale plugin sits there looking current.
+So the check compares your checkout's `HEAD` against the remote's, using one
+branch `git ls-remote` per repository. Nothing is cloned, and no background tag
+or Release lookup runs. For a checkout that is behind, the remote manifest is
+read at that exact branch commit so a later click can look up the version it
+actually names. The check runs in the background *after* the rows are on screen,
+so the panel never waits on the network to show you what you already have. A
+remote it cannot reach is reported as unknown rather than as up to date — being
+quietly told nothing is how a stale plugin sits there looking current.
 
 ### The actions
 

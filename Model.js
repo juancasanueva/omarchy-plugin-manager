@@ -53,7 +53,9 @@ function parseArray(raw) {
   }
 }
 
-// One compact JSON object per line, with path, remote and exactTag strings.
+// One compact JSON object per line, with path, remote, exactTag and the
+// checkout HEAD that proved that tag. The HEAD also binds later update reports
+// to the exact checkout generation they inspected.
 // JSON framing matters here: git config and filesystem names are untrusted,
 // and tabs or newlines in either must stay data rather than becoming another
 // checkout record. There is deliberately no legacy TSV fallback.
@@ -71,13 +73,16 @@ function parseGitMap(raw) {
     }
     if (!record || Array.isArray(record) || typeof record !== "object") continue
     var keys = Object.keys(record).sort()
-    if (keys.join(",") !== "exactTag,path,remote") continue
+    if (keys.join(",") !== "exactTag,headSha,path,remote") continue
     if (typeof record.path !== "string" || record.path === ""
-        || typeof record.remote !== "string" || typeof record.exactTag !== "string") continue
+        || typeof record.remote !== "string" || typeof record.exactTag !== "string"
+        || typeof record.headSha !== "string") continue
+    var headSha = record.headSha === "" ? "" : normalizeGitObjectId(record.headSha)
+    if (record.headSha !== "" && headSha === "") continue
     // Git ref names cannot contain controls. An impossible tag makes the
     // producer record malformed; it must not contribute provenance.
     if (/[\u0000-\u001f\u007f]/.test(record.exactTag)) continue
-    map[record.path] = { remote: record.remote, exactTag: record.exactTag }
+    map[record.path] = { remote: record.remote, exactTag: record.exactTag, headSha: headSha }
   }
   return map
 }
@@ -178,6 +183,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       sourceDir: sourceDir,
       remote: gitManaged ? plainText(gitInfo.remote) : "",
       exactTag: gitManaged ? plainText(gitInfo.exactTag) : "",
+      headSha: gitManaged ? normalizeGitObjectId(gitInfo.headSha) : "",
       gitManaged: gitManaged,
       // Built-ins live in /usr/share and are not ours to delete. Everything
       // under the user plugin directory — installed or cloned — is.
@@ -906,22 +912,69 @@ function githubRepoSlug(url) {
   return owner + "/" + repo
 }
 
-// The manifest version stays the display truth. A link exists only when the
-// loader separately proved that one of its two conventional exact tags points
-// at this checkout's HEAD and the row resolves to an exact GitHub repository.
-function versionTagUrl(row) {
+// Manifest versions are display data first and untrusted URL path data second.
+// Plain-text normalization matches the row label; the bound prevents a crafted
+// manifest from producing unreasonably large probe URLs.
+function normalizedManifestVersion(value) {
+  var text = plainText(value).trim()
+  return text !== "" && text.length <= 100 ? text : ""
+}
+
+// Local tag proof is no longer link eligibility. It remains the best fallback
+// because it names the exact source ref already proven at this checkout's HEAD.
+function provenLocalTag(row) {
   if (!row || row.gitManaged !== true) return ""
 
-  var version = String(row.localVersion || "").trim()
+  var version = normalizedManifestVersion(row.localVersion)
   var exactTag = String(row.exactTag || "").trim()
   if (version === "" || (exactTag !== version && exactTag !== "v" + version)) return ""
+  if (/[\u0000-\u001f\u007f]/.test(exactTag)) return ""
+  return exactTag
+}
 
-  // The current origin is authoritative for this checkout. `clonedFrom`
-  // remains useful for the ordinary repository link, but it is historical
-  // provenance and cannot prove where this local tag exists now.
+function githubTagUrl(remote, tag, base, path) {
+  var slug = githubRepoSlug(remote)
+  if (slug === "" || tag === "" || tag.length > 256) return ""
+  return base + slug + path + encodeURIComponent(tag)
+}
+
+function githubReleaseCandidates(remote, versionValue) {
+  var version = normalizedManifestVersion(versionValue)
+  if (version === "" || githubRepoSlug(remote) === "") return []
+
+  var names = ["v" + version, version]
+  var seen = {}, out = []
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i]
+    if (seen[name]) continue
+    seen[name] = true
+    out.push({
+      probeUrl: githubTagUrl(remote, name,
+        "https://api.github.com/repos/", "/releases/tags/"),
+      preferredUrl: githubTagUrl(remote, name,
+        "https://github.com/", "/releases/tag/")
+    })
+  }
+  return out
+}
+
+function versionReleaseCandidates(row) {
+  if (!row || row.gitManaged !== true) return []
+  return githubReleaseCandidates(row.remote, row.localVersion)
+}
+
+// Release absence never weakens provenance: fall back from a locally proven
+// version tag, to the loaded checkout commit, to the validated current origin.
+function versionFallbackUrl(row) {
+  if (versionReleaseCandidates(row).length === 0) return ""
+  var exactTag = provenLocalTag(row)
+  if (exactTag !== "") return githubTagUrl(
+    row.remote, exactTag, "https://github.com/", "/tree/")
+  var headSha = normalizeGitObjectId(row.headSha)
+  if (headSha !== "") return githubTagUrl(
+    row.remote, headSha, "https://github.com/", "/tree/")
   var slug = githubRepoSlug(row.remote)
-  if (slug === "") return ""
-  return "https://github.com/" + slug + "/tree/" + encodeURIComponent(exactTag)
+  return slug === "" ? "" : "https://github.com/" + slug
 }
 
 function repoPreviewUrl(repo, branch) {
@@ -951,7 +1004,18 @@ function previewCandidates(entry, allowWebp) {
 // nothing for a real update. The local and remote HEAD are the truth; the
 // version pair is shown alongside only when it actually says something.
 
-// "<dir>\t<localSha>\t<remoteSha>\t<localVersion>\t<remoteVersion>" per line.
+// Remote manifest versions are untrusted input that may become Git ref
+// arguments. Keep the accepted shape deliberately narrower than Git itself:
+// it covers conventional release versions, caps work sent to git/URLs, and
+// rejects every ref metacharacter that has caused ambiguous revisions.
+function normalizeGitObjectId(value) {
+  var text = String(value || "")
+  return /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(text) ? text.toLowerCase() : ""
+}
+
+// One compact JSON object per checkout. Filesystem paths and manifest versions
+// are untrusted, so JSON escaping — not tabs and newlines — owns the framing.
+// There is deliberately no legacy TSV fallback.
 function parseUpdateReport(raw) {
   var map = {}
   var lines = String(raw || "").split("\n")
@@ -959,15 +1023,29 @@ function parseUpdateReport(raw) {
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].replace(/\r$/, "")
     if (line === "") continue
+    var record
+    try {
+      record = JSON.parse(line)
+    } catch (error) {
+      continue
+    }
+    if (!record || Array.isArray(record) || typeof record !== "object") continue
+    var keys = Object.keys(record).sort()
+    if (keys.join(",") !== "localSha,localVersion,path,remoteSha,remoteVersion") continue
+    if (typeof record.path !== "string" || record.path === ""
+        || typeof record.localSha !== "string" || typeof record.remoteSha !== "string"
+        || typeof record.localVersion !== "string" || typeof record.remoteVersion !== "string") continue
 
-    var parts = line.split("\t")
-    if (parts.length < 3 || parts[0] === "") continue
+    var localSha = record.localSha === "" ? "" : normalizeGitObjectId(record.localSha)
+    var remoteSha = record.remoteSha === "" ? "" : normalizeGitObjectId(record.remoteSha)
+    if ((record.localSha !== "" && localSha === "")
+        || (record.remoteSha !== "" && remoteSha === "")) continue
 
-    map[parts[0]] = {
-      localSha: parts[1] || "",
-      remoteSha: parts[2] || "",
-      localVersion: parts[3] || "",
-      remoteVersion: parts[4] || ""
+    map[record.path] = {
+      localSha: localSha,
+      remoteSha: remoteSha,
+      localVersion: plainText(record.localVersion),
+      remoteVersion: plainText(record.remoteVersion)
     }
   }
   return map
@@ -986,19 +1064,34 @@ function applyUpdateReport(rows, report) {
     var copy = {}
     for (var key in row) copy[key] = row[key]
 
+    // A report describes one checkout generation, not merely one filesystem
+    // path. A reload may rebuild the same row after pull or an external
+    // checkout change while an older process is still finishing. Only the
+    // freshly loaded HEAD can authorize that report to restore update state.
+    var loadedHead = normalizeGitObjectId(row.headSha)
+    var reportHead = info ? normalizeGitObjectId(info.localSha) : ""
+    var usableInfo = loadedHead !== "" && reportHead !== "" && loadedHead === reportHead
+      ? info
+      : null
+    copy.headSha = loadedHead
+
     // The git pass only reaches checkouts with a remote. Everything else keeps
     // the version the manifest already gave it at load time.
-    copy.localVersion = info && info.localVersion !== "" ? info.localVersion : String(row.localVersion || "")
-    copy.remoteVersion = info ? info.remoteVersion : ""
-    copy.updateChecked = !!info && info.remoteSha !== "" && info.localSha !== ""
-    copy.behind = copy.updateChecked && info.localSha !== info.remoteSha
+    var reportedLocalVersion = usableInfo ? plainText(usableInfo.localVersion) : ""
+    copy.localVersion = reportedLocalVersion !== "" ? reportedLocalVersion : plainText(row.localVersion)
+    copy.remoteVersion = usableInfo ? plainText(usableInfo.remoteVersion) : ""
+    // Always overwrite these: a later failed or malformed check must not leave
+    // an earlier comparison URL attached to a row whose evidence is now gone.
+    copy.localSha = usableInfo ? reportHead : ""
+    copy.remoteSha = usableInfo ? normalizeGitObjectId(usableInfo.remoteSha) : ""
+    copy.updateChecked = copy.localSha !== "" && copy.remoteSha !== ""
+    copy.behind = copy.updateChecked && copy.localSha !== copy.remoteSha
     // Only when both ends name a version and they disagree. Equal versions
     // across a real update is the common case, not an error.
     copy.versionChanged = copy.behind
       && copy.localVersion !== ""
       && copy.remoteVersion !== ""
       && copy.localVersion !== copy.remoteVersion
-
     out.push(copy)
   }
   return out
@@ -1010,6 +1103,328 @@ function updateBadge(row) {
   if (!row || !row.behind) return ""
   if (row.versionChanged) return row.localVersion + " → " + row.remoteVersion
   return "update"
+}
+
+// GitHub generates this comparison from the exact commits already used to
+// decide `behind`; it is not a release and requires no API or extra request.
+function updateCompareUrl(row) {
+  if (!row || row.behind !== true) return ""
+
+  var localSha = normalizeGitObjectId(row.localSha)
+  var remoteSha = normalizeGitObjectId(row.remoteSha)
+  if (localSha === "" || remoteSha === "" || localSha === remoteSha) return ""
+
+  // As with version tags, only the checkout's current origin is authoritative.
+  var slug = githubRepoSlug(row.remote)
+  if (slug === "") return ""
+  return "https://github.com/" + slug + "/compare/" + localSha + "..." + remoteSha
+}
+
+function updateReleaseCandidates(row) {
+  if (!row || row.versionChanged !== true || updateCompareUrl(row) === "") return []
+  return githubReleaseCandidates(row.remote, row.remoteVersion)
+}
+
+// Click routing revalidates every URL even though the model constructed it.
+// This makes the Panel boundary explicit: only exact GitHub release probes and
+// locally-built release/tree/compare pages can reach curl or the browser.
+function trustedGithubTagUrl(url, expression, base, path) {
+  var text = String(url || "")
+  var match = text.match(expression)
+  if (!match) return ""
+
+  var slug = githubRepoSlug("https://github.com/" + match[1] + "/" + match[2])
+  if (slug === "") return ""
+  var tag
+  try {
+    tag = decodeURIComponent(match[3])
+  } catch (error) {
+    return ""
+  }
+  if (tag === "" || tag.length > 256 || /[\u0000-\u001f\u007f]/.test(tag)) return ""
+  var canonical = githubTagUrl("https://github.com/" + slug, tag, base, path)
+  return canonical === text ? text : ""
+}
+
+function trustedGithubReleaseApiUrl(url) {
+  return trustedGithubTagUrl(url,
+    /^https:\/\/api\.github\.com\/repos\/([^\/]+)\/([^\/]+)\/releases\/tags\/([^\/?#\s]+)$/,
+    "https://api.github.com/repos/", "/releases/tags/")
+}
+
+function trustedGithubReleaseUrl(url) {
+  return trustedGithubTagUrl(url,
+    /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/releases\/tag\/([^\/?#\s]+)$/,
+    "https://github.com/", "/releases/tag/")
+}
+
+function trustedGithubTreeUrl(url) {
+  return trustedGithubTagUrl(url,
+    /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/?#\s]+)$/,
+    "https://github.com/", "/tree/")
+}
+
+function trustedGithubCompareUrl(url) {
+  var text = String(url || "")
+  var match = text.match(/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/compare\/([^\.\/]+)\.\.\.([^\/]+)$/)
+  if (!match) return ""
+  var slug = githubRepoSlug("https://github.com/" + match[1] + "/" + match[2])
+  var localSha = normalizeGitObjectId(match[3])
+  var remoteSha = normalizeGitObjectId(match[4])
+  if (slug === "" || localSha === "" || remoteSha === "" || localSha === remoteSha) return ""
+  var canonical = "https://github.com/" + slug + "/compare/" + localSha + "..." + remoteSha
+  return canonical === text ? text : ""
+}
+
+function trustedGithubRepoUrl(url) {
+  var text = String(url || "")
+  var slug = githubRepoSlug(text)
+  var canonical = slug === "" ? "" : "https://github.com/" + slug
+  return canonical === text ? text : ""
+}
+
+function trustedGithubWebUrl(url) {
+  return trustedGithubReleaseUrl(url) || trustedGithubTreeUrl(url)
+    || trustedGithubCompareUrl(url) || trustedGithubRepoUrl(url)
+}
+
+function trustedGithubReleaseCandidate(value) {
+  var probe = trustedGithubReleaseApiUrl(value ? value.probeUrl : "")
+  var preferred = trustedGithubReleaseUrl(value ? value.preferredUrl : "")
+  if (probe === "" || preferred === "") return null
+  var expected = probe
+    .replace("https://api.github.com/repos/", "https://github.com/")
+    .replace("/releases/tags/", "/releases/tag/")
+  return expected === preferred ? { probeUrl: probe, preferredUrl: preferred } : null
+}
+
+function githubNavigationRequest(candidateValues, fallbackUrl) {
+  var fallback = trustedGithubWebUrl(fallbackUrl)
+  if (fallback === "") return { candidates: [], fallbackUrl: "" }
+
+  var values = Array.isArray(candidateValues) ? candidateValues : []
+  var candidates = [], seen = {}
+  for (var i = 0; i < values.length && candidates.length < 2; i++) {
+    var candidate = trustedGithubReleaseCandidate(values[i])
+    if (!candidate || seen[candidate.probeUrl]) continue
+    seen[candidate.probeUrl] = true
+    candidates.push(candidate)
+  }
+  return { candidates: candidates, fallbackUrl: fallback }
+}
+
+function releaseProbeCommand(apiUrl) {
+  var probe = trustedGithubReleaseApiUrl(apiUrl)
+  if (probe === "") return []
+  return [
+    "curl", "--silent", "--show-error", "--output", "/dev/null",
+    "--request", "GET", "--connect-timeout", "3", "--max-time", "5",
+    "--header", "Accept: application/vnd.github+json",
+    "--header", "X-GitHub-Api-Version: 2022-11-28",
+    "--write-out", "%{http_code}", probe
+  ]
+}
+
+// Release navigation is asynchronous, while every other click in the panel is
+// immediate. Keeping the generation and process lifecycle in one explicit
+// value makes "latest choice wins" testable without relying on QML callback
+// timing. Transitions return effects; Panel.qml alone performs those effects.
+function releaseNavigationInitialState() {
+  return {
+    generation: 0,
+    activeGeneration: 0,
+    activeRequest: null,
+    activeCandidateIndex: 0,
+    queuedRequest: null,
+    probeExited: false,
+    probeOutputFinished: false,
+    probeExitCode: -1,
+    probeResponseCode: ""
+  }
+}
+
+function copyReleaseNavigationState(state) {
+  var current = state || {}
+  return {
+    generation: Number(current.generation) || 0,
+    activeGeneration: Number(current.activeGeneration) || 0,
+    activeRequest: current.activeRequest || null,
+    activeCandidateIndex: Number(current.activeCandidateIndex) || 0,
+    queuedRequest: current.queuedRequest || null,
+    probeExited: current.probeExited === true,
+    probeOutputFinished: current.probeOutputFinished === true,
+    probeExitCode: Number(current.probeExitCode),
+    probeResponseCode: String(current.probeResponseCode || "")
+  }
+}
+
+function releaseNavigationResult(state) {
+  return {
+    state: state,
+    stopProbe: false,
+    startRequest: null,
+    scheduleStart: false,
+    openUrl: ""
+  }
+}
+
+function clearActiveReleaseNavigation(state) {
+  state.activeGeneration = 0
+  state.activeRequest = null
+  state.activeCandidateIndex = 0
+  state.probeExited = false
+  state.probeOutputFinished = false
+  state.probeExitCode = -1
+  state.probeResponseCode = ""
+}
+
+function activateReleaseNavigation(state, entry) {
+  state.activeGeneration = entry.generation
+  state.activeRequest = entry.request
+  state.activeCandidateIndex = 0
+  state.queuedRequest = null
+  state.probeExited = false
+  state.probeOutputFinished = false
+  state.probeExitCode = -1
+  state.probeResponseCode = ""
+}
+
+function activeReleaseNavigationStart(state) {
+  if (!state || state.activeGeneration === 0 || !state.activeRequest) return null
+  var candidates = state.activeRequest.candidates || []
+  var candidate = candidates[state.activeCandidateIndex]
+  if (!candidate) return null
+  return { generation: state.activeGeneration, probeUrl: candidate.probeUrl }
+}
+
+// A release click revokes the active generation before deciding whether the
+// new request needs a probe. If a process is still settling, only the newest
+// request remains queued; its probe cannot start until both old callbacks land.
+function releaseNavigationRequestTransition(state, value) {
+  var next = copyReleaseNavigationState(state)
+  var hadActive = next.activeGeneration !== 0
+  next.generation++
+  next.queuedRequest = null
+  if (hadActive) next.activeRequest = null
+
+  var request = githubNavigationRequest(
+    value ? value.candidates : [], value ? value.fallbackUrl : "")
+  var result = releaseNavigationResult(next)
+  result.stopProbe = hadActive
+  if (request.fallbackUrl === "") return result
+  if (request.candidates.length === 0) {
+    result.openUrl = request.fallbackUrl
+    return result
+  }
+
+  var entry = { generation: next.generation, request: request }
+  if (hadActive) {
+    next.queuedRequest = entry
+    return result
+  }
+
+  activateReleaseNavigation(next, entry)
+  result.startRequest = activeReleaseNavigationStart(next)
+  return result
+}
+
+// Actions and non-release navigation are newer human choices too. Active URLs
+// are quarantined immediately; late callbacks may settle the process but can
+// no longer navigate or consume a queued request.
+function releaseNavigationRevokeTransition(state) {
+  var next = copyReleaseNavigationState(state)
+  var hadActive = next.activeGeneration !== 0
+  next.generation++
+  next.queuedRequest = null
+  if (hadActive) next.activeRequest = null
+  var result = releaseNavigationResult(next)
+  result.stopProbe = hadActive
+  return result
+}
+
+function releaseNavigationDirectTransition(state, url) {
+  var result = releaseNavigationRevokeTransition(state)
+  result.openUrl = browsableUrl(url)
+  return result
+}
+
+function settleReleaseNavigation(state) {
+  var next = copyReleaseNavigationState(state)
+  var result = releaseNavigationResult(next)
+  if (next.activeGeneration === 0 || !next.probeExited || !next.probeOutputFinished) return result
+
+  if (next.activeGeneration === next.generation && next.activeRequest) {
+    var candidates = next.activeRequest.candidates || []
+    var candidate = candidates[next.activeCandidateIndex]
+    var responseCode = String(next.probeResponseCode || "").trim()
+    if (candidate && Number(next.probeExitCode) === 0 && responseCode === "200") {
+      result.openUrl = trustedGithubReleaseUrl(candidate.preferredUrl)
+    } else if (candidate && Number(next.probeExitCode) === 0 && responseCode === "404"
+        && next.activeCandidateIndex + 1 < candidates.length) {
+      next.activeCandidateIndex++
+      next.probeExited = false
+      next.probeOutputFinished = false
+      next.probeExitCode = -1
+      next.probeResponseCode = ""
+      result.scheduleStart = true
+      return result
+    } else {
+      result.openUrl = trustedGithubWebUrl(next.activeRequest.fallbackUrl)
+    }
+  }
+  clearActiveReleaseNavigation(next)
+  result.scheduleStart = !!next.queuedRequest
+    && next.queuedRequest.generation === next.generation
+  return result
+}
+
+function releaseNavigationProbeExitedTransition(state, exitCode) {
+  var next = copyReleaseNavigationState(state)
+  if (next.activeGeneration === 0) return releaseNavigationResult(next)
+  next.probeExited = true
+  next.probeExitCode = Number(exitCode)
+  return settleReleaseNavigation(next)
+}
+
+function releaseNavigationProbeOutputTransition(state, responseCode) {
+  var next = copyReleaseNavigationState(state)
+  if (next.activeGeneration === 0) return releaseNavigationResult(next)
+  next.probeOutputFinished = true
+  next.probeResponseCode = String(responseCode || "").trim()
+  return settleReleaseNavigation(next)
+}
+
+function releaseNavigationStartQueuedTransition(state) {
+  var next = copyReleaseNavigationState(state)
+  var result = releaseNavigationResult(next)
+  if (next.activeGeneration !== 0) {
+    if (next.activeGeneration === next.generation && next.activeRequest)
+      result.startRequest = activeReleaseNavigationStart(next)
+    else if (!next.activeRequest) clearActiveReleaseNavigation(next)
+    if (result.startRequest || next.activeGeneration !== 0) return result
+  }
+  var entry = next.queuedRequest
+  if (!entry || entry.generation !== next.generation) {
+    next.queuedRequest = null
+    return result
+  }
+  activateReleaseNavigation(next, entry)
+  result.startRequest = activeReleaseNavigationStart(next)
+  return result
+}
+
+// The request and command validators share the same API URL boundary, so this
+// is defensive rather than expected. It prevents a validator disagreement
+// from leaving a generation permanently busy when no process was started.
+function releaseNavigationProbeStartFailedTransition(state) {
+  var next = copyReleaseNavigationState(state)
+  var result = releaseNavigationResult(next)
+  if (next.activeGeneration === next.generation && next.activeRequest)
+    result.openUrl = trustedGithubWebUrl(next.activeRequest.fallbackUrl)
+  clearActiveReleaseNavigation(next)
+  result.scheduleStart = !!next.queuedRequest
+    && next.queuedRequest.generation === next.generation
+  return result
 }
 
 function versionLabel(row) {

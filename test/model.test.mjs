@@ -1,7 +1,10 @@
 // Model.js is loaded by QML, so it has no module system of its own. Reading
 // and evaluating the source keeps the shipped file free of node-isms while
 // still letting the parsing rules be tested outside a running shell.
-import { readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
@@ -18,8 +21,17 @@ const Model = new Function(
     catalogAssetUrl,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
-    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, versionTagUrl, repoPreviewUrl, previewCandidates,
-    parseUpdateReport, applyUpdateReport, updateBadge, versionLabel, countBehind,
+    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl,
+    normalizedManifestVersion, githubReleaseCandidates, versionReleaseCandidates,
+    versionFallbackUrl, repoPreviewUrl, previewCandidates,
+    parseUpdateReport, applyUpdateReport, updateBadge, updateCompareUrl,
+    updateReleaseCandidates, versionLabel, countBehind,
+    trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
+    githubNavigationRequest, releaseProbeCommand,
+    releaseNavigationInitialState, releaseNavigationRequestTransition,
+    releaseNavigationRevokeTransition, releaseNavigationDirectTransition,
+    releaseNavigationProbeExitedTransition, releaseNavigationProbeOutputTransition,
+    releaseNavigationStartQueuedTransition, releaseNavigationProbeStartFailedTransition,
     metaLine, authorLabel, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage,
@@ -102,29 +114,36 @@ test("plainText flattens control characters into spaces", () => {
 
 test("parseGitMap keeps JSON-framed remotes and exact local tags, including empty fields", () => {
   const map = Model.parseGitMap([
-    JSON.stringify({ path: "/plugins/prefixed", remote: "https://example.com/a.git", exactTag: "v1.0.3" }),
-    JSON.stringify({ path: "/plugins/plain", remote: "git@example.com:b.git", exactTag: "1.0.3" }),
-    JSON.stringify({ path: "/plugins/noremote", remote: "", exactTag: "" })
+    JSON.stringify({ path: "/plugins/prefixed", remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "A".repeat(40) }),
+    JSON.stringify({ path: "/plugins/plain", remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64) }),
+    JSON.stringify({ path: "/plugins/noremote", remote: "", exactTag: "", headSha: "" })
   ].join("\n"))
-  assert.deepEqual(map["/plugins/prefixed"], { remote: "https://example.com/a.git", exactTag: "v1.0.3" })
-  assert.deepEqual(map["/plugins/plain"], { remote: "git@example.com:b.git", exactTag: "1.0.3" })
-  assert.deepEqual(map["/plugins/noremote"], { remote: "", exactTag: "" })
+  assert.deepEqual(map["/plugins/prefixed"], {
+    remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "a".repeat(40)
+  })
+  assert.deepEqual(map["/plugins/plain"], {
+    remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64)
+  })
+  assert.deepEqual(map["/plugins/noremote"], { remote: "", exactTag: "", headSha: "" })
   assert.ok("noremote" in {} === false)
   assert.ok(Object.prototype.hasOwnProperty.call(map, "/plugins/noremote"))
 })
 
 test("parseGitMap skips malformed, non-object, and wrong-schema JSON records", () => {
-  const valid = JSON.stringify({ path: "/plugins/a", remote: "https://x/a.git", exactTag: "v1" })
+  const valid = JSON.stringify({ path: "/plugins/a", remote: "https://x/a.git", exactTag: "v1", headSha: "a".repeat(40) })
   const records = [
     "not-json",
     "/plugins/legacy\thttps://github.com/owner/repo.git\tv1.0.0",
     "null",
     "[]",
     '"string"',
-    JSON.stringify({ path: "/plugins/missing", remote: "https://x/missing.git" }),
-    JSON.stringify({ path: "/plugins/wrong-type", remote: 42, exactTag: "v1" }),
-    JSON.stringify({ path: "/plugins/extra", remote: "https://x/extra.git", exactTag: "v1", forged: true }),
-    JSON.stringify({ path: "/plugins/control", remote: "https://x/control.git", exactTag: "v1\u0001" }),
+    JSON.stringify({ path: "/plugins/missing", remote: "https://x/missing.git", exactTag: "v1" }),
+    JSON.stringify({ path: "/plugins/wrong-type", remote: 42, exactTag: "v1", headSha: "a".repeat(40) }),
+    JSON.stringify({ path: "/plugins/extra", remote: "https://x/extra.git", exactTag: "v1", headSha: "a".repeat(40), forged: true }),
+    JSON.stringify({ path: "/plugins/control", remote: "https://x/control.git", exactTag: "v1\u0001", headSha: "a".repeat(40) }),
+    JSON.stringify({ path: "/plugins/short-head", remote: "https://x/short.git", exactTag: "", headSha: "a".repeat(39) }),
+    JSON.stringify({ path: "/plugins/nonhex-head", remote: "https://x/nonhex.git", exactTag: "", headSha: "g".repeat(40) }),
+    JSON.stringify({ path: "/plugins/hostile-head", remote: "https://x/hostile.git", exactTag: "", headSha: "a".repeat(39) + "\nforged" }),
     valid
   ]
   const map = Model.parseGitMap(records.join("\n"))
@@ -137,11 +156,11 @@ test("parseGitMap keeps hostile delimiters inside one JSON record", () => {
     + "/plugins/tsv-forgery\thttps://github.com/attacker/repo.git\tv9.9.9\n"
     + "{\"path\":\"/plugins/json-forgery\",\"remote\":\"https://github.com/attacker/repo\",\"exactTag\":\"v9.9.9\"}"
     + "\\quoted\"tail"
-  const record = JSON.stringify({ path, remote, exactTag: "v1.0.3" })
+  const record = JSON.stringify({ path, remote, exactTag: "v1.0.3", headSha: "a".repeat(40) })
   const map = Model.parseGitMap(record)
 
   assert.deepEqual(Object.keys(map), [path])
-  assert.deepEqual(map[path], { remote, exactTag: "v1.0.3" })
+  assert.deepEqual(map[path], { remote, exactTag: "v1.0.3", headSha: "a".repeat(40) })
   assert.equal(map["/plugins/path-forgery"], undefined)
   assert.equal(map["/plugins/tsv-forgery"], undefined)
   assert.equal(map["/plugins/json-forgery"], undefined)
@@ -158,8 +177,8 @@ const catalogEntries = [
   { id: "acme.dev", sourceDir: "/plugins/acme.dev", description: "Dev" }
 ]
 const gitMap = {
-  "/plugins/acme.weather": { remote: "https://example.com/weather.git", exactTag: "v2.0.1" },
-  "/plugins/acme.dev": { remote: "", exactTag: "" }
+  "/plugins/acme.weather": { remote: "https://example.com/weather.git", exactTag: "v2.0.1", headSha: "a".repeat(40) },
+  "/plugins/acme.dev": { remote: "", exactTag: "", headSha: "b".repeat(64) }
 }
 
 test("mergePlugins strips markup out of everything a manifest supplied", () => {
@@ -195,6 +214,7 @@ test("mergePlugins offers update only where a remote exists", () => {
   assert.equal(weather.updatable, true)
   assert.equal(weather.remote, "https://example.com/weather.git")
   assert.equal(weather.exactTag, "v2.0.1")
+  assert.equal(weather.headSha, "a".repeat(40))
 
   // A working copy with no origin is still git-managed, but a fast-forward
   // has nowhere to pull from.
@@ -840,92 +860,88 @@ test("rowRepoUrl prefers the live origin over what the plugin was cloned from", 
   assert.equal(Model.rowRepoUrl(null), "")
 })
 
-test("versionTagUrl accepts only the two exact manifest-version tag forms", () => {
+test("manifest versions become bounded encoded Release candidates in deterministic order", () => {
+  assert.equal(Model.normalizedManifestVersion("  1.2.3\n"), "1.2.3")
+  assert.equal(Model.normalizedManifestVersion("x".repeat(100)), "x".repeat(100))
+  assert.equal(Model.normalizedManifestVersion("x".repeat(101)), "")
+
+  const candidates = Model.githubReleaseCandidates(
+    "git@github.com:acme/thing.git", "  1.2.3+build/one  ")
+  assert.deepEqual(candidates, [
+    {
+      probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/v1.2.3%2Bbuild%2Fone",
+      preferredUrl: "https://github.com/acme/thing/releases/tag/v1.2.3%2Bbuild%2Fone"
+    },
+    {
+      probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/1.2.3%2Bbuild%2Fone",
+      preferredUrl: "https://github.com/acme/thing/releases/tag/1.2.3%2Bbuild%2Fone"
+    }
+  ])
+})
+
+test("installed version eligibility requires checkout, version, and hardened current GitHub origin, not exactTag", () => {
+  const eligible = {
+    gitManaged: true,
+    localVersion: "1.0.3",
+    exactTag: "",
+    headSha: "a".repeat(40),
+    remote: "ssh://git@github.com/Owner/repo.name.git"
+  }
+  assert.equal(Model.versionReleaseCandidates(eligible).length, 2)
+  assert.equal(Model.versionFallbackUrl(eligible),
+    "https://github.com/Owner/repo.name/tree/" + "a".repeat(40))
+
+  for (const row of [
+    { ...eligible, gitManaged: false },
+    { ...eligible, localVersion: "" },
+    { ...eligible, localVersion: "x".repeat(101) },
+    { ...eligible, remote: "", clonedFrom: eligible.remote },
+    { ...eligible, remote: "https://gitlab.com/acme/thing" },
+    { ...eligible, remote: "https://github.com/acme/thing/tree/main" },
+    null
+  ]) {
+    assert.deepEqual(Model.versionReleaseCandidates(row), [])
+    assert.equal(Model.versionFallbackUrl(row), "")
+  }
+})
+
+test("installed version fallback prefers exact tag, then loaded HEAD, then repository root", () => {
   const row = {
     gitManaged: true,
     localVersion: "1.0.3",
+    exactTag: "v1.0.3",
+    headSha: "a".repeat(40),
     remote: "https://github.com/acme/thing.git"
   }
-  assert.equal(
-    Model.versionTagUrl({ ...row, exactTag: "v1.0.3" }),
+  assert.equal(Model.versionFallbackUrl(row),
     "https://github.com/acme/thing/tree/v1.0.3")
-  assert.equal(
-    Model.versionTagUrl({ ...row, exactTag: "1.0.3" }),
-    "https://github.com/acme/thing/tree/1.0.3")
-  assert.equal(Model.versionTagUrl({ ...row, exactTag: "release-1.0.3" }), "")
+  assert.equal(Model.versionFallbackUrl({ ...row, exactTag: "" }),
+    "https://github.com/acme/thing/tree/" + "a".repeat(40))
+  assert.equal(Model.versionFallbackUrl({ ...row, exactTag: "", headSha: "" }),
+    "https://github.com/acme/thing")
+  assert.equal(Model.versionFallbackUrl({ ...row, exactTag: "release-1.0.3" }),
+    "https://github.com/acme/thing/tree/" + "a".repeat(40))
 })
 
-test("versionTagUrl normalizes GitHub SSH remotes and encodes the proven tag", () => {
-  const row = { gitManaged: true, localVersion: "1.0.3+build/one", exactTag: "v1.0.3+build/one" }
-  assert.equal(
-    Model.versionTagUrl({ ...row, remote: "git@github.com:acme/thing.git" }),
-    "https://github.com/acme/thing/tree/v1.0.3%2Bbuild%2Fone")
-  assert.equal(
-    Model.versionTagUrl({ ...row, remote: "ssh://git@github.com/acme/thing.git" }),
-    "https://github.com/acme/thing/tree/v1.0.3%2Bbuild%2Fone")
-})
-
-test("versionTagUrl accepts conservative GitHub owner and repository boundaries", () => {
-  const row = { gitManaged: true, localVersion: "1.0.3", exactTag: "v1.0.3" }
-  const owner39 = "a".repeat(39)
-  const repo100 = "r".repeat(100)
+test("Release candidates preserve hardened GitHub owner and repository boundaries", () => {
   const accepted = [
-    ["https://github.com/Mixed-Case/.github.git", "Mixed-Case/.github"],
-    ["git@github.com:owner-name/repo_name.git", "owner-name/repo_name"],
-    ["ssh://git@github.com/Owner/repo.name.git", "Owner/repo.name"],
-    ["https://github.com/a/repo-name", "a/repo-name"],
-    ["https://github.com/" + owner39 + "/" + repo100, owner39 + "/" + repo100]
+    "https://github.com/Mixed-Case/.github.git",
+    "git@github.com:owner-name/repo_name.git",
+    "ssh://git@github.com/Owner/repo.name.git"
   ]
+  for (const remote of accepted)
+    assert.equal(Model.githubReleaseCandidates(remote, "1.0.0").length, 2)
 
-  for (const [remote, slug] of accepted) {
-    assert.equal(Model.versionTagUrl({ ...row, remote }),
-      "https://github.com/" + slug + "/tree/v1.0.3")
-  }
-})
-
-test("versionTagUrl rejects malformed or browser-normalized GitHub paths", () => {
-  const row = { gitManaged: true, localVersion: "1.0.3", exactTag: "v1.0.3" }
-  const rejected = [
+  for (const remote of [
     "https://github.com/../repo",
     "https://github.com/%2e%2e/repo",
-    "https://github.com/owner/.",
     "https://github.com/owner/..",
-    "https://github.com/owner/%2e%2e",
-    "https://github.com/owner\\evil/repo",
-    "https://github.com/owner/repo\\evil",
     "https://github.com/owner/repo/tree/main",
-    "https://github.com/owner/repo?tab=readme",
-    "https://github.com/owner/repo#readme",
-    "https://github.com/owner/%72epo",
     "https://github.com/-owner/repo",
-    "https://github.com/owner-/repo",
-    "https://github.com/owner--name/repo",
     "https://github.com/owner_name/repo",
     "https://github.com/" + "a".repeat(40) + "/repo",
-    "https://github.com/owner/" + "r".repeat(101),
-    "https://github.com//repo",
-    "https://github.com/owner/"
-  ]
-
-  for (const remote of rejected)
-    assert.equal(Model.versionTagUrl({ ...row, remote }), "", remote)
-})
-
-test("versionTagUrl stays empty without every piece of local proof", () => {
-  const proven = {
-    gitManaged: true,
-    localVersion: "1.0.3",
-    exactTag: "v1.0.3",
-    remote: "https://github.com/acme/thing.git"
-  }
-  assert.equal(Model.versionTagUrl({ ...proven, gitManaged: false }), "")
-  assert.equal(Model.versionTagUrl({ ...proven, localVersion: "" }), "")
-  // An empty tag is how the loader reports absent, mismatched, or not-at-HEAD.
-  assert.equal(Model.versionTagUrl({ ...proven, exactTag: "" }), "")
-  assert.equal(Model.versionTagUrl({ ...proven, remote: "", clonedFrom: "https://github.com/acme/thing" }), "")
-  assert.equal(Model.versionTagUrl({ ...proven, remote: "https://gitlab.com/acme/thing.git" }), "")
-  assert.equal(Model.versionTagUrl({ ...proven, remote: "https://github.com/acme/thing/tree/main" }), "")
-  assert.equal(Model.versionTagUrl(null), "")
+    "https://github.com/owner/" + "r".repeat(101)
+  ]) assert.deepEqual(Model.githubReleaseCandidates(remote, "1.0.0"), [], remote)
 })
 
 test("repoPreviewUrl points at the repo's own preview.png on the validated branch", () => {
@@ -956,26 +972,87 @@ test("previewCandidates tries the repo png before the registry webp", () => {
 // ---- Update checks ---------------------------------------------------------
 
 const baseRows = [
-  { id: "a.behind", sourceDir: "/plugins/a", name: "Behind" },
-  { id: "b.current", sourceDir: "/plugins/b", name: "Current" },
-  { id: "c.unreachable", sourceDir: "/plugins/c", name: "Unreachable" },
+  { id: "a.behind", sourceDir: "/plugins/a", name: "Behind", remote: "https://github.com/acme/behind.git", headSha: "a".repeat(40) },
+  { id: "b.current", sourceDir: "/plugins/b", name: "Current", remote: "https://github.com/acme/current.git", headSha: "c".repeat(40) },
+  { id: "c.unreachable", sourceDir: "/plugins/c", name: "Unreachable", headSha: "c".repeat(40) },
   { id: "d.notgit", sourceDir: "/plugins/d", name: "Not git" }
 ]
 
+const sha40A = "a".repeat(40)
+const sha40B = "b".repeat(40)
+const sha40C = "c".repeat(40)
+const sha64A = "a".repeat(64)
+const sha64B = "b".repeat(64)
+
+function updateRecord(overrides = {}) {
+  return JSON.stringify({
+    path: "/plugins/a",
+    localSha: sha40A,
+    remoteSha: sha40B,
+    localVersion: "1.0.0",
+    remoteVersion: "1.2.0",
+    ...overrides
+  })
+}
+
 const report = Model.parseUpdateReport([
-  "/plugins/a\tlocalsha\tremotesha\t1.0.0\t1.2.0",
-  "/plugins/b\tsamesha\tsamesha\t2.0.0\t",
-  "/plugins/c\tlocalsha\t\t3.0.0\t"     // remote unreachable: empty sha
+  updateRecord(),
+  updateRecord({ path: "/plugins/b", localSha: sha40C, remoteSha: sha40C, localVersion: "2.0.0", remoteVersion: "" }),
+  updateRecord({ path: "/plugins/c", localSha: sha40C, remoteSha: "", localVersion: "3.0.0", remoteVersion: "" })
 ].join("\n"))
 
-test("parseUpdateReport keys on the plugin directory", () => {
+test("parseUpdateReport accepts exact JSONL records and keys on the plugin directory", () => {
   assert.deepEqual(Object.keys(report).sort(), ["/plugins/a", "/plugins/b", "/plugins/c"])
   assert.equal(report["/plugins/a"].remoteVersion, "1.2.0")
+  assert.equal(report["/plugins/a"].localSha, sha40A)
 })
 
-test("parseUpdateReport skips malformed lines instead of inventing entries", () => {
-  const parsed = Model.parseUpdateReport("\nno-tabs-here\n\t\t\n/plugins/x\tl\tr\n")
-  assert.deepEqual(Object.keys(parsed), ["/plugins/x"])
+test("parseUpdateReport rejects malformed JSON, legacy TSV, and the wrong schema", () => {
+  const lines = [
+    "not-json",
+    "/plugins/legacy\t" + sha40A + "\t" + sha40B + "\t1\t2",
+    "[]",
+    "null",
+    JSON.stringify({ path: "/plugins/missing", localSha: sha40A, remoteSha: sha40B, localVersion: "1" }),
+    updateRecord({ path: "/plugins/extra", extra: "field" }),
+    updateRecord({ path: "/plugins/legacy-tag", remoteTag: "v2" }),
+    JSON.stringify({ path: "/plugins/type", localSha: sha40A, remoteSha: sha40B, localVersion: 1, remoteVersion: "2" }),
+    updateRecord({ path: "/plugins/valid" })
+  ]
+  const parsed = Model.parseUpdateReport(lines.join("\n"))
+  assert.deepEqual(Object.keys(parsed), ["/plugins/valid"])
+})
+
+test("parseUpdateReport keeps hostile path and version bytes inside their JSONL record", () => {
+  const forgedPath = "/plugins/evil\n" + updateRecord({ path: "/plugins/victim" })
+  const forgedVersion = "1.0\tforged\n" + updateRecord({ path: "/plugins/victim" })
+  const parsed = Model.parseUpdateReport(updateRecord({
+    path: forgedPath,
+    localVersion: forgedVersion,
+    remoteVersion: "2.0\rforged"
+  }))
+
+  assert.deepEqual(Object.keys(parsed), [forgedPath])
+  assert.equal(parsed[forgedPath].localVersion, "1.0 forged " + updateRecord({ path: "/plugins/victim" }))
+  assert.equal(parsed[forgedPath].remoteVersion, "2.0 forged")
+  assert.equal(parsed["/plugins/victim"], undefined)
+})
+
+test("parseUpdateReport accepts only empty, 40-hex, or 64-hex object ids", () => {
+  const accepted = Model.parseUpdateReport([
+    updateRecord({ path: "/plugins/sha1", localSha: sha40A.toUpperCase(), remoteSha: sha40B.toUpperCase() }),
+    updateRecord({ path: "/plugins/sha256", localSha: sha64A, remoteSha: sha64B }),
+    updateRecord({ path: "/plugins/unknown", remoteSha: "" })
+  ].join("\n"))
+  assert.deepEqual(Object.keys(accepted), ["/plugins/sha1", "/plugins/sha256", "/plugins/unknown"])
+  assert.equal(accepted["/plugins/sha1"].localSha, sha40A)
+
+  const rejected = Model.parseUpdateReport([
+    updateRecord({ path: "/plugins/short", localSha: "a".repeat(39) }),
+    updateRecord({ path: "/plugins/long", remoteSha: "b".repeat(65) }),
+    updateRecord({ path: "/plugins/nonhex", remoteSha: "g".repeat(40) })
+  ].join("\n"))
+  assert.deepEqual(rejected, {})
 })
 
 test("a differing remote head marks the row behind", () => {
@@ -984,6 +1061,16 @@ test("a differing remote head marks the row behind", () => {
   assert.equal(behind.behind, true)
   assert.equal(behind.updateChecked, true)
   assert.equal(behind.versionChanged, true)
+  assert.equal(behind.localSha, sha40A)
+  assert.equal(behind.remoteSha, sha40B)
+})
+
+test("applyUpdateReport replays report evidence only for an unchanged loaded HEAD", () => {
+  const row = Model.applyUpdateReport(baseRows, report)[0]
+  assert.equal(row.headSha, sha40A)
+  assert.equal(row.behind, true)
+  assert.equal(Model.updateCompareUrl(row),
+    "https://github.com/acme/behind/compare/" + sha40A + "..." + sha40B)
 })
 
 test("a matching head is up to date, not behind", () => {
@@ -1015,10 +1102,147 @@ test("applyUpdateReport keeps a manifest version the git pass never saw", () => 
   assert.equal(rows[0].localVersion, "3.1.4")
 })
 
+test("applyUpdateReport flattens displayed versions and revalidates sha evidence", () => {
+  const rows = Model.applyUpdateReport(
+    [{ id: "e.direct", sourceDir: "/plugins/e.direct", localVersion: "old\nversion", headSha: sha40A }],
+    { "/plugins/e.direct": {
+      localSha: sha40A.toUpperCase(),
+      remoteSha: "not-an-object-id",
+      localVersion: "1.0\tlocal",
+      remoteVersion: "2.0\nremote"
+    } }
+  )
+  assert.equal(rows[0].localVersion, "1.0 local")
+  assert.equal(rows[0].remoteVersion, "2.0 remote")
+  assert.equal(rows[0].localSha, sha40A)
+  assert.equal(rows[0].remoteSha, "")
+  assert.equal(rows[0].updateChecked, false)
+  assert.equal(rows[0].behind, false)
+})
+
 test("applyUpdateReport does not mutate the rows it was given", () => {
   const rows = Model.applyUpdateReport(baseRows, report)
   assert.equal(rows[0].behind, true)
   assert.equal(baseRows[0].behind, undefined)
+})
+
+test("applyUpdateReport clears stale shas when later evidence is absent or invalid", () => {
+  const stale = [{
+    id: "stale",
+    sourceDir: "/plugins/stale",
+    localVersion: "1.0.0",
+    headSha: sha40A,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    updateChecked: true,
+    behind: true
+  }]
+  const missing = Model.applyUpdateReport(stale, {})[0]
+  assert.equal(missing.localSha, "")
+  assert.equal(missing.remoteSha, "")
+  assert.equal(missing.updateChecked, false)
+  assert.equal(missing.behind, false)
+
+  const invalid = Model.parseUpdateReport(updateRecord({
+    path: "/plugins/stale",
+    remoteSha: "not-an-object-id"
+  }))
+  const rejected = Model.applyUpdateReport(stale, invalid)[0]
+  assert.equal(rejected.localSha, "")
+  assert.equal(rejected.remoteSha, "")
+  assert.equal(rejected.behind, false)
+})
+
+function assertUpdateEvidenceCleared(row) {
+  assert.equal(row.localSha, "")
+  assert.equal(row.remoteSha, "")
+  assert.equal(row.remoteVersion, "")
+  assert.equal(row.updateChecked, false)
+  assert.equal(row.behind, false)
+  assert.equal(row.versionChanged, false)
+  assert.equal(Model.updateCompareUrl(row), "")
+  assert.deepEqual(Model.updateReleaseCandidates(row), [])
+}
+
+test("changed loaded HEAD rejects a pending report and clears every derived target", () => {
+  const freshlyLoaded = [{
+    id: "a.behind",
+    sourceDir: "/plugins/a",
+    localVersion: "1.2.0",
+    remote: "https://github.com/acme/behind.git",
+    exactTag: "v1.2.0",
+    headSha: sha40B,
+    gitManaged: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remoteVersion: "1.2.0",
+    updateChecked: true,
+    behind: true,
+    versionChanged: true
+  }]
+  const row = Model.applyUpdateReport(freshlyLoaded, report)[0]
+  assertUpdateEvidenceCleared(row)
+  assert.equal(row.localVersion, "1.2.0")
+  assert.equal(row.headSha, sha40B)
+  assert.equal(row.exactTag, "v1.2.0")
+  assert.equal(Model.versionFallbackUrl(row),
+    "https://github.com/acme/behind/tree/v1.2.0")
+})
+
+test("absent or invalid loaded HEAD rejects otherwise valid report evidence", () => {
+  for (const headSha of ["", "a".repeat(39), "g".repeat(40), null]) {
+    const row = Model.applyUpdateReport([{
+      ...baseRows[0],
+      localVersion: "1.0.0",
+      headSha,
+      localSha: sha40A,
+      remoteSha: sha40B,
+      behind: true,
+      versionChanged: true
+    }], report)[0]
+    assertUpdateEvidenceCleared(row)
+    assert.equal(row.localVersion, "1.0.0")
+    assert.equal(row.headSha, "")
+  }
+})
+
+test("pending report lifecycle rejects an old generation and accepts a fresh matching generation", () => {
+  const oldPending = Model.parseUpdateReport(updateRecord())
+  const oldLoaded = Model.applyUpdateReport(baseRows, oldPending)[0]
+  assert.equal(oldLoaded.behind, true)
+
+  // A successful pull or external checkout change reloads both the manifest
+  // version and its provenance before the old process result is replayed.
+  const newLoaded = {
+    ...baseRows[0],
+    localVersion: "1.2.0",
+    exactTag: "v1.2.0",
+    headSha: sha40B
+  }
+  const replayed = Model.applyUpdateReport([newLoaded], oldPending)[0]
+  assertUpdateEvidenceCleared(replayed)
+  assert.equal(replayed.localVersion, "1.2.0")
+  assert.equal(replayed.exactTag, "v1.2.0")
+
+  // The same stale result arriving after the new load remains powerless.
+  const lateOldResult = Model.applyUpdateReport([replayed], oldPending)[0]
+  assertUpdateEvidenceCleared(lateOldResult)
+
+  const freshPending = Model.parseUpdateReport(updateRecord({
+    localSha: sha40B,
+    remoteSha: sha40C,
+    localVersion: "1.2.0",
+    remoteVersion: "1.3.0"
+  }))
+  const fresh = Model.applyUpdateReport([lateOldResult], freshPending)[0]
+  assert.equal(fresh.behind, true)
+  assert.equal(fresh.versionChanged, true)
+  assert.equal(fresh.localSha, sha40B)
+  assert.equal(fresh.remoteSha, sha40C)
+  assert.equal(Model.updateCompareUrl(fresh),
+    "https://github.com/acme/behind/compare/" + sha40B + "..." + sha40C)
+  assert.equal(Model.updateReleaseCandidates(fresh)[0].preferredUrl,
+    "https://github.com/acme/behind/releases/tag/v1.3.0")
 })
 
 test("the badge only shows an arrow when the versions actually differ", () => {
@@ -1028,6 +1252,468 @@ test("the badge only shows an arrow when the versions actually differ", () => {
   assert.equal(Model.updateBadge({ behind: true, versionChanged: false, localVersion: "1.0.0", remoteVersion: "1.0.0" }), "update")
   assert.equal(Model.updateBadge({ behind: false }), "")
   assert.equal(Model.updateBadge(null), "")
+})
+
+test("updateCompareUrl builds the exact GitHub comparison for 40-hex and 64-hex evidence", () => {
+  assert.equal(Model.updateCompareUrl({
+    behind: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remote: "https://github.com/acme/thing.git"
+  }), "https://github.com/acme/thing/compare/" + sha40A + "..." + sha40B)
+
+  assert.equal(Model.updateCompareUrl({
+    behind: true,
+    localSha: sha64A.toUpperCase(),
+    remoteSha: sha64B.toUpperCase(),
+    remote: "git@github.com:acme/thing.git"
+  }), "https://github.com/acme/thing/compare/" + sha64A + "..." + sha64B)
+})
+
+test("updateCompareUrl supports GitHub SSH origins through the hardened slug parser", () => {
+  const expected = "https://github.com/Owner/repo.name/compare/" + sha40A + "..." + sha40B
+  assert.equal(Model.updateCompareUrl({
+    behind: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remote: "ssh://git@github.com/Owner/repo.name.git"
+  }), expected)
+  assert.equal(Model.updateCompareUrl({
+    behind: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remote: "git@github.com:Owner/repo.name.git"
+  }), expected)
+})
+
+test("updateCompareUrl requires distinct valid object ids on a behind row", () => {
+  const proven = {
+    behind: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remote: "https://github.com/acme/thing"
+  }
+  assert.equal(Model.updateCompareUrl({ ...proven, behind: false }), "")
+  assert.equal(Model.updateCompareUrl({ ...proven, localSha: "" }), "")
+  assert.equal(Model.updateCompareUrl({ ...proven, remoteSha: "" }), "")
+  assert.equal(Model.updateCompareUrl({ ...proven, remoteSha: sha40A }), "")
+  assert.equal(Model.updateCompareUrl({ ...proven, localSha: "a".repeat(39) }), "")
+  assert.equal(Model.updateCompareUrl({ ...proven, remoteSha: "g".repeat(40) }), "")
+  assert.equal(Model.updateCompareUrl(null), "")
+})
+
+test("updateCompareUrl trusts only the current GitHub origin", () => {
+  const proven = { behind: true, localSha: sha40A, remoteSha: sha40B }
+  assert.equal(Model.updateCompareUrl({
+    ...proven,
+    remote: "https://gitlab.com/acme/thing.git",
+    clonedFrom: "https://github.com/acme/thing.git"
+  }), "")
+  assert.equal(Model.updateCompareUrl({
+    ...proven,
+    remote: "",
+    clonedFrom: "https://github.com/acme/thing.git"
+  }), "")
+  assert.equal(Model.updateCompareUrl({
+    ...proven,
+    remote: "https://github.com/acme/thing/tree/main"
+  }), "")
+  assert.equal(Model.updateCompareUrl({
+    ...proven,
+    remote: "https://github.com/%2e%2e/thing"
+  }), "")
+})
+
+test("changed remote versions build ordered encoded Release candidates without remote tag proof", () => {
+  const row = {
+    behind: true,
+    versionChanged: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remoteVersion: "2.0.0+build",
+    remote: "ssh://git@github.com/Owner/repo.name.git"
+  }
+  assert.deepEqual(Model.updateReleaseCandidates(row).map(candidate => candidate.preferredUrl), [
+    "https://github.com/Owner/repo.name/releases/tag/v2.0.0%2Bbuild",
+    "https://github.com/Owner/repo.name/releases/tag/2.0.0%2Bbuild"
+  ])
+})
+
+test("update Release lookup requires changed version plus exact comparison evidence", () => {
+  const proven = {
+    behind: true,
+    versionChanged: true,
+    localSha: sha40A,
+    remoteSha: sha40B,
+    remoteVersion: "2.0.0",
+    remote: "https://github.com/acme/thing.git"
+  }
+  const rejected = [
+    { ...proven, behind: false },
+    { ...proven, versionChanged: false },
+    { ...proven, localSha: "" },
+    { ...proven, remoteSha: "" },
+    { ...proven, remoteSha: sha40A },
+    { ...proven, remoteVersion: "" },
+    { ...proven, remoteVersion: "x".repeat(101) },
+    { ...proven, remote: "", clonedFrom: proven.remote },
+    { ...proven, remote: "https://gitlab.com/acme/thing", clonedFrom: proven.remote },
+    null
+  ]
+  for (const row of rejected) assert.deepEqual(Model.updateReleaseCandidates(row), [])
+
+  const sameVersion = { ...proven, versionChanged: false, remoteVersion: "1.0.0" }
+  assert.deepEqual(Model.updateReleaseCandidates(sameVersion), [])
+  assert.equal(Model.updateCompareUrl(sameVersion),
+    "https://github.com/acme/thing/compare/" + sha40A + "..." + sha40B)
+})
+
+test("GitHub navigation accepts only constructed release, tree, compare, and repository URLs", () => {
+  const release = "https://github.com/acme/thing/releases/tag/v1.2.0%2Bbuild"
+  const api = "https://api.github.com/repos/acme/thing/releases/tags/v1.2.0%2Bbuild"
+  const tree = "https://github.com/acme/thing/tree/v1.2.0%2Bbuild"
+  const compare = "https://github.com/acme/thing/compare/" + sha40A + "..." + sha40B
+  const repo = "https://github.com/acme/thing"
+  assert.equal(Model.trustedGithubReleaseApiUrl(api), api)
+  assert.equal(Model.trustedGithubReleaseUrl(release), release)
+  assert.equal(Model.trustedGithubWebUrl(tree), tree)
+  assert.equal(Model.trustedGithubWebUrl(compare), compare)
+  assert.equal(Model.trustedGithubRepoUrl(repo), repo)
+  assert.equal(Model.trustedGithubWebUrl(repo), repo)
+
+  const rejected = [
+    "http://github.com/acme/thing/tree/v1",
+    "https://api.github.com/repos/acme/thing/releases/latest",
+    "https://github.com/acme/thing/releases/tag/%0Aevil",
+    "https://github.com/acme/thing/tree/v1?x=1",
+    "https://github.com/acme/thing/compare/main...master",
+    "https://github.com/acme/thing/issues"
+  ]
+  assert.equal(Model.trustedGithubReleaseApiUrl(rejected[1]), "")
+  for (const url of rejected) assert.equal(Model.trustedGithubWebUrl(url), "")
+})
+
+test("click routing validates, pairs, deduplicates, and bounds Release candidates", () => {
+  const api = "https://api.github.com/repos/acme/thing/releases/tags/v1.2.0"
+  const release = "https://github.com/acme/thing/releases/tag/v1.2.0"
+  const tree = "https://github.com/acme/thing/tree/v1.2.0"
+  const compare = "https://github.com/acme/thing/compare/" + sha40A + "..." + sha40B
+  const plain = {
+    probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/1.2.0",
+    preferredUrl: "https://github.com/acme/thing/releases/tag/1.2.0"
+  }
+  assert.deepEqual(Model.githubNavigationRequest([
+    { probeUrl: api, preferredUrl: release },
+    { probeUrl: api, preferredUrl: release },
+    plain,
+    {
+      probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/third",
+      preferredUrl: "https://github.com/acme/thing/releases/tag/third"
+    }
+  ], tree), {
+    candidates: [{ probeUrl: api, preferredUrl: release }, plain], fallbackUrl: tree
+  })
+  assert.deepEqual(Model.githubNavigationRequest([], compare), {
+    candidates: [], fallbackUrl: compare
+  })
+  assert.deepEqual(Model.githubNavigationRequest([
+    { probeUrl: api, preferredUrl: "https://github.com/other/repo/releases/tag/v1.2.0" },
+    { probeUrl: "https://evil.test", preferredUrl: release }
+  ], tree), {
+    candidates: [], fallbackUrl: tree
+  })
+  assert.deepEqual(Model.githubNavigationRequest([{ probeUrl: api, preferredUrl: release }], "https://evil.test"), {
+    candidates: [], fallbackUrl: ""
+  })
+})
+
+function releaseRequest(version) {
+  return Model.githubNavigationRequest(
+    Model.githubReleaseCandidates("https://github.com/acme/thing", version),
+    `https://github.com/acme/thing/tree/${version}`)
+}
+
+function settleProbe(state, order, exitCode = 0, responseCode = "200") {
+  const effects = []
+  for (const event of order) {
+    const transition = event === "exit"
+      ? Model.releaseNavigationProbeExitedTransition(state, exitCode)
+      : Model.releaseNavigationProbeOutputTransition(state, responseCode)
+    effects.push(transition)
+    state = transition.state
+  }
+  return { state, effects }
+}
+
+test("release navigation A then B starts only B after A fully settles", () => {
+  const a = releaseRequest("v1"), b = releaseRequest("v2")
+  let transition = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), a)
+  const aGeneration = transition.startRequest.generation
+  let state = transition.state
+
+  transition = Model.releaseNavigationRequestTransition(state, b)
+  state = transition.state
+  assert.equal(transition.stopProbe, true)
+  assert.equal(transition.startRequest, null)
+  assert.equal(state.activeGeneration, aGeneration)
+  assert.equal(state.activeRequest, null)
+  assert.equal(state.queuedRequest.request.candidates[0].preferredUrl, b.candidates[0].preferredUrl)
+
+  const settled = settleProbe(state, ["exit", "output"])
+  assert.equal(settled.effects[0].openUrl, "")
+  assert.equal(settled.effects[0].scheduleStart, false)
+  assert.equal(settled.effects[1].openUrl, "")
+  assert.equal(settled.effects[1].scheduleStart, true)
+
+  transition = Model.releaseNavigationStartQueuedTransition(settled.state)
+  assert.equal(transition.startRequest.probeUrl, b.candidates[0].probeUrl)
+  const completed = settleProbe(transition.state, ["output", "exit"])
+  assert.equal(completed.effects[0].openUrl, "")
+  assert.equal(completed.effects[1].openUrl, b.candidates[0].preferredUrl)
+})
+
+test("release navigation A then B then C coalesces to C", () => {
+  const a = releaseRequest("v1"), b = releaseRequest("v2"), c = releaseRequest("v3")
+  let transition = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), a)
+  transition = Model.releaseNavigationRequestTransition(transition.state, b)
+  assert.equal(transition.state.queuedRequest.request.candidates[0].preferredUrl, b.candidates[0].preferredUrl)
+  transition = Model.releaseNavigationRequestTransition(transition.state, c)
+  assert.equal(transition.state.queuedRequest.request.candidates[0].preferredUrl, c.candidates[0].preferredUrl)
+  assert.notEqual(transition.state.queuedRequest.request.candidates[0].preferredUrl, b.candidates[0].preferredUrl)
+
+  const settled = settleProbe(transition.state, ["output", "exit"])
+  transition = Model.releaseNavigationStartQueuedTransition(settled.state)
+  assert.equal(transition.startRequest.probeUrl, c.candidates[0].probeUrl)
+  const completed = settleProbe(transition.state, ["exit", "output"])
+  assert.equal(completed.effects[1].openUrl, c.candidates[0].preferredUrl)
+})
+
+test("repository and direct fallback navigation revoke A and open immediately", () => {
+  const a = releaseRequest("v1")
+  const repo = "https://github.com/acme/thing"
+  const compare = "https://github.com/acme/thing/compare/" + sha40A + "..." + sha40B
+
+  for (const direct of [
+    state => Model.releaseNavigationDirectTransition(state, repo),
+    state => Model.releaseNavigationRequestTransition(
+      state, Model.githubNavigationRequest([], compare))
+  ]) {
+    let transition = Model.releaseNavigationRequestTransition(
+      Model.releaseNavigationInitialState(), a)
+    transition = direct(transition.state)
+    assert.equal(transition.stopProbe, true)
+    assert.ok(transition.openUrl === repo || transition.openUrl === compare)
+    assert.equal(transition.state.activeRequest, null)
+    assert.equal(transition.state.queuedRequest, null)
+    const settled = settleProbe(transition.state, ["exit", "output"])
+    for (const effect of settled.effects) assert.equal(effect.openUrl, "")
+  }
+})
+
+test("actions, tab switches, reload, and close revoke A in either callback order", () => {
+  const a = releaseRequest("v1")
+  for (const order of [["exit", "output"], ["output", "exit"]]) {
+    for (const choice of ["action", "tab", "reload", "close"]) {
+      let transition = Model.releaseNavigationRequestTransition(
+        Model.releaseNavigationInitialState(), a)
+      transition = Model.releaseNavigationRevokeTransition(transition.state)
+      assert.equal(transition.stopProbe, true, choice)
+      assert.equal(transition.state.activeRequest, null, choice)
+      const settled = settleProbe(transition.state, order)
+      for (const effect of settled.effects) {
+        assert.equal(effect.openUrl, "", choice)
+        assert.equal(effect.startRequest, null, choice)
+      }
+    }
+  }
+})
+
+test("canceled A callbacks cannot open or consume queued B in either order", () => {
+  const a = releaseRequest("v1"), b = releaseRequest("v2")
+  for (const order of [["exit", "output"], ["output", "exit"]]) {
+    let transition = Model.releaseNavigationRequestTransition(
+      Model.releaseNavigationInitialState(), a)
+    transition = Model.releaseNavigationRequestTransition(transition.state, b)
+    const first = settleProbe(transition.state, [order[0]])
+    assert.equal(first.effects[0].openUrl, "")
+    assert.equal(first.state.queuedRequest.request.candidates[0].preferredUrl, b.candidates[0].preferredUrl)
+    assert.equal(first.state.activeGeneration !== 0, true)
+
+    const second = settleProbe(first.state, [order[1]])
+    assert.equal(second.effects[0].openUrl, "")
+    assert.equal(second.effects[0].scheduleStart, true)
+    assert.equal(second.state.queuedRequest.request.candidates[0].preferredUrl, b.candidates[0].preferredUrl)
+    transition = Model.releaseNavigationStartQueuedTransition(second.state)
+    assert.equal(transition.startRequest.probeUrl, b.candidates[0].probeUrl)
+  }
+})
+
+test("ordered Release probes route first 200, second 200, both 404, and hard failures", () => {
+  const request = releaseRequest("1.2.0")
+
+  let started = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), request)
+  let completed = settleProbe(started.state, ["output", "exit"], 0, "200")
+  assert.equal(completed.effects[1].openUrl, request.candidates[0].preferredUrl)
+
+  started = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), request)
+  let first = settleProbe(started.state, ["exit", "output"], 0, "404")
+  assert.equal(first.effects[1].openUrl, "")
+  assert.equal(first.effects[1].scheduleStart, true)
+  let second = Model.releaseNavigationStartQueuedTransition(first.state)
+  assert.equal(second.startRequest.probeUrl, request.candidates[1].probeUrl)
+  completed = settleProbe(second.state, ["output", "exit"], 0, "200")
+  assert.equal(completed.effects[1].openUrl, request.candidates[1].preferredUrl)
+
+  started = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), request)
+  first = settleProbe(started.state, ["output", "exit"], 0, "404")
+  second = Model.releaseNavigationStartQueuedTransition(first.state)
+  completed = settleProbe(second.state, ["exit", "output"], 0, "404")
+  assert.equal(completed.effects[1].openUrl, request.fallbackUrl)
+  assert.equal(completed.effects[1].scheduleStart, false)
+
+  for (const failure of [
+    { exitCode: 0, responseCode: "403" },
+    { exitCode: 0, responseCode: "500" },
+    { exitCode: 0, responseCode: "not-http" },
+    { exitCode: 28, responseCode: "000" }
+  ]) {
+    started = Model.releaseNavigationRequestTransition(
+      Model.releaseNavigationInitialState(), request)
+    completed = settleProbe(
+      started.state, ["exit", "output"], failure.exitCode, failure.responseCode)
+    assert.equal(completed.effects[1].openUrl, request.fallbackUrl)
+    assert.equal(completed.effects[1].scheduleStart, false)
+  }
+})
+
+test("rapid replacement owns navigation at either candidate stage", () => {
+  const a = releaseRequest("1"), b = releaseRequest("2")
+  for (const candidateStage of [0, 1]) {
+    let transition = Model.releaseNavigationRequestTransition(
+      Model.releaseNavigationInitialState(), a)
+    if (candidateStage === 1) {
+      const first = settleProbe(transition.state, ["exit", "output"], 0, "404")
+      transition = Model.releaseNavigationStartQueuedTransition(first.state)
+      assert.equal(transition.startRequest.probeUrl, a.candidates[1].probeUrl)
+    }
+
+    transition = Model.releaseNavigationRequestTransition(transition.state, b)
+    assert.equal(transition.stopProbe, true)
+    assert.equal(transition.state.activeRequest, null)
+    assert.equal(transition.state.queuedRequest.request.candidates[0].preferredUrl,
+      b.candidates[0].preferredUrl)
+
+    const oldSettled = settleProbe(transition.state, ["output", "exit"])
+    const replacement = Model.releaseNavigationStartQueuedTransition(oldSettled.state)
+    assert.equal(replacement.startRequest.probeUrl, b.candidates[0].probeUrl)
+    const bCompleted = settleProbe(replacement.state, ["exit", "output"], 0, "200")
+    assert.equal(bCompleted.effects[1].openUrl, b.candidates[0].preferredUrl)
+  }
+})
+
+test("cancellation revokes navigation at either candidate stage", () => {
+  const request = releaseRequest("1")
+  for (const candidateStage of [0, 1]) {
+    let transition = Model.releaseNavigationRequestTransition(
+      Model.releaseNavigationInitialState(), request)
+    if (candidateStage === 1) {
+      const first = settleProbe(transition.state, ["output", "exit"], 0, "404")
+      transition = Model.releaseNavigationStartQueuedTransition(first.state)
+    }
+    transition = Model.releaseNavigationRevokeTransition(transition.state)
+    assert.equal(transition.stopProbe, true)
+    const settled = settleProbe(transition.state, ["exit", "output"], 0, "200")
+    for (const effect of settled.effects) {
+      assert.equal(effect.openUrl, "")
+      assert.equal(effect.startRequest, null)
+    }
+  }
+})
+
+test("release probe start failure clears busy state and uses the active fallback", () => {
+  const request = releaseRequest("v1")
+  const started = Model.releaseNavigationRequestTransition(
+    Model.releaseNavigationInitialState(), request)
+  const failed = Model.releaseNavigationProbeStartFailedTransition(started.state)
+  assert.equal(failed.state.activeGeneration, 0)
+  assert.equal(failed.openUrl, request.fallbackUrl)
+})
+
+test("repository and Marketplace delegates route browser ownership through Panel", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const catalogCard = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+
+  for (const delegate of [pluginRow, catalogCard]) {
+    assert.doesNotMatch(delegate, /Quickshell\.execDetached/)
+    assert.match(delegate, /signal repositoryNavigationRequested\(string url\)/)
+    assert.match(delegate, /repositoryNavigationRequested\(repoUrl\)/)
+  }
+  assert.equal(panel.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
+  assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 3)
+  assert.match(panel, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
+  assert.match(panel, /onCloseRequested: \{ root\.revokeReleaseNavigation\(\); root\.close\(\) \}/)
+  assert.match(panel, /onTabRequested: function\(direction\) \{ root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
+
+  for (const name of [
+    "switchTab", "reload", "loadCatalog", "askInstall", "askAdd",
+    "askRemove", "askEnable", "askDisable", "startUpdate"
+  ]) {
+    const start = panel.indexOf(`function ${name}(`)
+    const end = panel.indexOf("\n  }", start)
+    assert.notEqual(start, -1, name)
+    assert.match(panel.slice(start, end), /revokeReleaseNavigation\(\)/, name)
+  }
+})
+
+test("release probe uses fixed bounded curl argv and returns only the HTTP status", () => {
+  const root = mkdtempSync(join(tmpdir(), "plugin-release-probe-test-"))
+  const curl = join(root, "curl"), argvLog = join(root, "argv")
+  const api = "https://api.github.com/repos/acme/thing/releases/tags/v1.2.0"
+  try {
+    writeFileSync(curl, `#!/usr/bin/env bash
+printf '%s\\n' "$@" > "$PROBE_ARGV"
+printf '%s' "$PROBE_CODE"
+exit "$PROBE_EXIT"
+`)
+    chmodSync(curl, 0o755)
+    const command = Model.releaseProbeCommand(api)
+    assert.deepEqual(command, [
+      "curl", "--silent", "--show-error", "--output", "/dev/null",
+      "--request", "GET", "--connect-timeout", "3", "--max-time", "5",
+      "--header", "Accept: application/vnd.github+json",
+      "--header", "X-GitHub-Api-Version: 2022-11-28",
+      "--write-out", "%{http_code}", api
+    ])
+    assert.deepEqual(Model.releaseProbeCommand("https://evil.test"), [])
+
+    const run = (code, exit) => spawnSync(command[0], command.slice(1), {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH}`,
+        PROBE_ARGV: argvLog,
+        PROBE_CODE: code,
+        PROBE_EXIT: String(exit)
+      }
+    })
+    let result = run("200", 0)
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout, "200")
+    assert.deepEqual(readFileSync(argvLog, "utf8").trim().split("\n"), command.slice(1))
+
+    result = run("404", 0)
+    assert.equal(result.stdout, "404")
+    result = run("000", 28)
+    assert.equal(result.status, 28)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test("versionLabel stays silent when no version is known", () => {

@@ -82,6 +82,23 @@ Panel {
   property bool checkingUpdates: false
   readonly property int behindCount: Model.countBehind(rows)
 
+  // A Process is reusable only after both its exit and collector callbacks
+  // have settled. The callbacks may arrive in either order, so `running` alone
+  // is not enough to decide that a fresh load/check pair can safely start.
+  property bool loadProcessExited: true
+  property bool loadOutputFinished: true
+  property bool updateProcessExited: true
+  property bool updateOutputFinished: true
+  property bool freshUpdateCycleQueued: false
+  readonly property bool updateActionsEnabled:
+    !busy && loadProcessSettled() && updateProcessSettled()
+
+  // One click-time release probe for the whole panel. Every explicit
+  // navigation or action advances this generation state, so callbacks from an
+  // older process can settle it but never recover superseded URLs.
+  property var releaseNavigationState: Model.releaseNavigationInitialState()
+  readonly property bool releaseProbeBusy: releaseNavigationState.activeGeneration !== 0
+
   readonly property int installedTotal: Model.countRemovable(rows)
   readonly property bool filtered: Model.isFiltering(kindFilter, statusFilter, searchQuery)
 
@@ -115,6 +132,7 @@ Panel {
 
   function switchTab(tab) {
     if (activeTab === tab) return
+    revokeReleaseNavigation()
     activeTab = tab
     resetSelection()
     if (tab === "browse" && !catalogLoaded && !catalogLoading) loadCatalog(false)
@@ -209,10 +227,22 @@ Panel {
 
   // ---- Loading ------------------------------------------------------------
 
+  function loadProcessSettled() {
+    return !loadProc.running && root.loadProcessExited && root.loadOutputFinished
+  }
+
+  function updateProcessSettled() {
+    return !updateProc.running && root.updateProcessExited && root.updateOutputFinished
+  }
+
   function reload() {
-    if (loadProc.running) return
-    loading = true
+    root.revokeReleaseNavigation()
+    if (!root.loadProcessSettled()) return false
+    root.loadProcessExited = false
+    root.loadOutputFinished = false
+    root.loading = true
     loadProc.running = true
+    return true
   }
 
   function applyLoad(raw) {
@@ -241,14 +271,35 @@ Panel {
   // ---- Update checks ------------------------------------------------------
 
   function checkUpdates() {
-    if (updateProc.running) return
-    checkingUpdates = true
+    if (!root.updateProcessSettled()) return false
+    root.updateProcessExited = false
+    root.updateOutputFinished = false
+    root.checkingUpdates = true
     updateProc.running = true
+    return true
   }
 
-  // Held so a report that lands while the rows are being rebuilt is not lost;
-  // a reload after an install would otherwise wipe every badge until the next
-  // check.
+  // A successful pull invalidates both snapshots. One bounded bit remembers
+  // that debt while either old process settles; repeated requests coalesce.
+  // The replacement load/check pair starts together only when both reusable
+  // Process objects have completed both lifecycle callbacks.
+  function requestFreshUpdateCycle() {
+    root.freshUpdateCycleQueued = true
+    root.drainFreshUpdateCycle()
+  }
+
+  function drainFreshUpdateCycle() {
+    if (!root.freshUpdateCycleQueued
+        || !root.loadProcessSettled() || !root.updateProcessSettled()) return false
+    root.freshUpdateCycleQueued = false
+    root.reload()
+    root.checkUpdates()
+    return true
+  }
+
+  // Held so a report that lands while the rows are being rebuilt is not lost.
+  // Model.applyUpdateReport binds every replay to the freshly loaded checkout
+  // HEAD, so an old generation can remain pending without regaining authority.
   property string pendingUpdateReport: ""
 
   function applyUpdateReport(raw) {
@@ -256,6 +307,53 @@ Panel {
     pendingUpdateReport = raw
     if (rows.length === 0) return
     rows = Model.applyUpdateReport(rows, Model.parseUpdateReport(raw))
+  }
+
+  // The only browser-launching sink in the panel. Callers hand it URLs already
+  // accepted by a Model transition; the argv remains one isolated URL.
+  function openBrowserUrl(url) {
+    var trusted = Model.browsableUrl(url)
+    if (trusted !== "") Quickshell.execDetached(["omarchy-launch-browser", trusted])
+  }
+
+  function applyReleaseNavigationTransition(transition) {
+    if (!transition) return
+    releaseNavigationState = transition.state
+    if (transition.stopProbe && releaseProbe.running) releaseProbe.running = false
+    if (transition.startRequest) startReleaseProbe(transition.startRequest)
+    if (transition.openUrl !== "") openBrowserUrl(transition.openUrl)
+    if (transition.scheduleStart) Qt.callLater(function() {
+      applyReleaseNavigationTransition(
+        Model.releaseNavigationStartQueuedTransition(releaseNavigationState))
+    })
+  }
+
+  function startReleaseProbe(entry) {
+    if (!entry || entry.generation !== releaseNavigationState.activeGeneration) return
+    var command = Model.releaseProbeCommand(entry.probeUrl)
+    if (command.length === 0) {
+      applyReleaseNavigationTransition(
+        Model.releaseNavigationProbeStartFailedTransition(releaseNavigationState))
+      return
+    }
+    releaseProbe.command = command
+    releaseProbe.running = true
+  }
+
+  function requestGithubNavigation(candidates, fallbackUrl) {
+    var request = Model.githubNavigationRequest(candidates, fallbackUrl)
+    applyReleaseNavigationTransition(
+      Model.releaseNavigationRequestTransition(releaseNavigationState, request))
+  }
+
+  function navigateExternalUrl(url) {
+    applyReleaseNavigationTransition(
+      Model.releaseNavigationDirectTransition(releaseNavigationState, url))
+  }
+
+  function revokeReleaseNavigation() {
+    applyReleaseNavigationTransition(
+      Model.releaseNavigationRevokeTransition(releaseNavigationState))
   }
 
   // ---- Filtering ----------------------------------------------------------
@@ -292,6 +390,7 @@ Panel {
 
   function loadCatalog(force) {
     if (catalogProc.running) return
+    revokeReleaseNavigation()
     catalogLoading = true
     catalogError = ""
     catalogProc.command = ["bash", "-c", catalogScript, "catalog", force === true ? "1" : "0"]
@@ -318,6 +417,7 @@ Panel {
   // the registry's own install command is read for its url and never executed.
   function askInstall(entry) {
     if (!entry || !entry.installable || busy) return
+    revokeReleaseNavigation()
     pendingUrl = entry.installUrl
     pendingLabel = entry.name
     pendingId = entry.id
@@ -347,6 +447,7 @@ Panel {
       setStatus("Enter an https://, ssh://, or git@ repository url", true)
       return
     }
+    revokeReleaseNavigation()
     pendingUrl = url
     pendingLabel = Model.repoLabel(url)
     // A bare url says nothing about what is inside it. The plugin is cloned
@@ -360,6 +461,7 @@ Panel {
 
   function askRemove(row) {
     if (!row || !row.removable || busy) return
+    revokeReleaseNavigation()
     pendingId = row.id
     pendingLabel = row.name
     pendingUrl = ""
@@ -370,6 +472,7 @@ Panel {
   // has to be told where it goes, and only the user knows that.
   function askEnable(row) {
     if (!Model.canEnable(row) || busy) return
+    revokeReleaseNavigation()
 
     if (!Model.needsPlacement(row)) {
       // A service, an overlay, or a whole-bar plugin: nothing to place, so the
@@ -389,6 +492,7 @@ Panel {
   // one exception: this panel's own row, whose Enable button leaves with it.
   function askDisable(row) {
     if (!Model.canDisable(row) || busy) return
+    revokeReleaseNavigation()
 
     if (row.id === moduleName) {
       pendingId = row.id
@@ -514,7 +618,9 @@ Panel {
   // Update needs no confirmation: it is a fast-forward of a checkout the user
   // already chose to trust, and it destroys nothing.
   function startUpdate(row) {
-    if (!row || !row.updatable || busy) return
+    if (!row || !row.updatable || busy
+        || !root.loadProcessSettled() || !root.updateProcessSettled()) return
+    revokeReleaseNavigation()
     runAction("update", row.name, ["omarchy", "plugin", "update", row.id, "--yes"])
   }
 
@@ -569,7 +675,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) return
+    if (!opened) { revokeReleaseNavigation(); return }
     setStatus("", false)
     reload()
     checkUpdates()
@@ -615,8 +721,8 @@ Panel {
       // JSON escaping keeps hostile path/remote bytes inside this one record;
       // they cannot forge another checkout or exact-tag field.
       + "  remote=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
-      + "  jq -cn --arg path \"$path\" --arg remote \"$remote\" --arg exactTag \"$exact_tag\" "
-      + "    '{path: $path, remote: $remote, exactTag: $exactTag}'; "
+      + "  jq -cn --arg path \"$path\" --arg remote \"$remote\" --arg exactTag \"$exact_tag\" --arg headSha \"$head\" "
+      + "    '{path: $path, remote: $remote, exactTag: $exactTag, headSha: $headSha}'; "
       + "done; "
       + "printf '\\n===manifest===\\n'; "
       // One jq over every manifest at once rather than one process per plugin.
@@ -629,8 +735,17 @@ Panel {
     ]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.applyLoad(text)
+      onStreamFinished: {
+        root.applyLoad(text)
+        root.loadOutputFinished = true
+        root.drainFreshUpdateCycle()
+      }
     }
+    onExited: function(exitCode) {
+      root.loadProcessExited = true
+      root.drainFreshUpdateCycle()
+    }
+    onRunningChanged: if (!running) root.drainFreshUpdateCycle()
   }
 
   // Clone, wait for the shell to notice, then place. Upstream's own
@@ -700,33 +815,117 @@ Panel {
   // read only for the ones actually behind, pinned to the exact remote commit.
   readonly property string updateScript: ""
     + "set -u; export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true; "
+    + "tmpdir=; temp_root=; owner_prefix=; output_revoked=0; worker_sessions=(); "
+    // Every worker is a session leader, so its trusted PID is also the exact
+    // boundary containing git, timeout, curl, and any network descendants.
+    // No caller or unrelated process can share that newly created session.
+    + "terminate_workers() { output_revoked=1; "
+    + "  for sid in \"${worker_sessions[@]}\"; do /usr/bin/pkill -TERM -s \"$sid\" 2>/dev/null || :; done; "
+    + "  for sid in \"${worker_sessions[@]}\"; do /usr/bin/pkill -KILL -s \"$sid\" 2>/dev/null || :; done; "
+    + "  for pid in \"${worker_sessions[@]}\"; do wait \"$pid\" 2>/dev/null || :; done; "
+    + "  worker_sessions=(); }; "
+    + "cleanup() { status=$?; trap - EXIT HUP INT TERM; "
+    + "  if [ \"${#worker_sessions[@]}\" -gt 0 ]; then terminate_workers; fi; "
+    + "  if [ -n \"$tmpdir\" ] && [ -n \"$temp_root\" ] && [ -n \"$owner_prefix\" ] "
+    + "     && [ \"$temp_root\" != / ] && [ \"$tmpdir\" != \"$temp_root\" ]; then "
+    + "    case \"$tmpdir\" in \"$temp_root\"/\"$owner_prefix\".*) rm -rf -- \"$tmpdir\" ;; esac; "
+    + "  fi; exit \"$status\"; }; "
+    + "signal_exit() { status=\"$1\"; trap - HUP INT TERM; terminate_workers; exit \"$status\"; }; "
+    + "arm_signal_traps() { trap 'signal_exit 129' HUP; trap 'signal_exit 130' INT; trap 'signal_exit 143' TERM; }; "
+    // Bash delivers traps between commands. During the two-command spawn/PID
+    // append boundary, defer the exit until the new trusted session is stored.
+    + "launch_worker() { pending_signal=0; "
+    + "  trap 'pending_signal=129' HUP; trap 'pending_signal=130' INT; trap 'pending_signal=143' TERM; "
+    + "  /usr/bin/setsid /usr/bin/bash -c 'set -u; update_worker \"$1\" \"$2\"' worker \"$1\" \"$2\" & "
+    + "  worker_sessions+=(\"$!\"); arm_signal_traps; "
+    + "  if [ \"$pending_signal\" -ne 0 ]; then signal_exit \"$pending_signal\"; fi; }; "
+    + "trap 'cleanup' EXIT; arm_signal_traps; "
+    + "umask 077; owner_token=; IFS= read -r owner_token < /proc/sys/kernel/random/uuid 2>/dev/null || owner_token=; "
+    + "case \"$owner_token\" in ''|*[!0-9a-f-]*) owner_token=\"${RANDOM}${RANDOM}${RANDOM}${RANDOM}\" ;; esac; "
+    + "owner_prefix=\"omarchy-plugin-manager-updates.$$.$owner_token\"; "
+    + "make_tmpdir() { temp_root=\"$1\"; attempt=0; "
+    + "  while [ \"$attempt\" -lt 8 ]; do tmpdir=\"$temp_root/$owner_prefix.$attempt\"; "
+    + "    if mkdir -m 700 -- \"$tmpdir\" 2>/dev/null; then return 0; fi; "
+    + "    tmpdir=; attempt=$((attempt + 1)); "
+    + "  done; temp_root=; return 1; }; "
+    + "xdg_root=\"${XDG_RUNTIME_DIR:-}\"; xdg_mode=; "
+    + "if [ -n \"$xdg_root\" ]; then xdg_mode=$(stat -c %a -- \"$xdg_root\" 2>/dev/null); fi; "
+    + "if [ -n \"$xdg_root\" ] && [ \"${xdg_root#/}\" != \"$xdg_root\" ] && [ \"$xdg_root\" != / ] "
+    + "   && [ -d \"$xdg_root\" ] && [ -w \"$xdg_root\" ] && [ -x \"$xdg_root\" ] "
+    + "   && [ -O \"$xdg_root\" ] && [ ! -L \"$xdg_root\" ] && [ \"$xdg_mode\" = 700 ] "
+    + "   && make_tmpdir \"$xdg_root\"; then :; "
+    + "elif [ -d /tmp ] && [ -w /tmp ] && [ -x /tmp ] && make_tmpdir /tmp; then :; "
+    + "else exit 1; fi; "
+    + "update_worker() { path=\"$1\"; outfile=\"$2\"; "
+    + "  branch=$(git -C \"$path\" rev-parse --abbrev-ref HEAD 2>/dev/null); "
+    + "  local_sha=$(git -C \"$path\" rev-parse HEAD 2>/dev/null); "
+    + "  remote_sha=$(timeout 12 git -C \"$path\" ls-remote origin \"refs/heads/$branch\" 2>/dev/null | cut -f1); "
+    + "  local_version=$(jq -r '.version // \"\"' \"$path/manifest.json\" 2>/dev/null); "
+    + "  remote_version=\"\"; "
+    + "  if [ -n \"$remote_sha\" ] && [ \"$remote_sha\" != \"$local_sha\" ]; then "
+    + "    origin=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
+    + "    case \"$origin\" in https://github.com/*) "
+    + "      slug=${origin#https://github.com/}; slug=${slug%.git}; "
+    + "      remote_version=$(curl -fsSL --max-time 8 \"https://raw.githubusercontent.com/$slug/$remote_sha/manifest.json\" 2>/dev/null | jq -r '.version // \"\"' 2>/dev/null); "
+    + "    ;; esac; "
+    + "  fi; "
+    + "  jq -cn --arg path \"$path\" --arg localSha \"$local_sha\" --arg remoteSha \"$remote_sha\" "
+    + "    --arg localVersion \"$local_version\" --arg remoteVersion \"$remote_version\" "
+    + "    '{path: $path, localSha: $localSha, remoteSha: $remoteSha, localVersion: $localVersion, remoteVersion: $remoteVersion}' "
+    + "    > \"$outfile.tmp\" && mv -- \"$outfile.tmp\" \"$outfile.json\"; "
+    + "}; export -f update_worker; "
+    + "index=0; "
     + "for dir in \"$HOME\"/.config/omarchy/plugins/*/; do "
     + "  [ -d \"$dir/.git\" ] || continue; "
-    + "  ( path=\"${dir%/}\"; "
-    + "    branch=$(git -C \"$path\" rev-parse --abbrev-ref HEAD 2>/dev/null); "
-    + "    local_sha=$(git -C \"$path\" rev-parse HEAD 2>/dev/null); "
-    + "    remote_sha=$(timeout 12 git -C \"$path\" ls-remote origin \"refs/heads/$branch\" 2>/dev/null | cut -f1); "
-    + "    local_version=$(jq -r '.version // \"\"' \"$path/manifest.json\" 2>/dev/null); "
-    + "    remote_version=\"\"; "
-    + "    if [ -n \"$remote_sha\" ] && [ \"$remote_sha\" != \"$local_sha\" ]; then "
-    + "      origin=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
-    + "      case \"$origin\" in https://github.com/*) "
-    + "        slug=${origin#https://github.com/}; slug=${slug%.git}; "
-    + "        remote_version=$(curl -fsSL --max-time 8 \"https://raw.githubusercontent.com/$slug/$remote_sha/manifest.json\" 2>/dev/null | jq -r '.version // \"\"' 2>/dev/null); "
-    + "      ;; esac; "
-    + "    fi; "
-    + "    printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$path\" \"$local_sha\" \"$remote_sha\" \"$local_version\" \"$remote_version\"; "
-    + "  ) & "
-    + "done; wait"
+    // A numeric producer-owned filename keeps untrusted paths out of the
+    // filesystem protocol. Workers publish by atomic rename only after jq has
+    // completed one record; the parent emits those records after every remote
+    // check has finished, so even versions far above pipe atomicity cannot
+    // interleave.
+    + "  outfile=\"$tmpdir/$index\"; index=$((index + 1)); "
+    + "  launch_worker \"${dir%/}\" \"$outfile\"; "
+    + "done; "
+    + "while [ \"${#worker_sessions[@]}\" -gt 0 ]; do "
+    + "  pid=\"${worker_sessions[0]}\"; wait \"$pid\" || :; worker_sessions=(\"${worker_sessions[@]:1}\"); "
+    + "done; [ \"$output_revoked\" -eq 0 ] || exit 1; "
+    + "payload=; i=0; while [ \"$i\" -lt \"$index\" ]; do "
+    + "  file=\"$tmpdir/$i.json\"; if [ -s \"$file\" ]; then "
+    + "    record=$(cat -- \"$file\"); payload+=\"$record\"$'\\n'; "
+    + "  fi; i=$((i + 1)); "
+    + "done; [ \"$output_revoked\" -eq 0 ] || exit 1; "
+    // Once committed, publish through one shell builtin. Bash defers traps
+    // until the builtin returns, so cancellation observes either no batch or
+    // the complete batch, never an interruptible sequence of external cats.
+    + "trap '' HUP INT TERM; printf '%s' \"$payload\""
+
+  Process {
+    id: releaseProbe
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyReleaseNavigationTransition(
+        Model.releaseNavigationProbeOutputTransition(root.releaseNavigationState, text))
+    }
+    onExited: function(exitCode) { root.applyReleaseNavigationTransition(
+      Model.releaseNavigationProbeExitedTransition(root.releaseNavigationState, exitCode)) }
+  }
 
   Process {
     id: updateProc
     command: ["bash", "-c", root.updateScript]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.applyUpdateReport(text)
+      onStreamFinished: {
+        root.applyUpdateReport(text)
+        root.updateOutputFinished = true
+        root.drainFreshUpdateCycle()
+      }
     }
-    onExited: function(exitCode) { root.checkingUpdates = false }
+    onExited: function(exitCode) {
+      root.checkingUpdates = false
+      root.updateProcessExited = true
+      root.drainFreshUpdateCycle()
+    }
+    onRunningChanged: if (!running) root.drainFreshUpdateCycle()
   }
 
   Process {
@@ -770,11 +969,19 @@ Panel {
       if (exitCode === 0) {
         root.setStatus(Model.successMessage(kind, label), false)
         if (kind === "add") urlField.text = ""
+        if (kind === "update") {
+          // The successful pull invalidates the old report immediately. Load
+          // and the fresh check may finish in either order; HEAD equality makes
+          // both orders deterministic without serializing the processes.
+          root.pendingUpdateReport = ""
+          root.rows = Model.applyUpdateReport(root.rows, {})
+        }
       } else {
         root.setStatus(Model.failureMessage(kind, root.actionStderr, exitCode), true)
       }
 
-      root.reload()
+      if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()
+      else root.reload()
     }
   }
 
@@ -812,8 +1019,8 @@ Panel {
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
       onActivateRequested: root.browsing ? root.askInstall(root.selectedEntry) : root.startUpdate(root.selectedRow)
       onDeleteRequested: if (!root.browsing) root.askRemove(root.selectedRow)
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onCloseRequested: { root.revokeReleaseNavigation(); root.close() }
+      onTabRequested: function(direction) { root.revokeReleaseNavigation(); root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "/") root.focusSearchField()
         else if (t === "r" || t === "R") root.reload()
@@ -914,7 +1121,7 @@ Panel {
             fontFamily: root.contentFontFamily
             fontSize: tabs.fontSize
             bordered: true
-            onClicked: Quickshell.execDetached(["omarchy-launch-browser", "https://omarchyplugins.com/"])
+            onClicked: root.navigateExternalUrl("https://omarchyplugins.com/")
           }
 
           PanelActionButton {
@@ -1247,12 +1454,17 @@ Panel {
               row: modelData
               selected: root.selectedIndex === index
               actionsEnabled: !root.busy
+              updateEnabled: root.updateActionsEnabled
               showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
               onClicked: root.selectedIndex = index
+              onGithubNavigationRequested: function(candidates, fallbackUrl) {
+                root.requestGithubNavigation(candidates, fallbackUrl)
+              }
+              onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
               onUpdateRequested: {
                 root.selectedIndex = index
                 root.startUpdate(modelData)
@@ -1302,6 +1514,7 @@ Panel {
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
               onClicked: root.selectedIndex = globalIndex
+              onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
               // A built-in cannot be pulled or deleted, but it can certainly
               // be sitting there switched off — same problem, same answer.
               onEnableRequested: {
@@ -1379,6 +1592,7 @@ Panel {
 
             onPreviewUndecodable: root.previewsSupported = false
             onClicked: root.selectedIndex = index
+            onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
             onInstallRequested: {
               root.selectedIndex = index
               root.askInstall(modelData)

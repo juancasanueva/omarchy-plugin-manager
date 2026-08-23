@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -28,6 +27,7 @@ Rectangle {
 
   signal clicked()
   signal installRequested()
+  signal repositoryNavigationRequested(string url)
   signal previewUndecodable()
 
   readonly property string state_: Model.installState(entry)
@@ -52,12 +52,9 @@ Rectangle {
   readonly property string repoUrl: Model.browsableUrl(entry ? entry.repo : "")
   readonly property string repoLabel: Model.repoShortLabel(entry ? entry.repo : "")
 
-  // Argv array through Omarchy's own launcher, so it opens in whichever
-  // browser `omarchy default browser` selected — and the url is checked to be
-  // https before it gets there.
   function openRepo() {
     if (repoUrl === "") return
-    Quickshell.execDetached(["omarchy-launch-browser", repoUrl])
+    repositoryNavigationRequested(repoUrl)
   }
 
   radius: Style.cornerRadius
