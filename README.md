@@ -143,7 +143,8 @@ quietly told nothing is how a stale plugin sits there looking current.
 ![The Browse tab: a puzzle icon and Plugins heading with a Browse-only
 Marketplace button between the tabs and refresh, aligned category and search
 controls, and a grid of plugin cards with previews, descriptions, repository
-links, authors, stars, and install or information actions](preview-browse.png)
+links, creator lines, linked versions, GitHub stars, Marketplace hearts, and
+install or information actions](preview-browse.png)
 
 <sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
 decode too. Without it the second source is skipped and more cards fall back
@@ -160,6 +161,19 @@ the whole defence here — the way to it belongs on the card, not behind a
 detail view. Links open through `omarchy-launch-browser`, so they land in
 whichever browser `omarchy default browser` selected, and only `https://` urls
 are ever passed to it.
+
+Below the repository, the creator gets one line and the catalog version shares
+the next with `★` GitHub stars and `♥` anonymous Marketplace hearts. The
+metrics stay separate: stars come from each `catalog.json` listing, while hearts
+come from `https://api.omarchyplugins.com/v1/stats` at
+`plugins[pluginId].hearts`. Missing or malformed counts are omitted rather than
+shown as zero.
+
+For an exact GitHub repository, clicking the version checks Releases named
+`v<version>` and then `<version>` through the same bounded, click-time probe used
+by Installed rows. A match opens the published Release; absence or failure falls
+back to the validated repository root. Non-GitHub and missing versions remain
+plain or absent, and opening Browse never performs a Release API request.
 
 Not everything the registry lists is installable in one command — suites ship
 their own installers, and some repos are not plugin-shaped. Those cards show
@@ -328,7 +342,7 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | Both tabs, search, filters, actions, and confirmations |
 | `PluginRow.qml` | One row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
-| `CatalogCard.qml` | One marketplace card: preview, blurb, stars, install |
+| `CatalogCard.qml` | One marketplace card: preview, blurb, creator, linked version, GitHub stars, Marketplace hearts, install |
 | `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 

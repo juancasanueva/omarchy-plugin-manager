@@ -612,12 +612,14 @@ function actionGerund(kind) {
 // ---- Marketplace catalog --------------------------------------------------
 //
 // omarchyplugins.com publishes the same resolved catalog its own site renders
-// from: name, description, author, category, stars, verification state, and a
-// curated install command per plugin. We read it, we never execute it — the
-// install url is parsed out and validated, then run through the same argv
-// array the Installed tab uses.
+// from: name, description, author, category, GitHub stars, verification state,
+// and a curated install command per plugin. Anonymous Marketplace hearts come
+// from the site's engagement API and are joined by plugin id before parsing.
+// We read the install command, we never execute it — the install url is parsed
+// out and validated, then run through the same argv array the Installed tab uses.
 
 var CATALOG_URL = "https://omarchyplugins.com/catalog.json"
+var MARKETPLACE_STATS_URL = "https://api.omarchyplugins.com/v1/stats"
 var CATALOG_ASSET_BASE = "https://omarchyplugins.com/"
 
 // The registry publishes thumbnails as paths under its own host. Anything
@@ -686,6 +688,15 @@ function installedIdSet(rows) {
   return set
 }
 
+// Counts are remote facts, so malformed and absent values remain unknown. In
+// particular, coercing either to zero would display a number the source never
+// supplied. A real zero is preserved and may be shown.
+function catalogCount(value) {
+  if (typeof value !== "number" || !isFinite(value)) return null
+  if (value < 0 || Math.floor(value) !== value || value > 9007199254740991) return null
+  return value
+}
+
 // The curated installCommand carries the exact clone url — including the .git
 // suffix that `repo` often omits — so the url is taken from there. It is
 // pulled out and validated rather than run: a command string from the network
@@ -724,7 +735,8 @@ function catalogEntries(doc, installedIds) {
       installAvailable: p.installAvailable === true,
       installNote: plainText(p.installNote).trim(),
       verified: p.verificationStatus === "verified",
-      stars: Number(p.stars) || 0,
+      stars: catalogCount(p.stars),
+      marketplaceHearts: catalogCount(p.marketplaceHearts),
       accent: String(p.accent || ""),
       initials: plainText(p.initials).toUpperCase(),
       license: plainText(p.license).trim(),
@@ -747,7 +759,9 @@ function catalogEntries(doc, installedIds) {
 // Popularity first: a storefront that opens on an alphabetical list buries
 // everything anyone actually uses.
 function compareCatalogEntries(a, b) {
-  if (a.stars !== b.stars) return b.stars - a.stars
+  var leftStars = a.stars === null ? -1 : a.stars
+  var rightStars = b.stars === null ? -1 : b.stars
+  if (leftStars !== rightStars) return rightStars - leftStars
   var left = a.name.toLowerCase()
   var right = b.name.toLowerCase()
   if (left < right) return -1
@@ -800,7 +814,8 @@ function catalogEmptyMessage(category, query) {
 }
 
 function starLabel(count) {
-  var stars = Number(count) || 0
+  var stars = catalogCount(count)
+  if (stars === null) return ""
   if (stars >= 1000) return (Math.round(stars / 100) / 10) + "k"
   return String(stars)
 }
@@ -920,12 +935,27 @@ function normalizedManifestVersion(value) {
   return text !== "" && text.length <= 100 ? text : ""
 }
 
+// Release names conventionally add one `v` to the manifest version. Catalogs
+// and manifests are not consistent about whether they already included it, so
+// remove every leading v/V before constructing either the display label or the
+// ordered release candidates. A value made only of prefixes is not a version.
+function normalizedReleaseVersion(value) {
+  var text = normalizedManifestVersion(value)
+  while (text.length > 0 && text.charAt(0).toLowerCase() === "v") text = text.substr(1)
+  return text
+}
+
+function releaseVersionLabel(value) {
+  var version = normalizedReleaseVersion(value)
+  return version === "" ? "" : "v" + version
+}
+
 // Local tag proof is no longer link eligibility. It remains the best fallback
 // because it names the exact source ref already proven at this checkout's HEAD.
 function provenLocalTag(row) {
   if (!row || row.gitManaged !== true) return ""
 
-  var version = normalizedManifestVersion(row.localVersion)
+  var version = normalizedReleaseVersion(row.localVersion)
   var exactTag = String(row.exactTag || "").trim()
   if (version === "" || (exactTag !== version && exactTag !== "v" + version)) return ""
   if (/[\u0000-\u001f\u007f]/.test(exactTag)) return ""
@@ -939,7 +969,7 @@ function githubTagUrl(remote, tag, base, path) {
 }
 
 function githubReleaseCandidates(remote, versionValue) {
-  var version = normalizedManifestVersion(versionValue)
+  var version = normalizedReleaseVersion(versionValue)
   if (version === "" || githubRepoSlug(remote) === "") return []
 
   var names = ["v" + version, version]
@@ -973,8 +1003,29 @@ function versionFallbackUrl(row) {
   var headSha = normalizeGitObjectId(row.headSha)
   if (headSha !== "") return githubTagUrl(
     row.remote, headSha, "https://github.com/", "/tree/")
-  var slug = githubRepoSlug(row.remote)
+  return githubRepositoryUrl(row.remote)
+}
+
+function githubRepositoryUrl(remote) {
+  var slug = githubRepoSlug(remote)
   return slug === "" ? "" : "https://github.com/" + slug
+}
+
+function catalogVersionLabel(entry) {
+  return releaseVersionLabel(entry ? entry.version : "")
+}
+
+function catalogVersionReleaseCandidates(entry) {
+  if (!entry) return []
+  return githubReleaseCandidates(entry.repo, entry.version)
+}
+
+// Browse entries have no local checkout provenance. Their exact validated
+// GitHub repository is therefore the only honest fallback when neither
+// published Release exists or the click-time probe fails.
+function catalogVersionFallbackUrl(entry) {
+  if (catalogVersionReleaseCandidates(entry).length === 0) return ""
+  return githubRepositoryUrl(entry.repo)
 }
 
 function repoPreviewUrl(repo, branch) {
@@ -1429,8 +1480,7 @@ function releaseNavigationProbeStartFailedTransition(state) {
 
 function versionLabel(row) {
   if (!row) return ""
-  var version = String(row.localVersion || "").trim()
-  return version === "" ? "" : "v" + version
+  return releaseVersionLabel(row.localVersion)
 }
 
 function countBehind(rows) {

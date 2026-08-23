@@ -18,12 +18,14 @@ const Model = new Function(
     statusOptions, filterByStatus,
     matchesQuery, filterRows, isFiltering, emptyMessage,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled, plainText,
-    catalogAssetUrl,
+    catalogAssetUrl, catalogCount,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
     repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl,
-    normalizedManifestVersion, githubReleaseCandidates, versionReleaseCandidates,
-    versionFallbackUrl, repoPreviewUrl, previewCandidates,
+    normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
+    githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
+    catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
+    repoPreviewUrl, previewCandidates,
     parseUpdateReport, applyUpdateReport, updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -660,19 +662,20 @@ const catalogDoc = {
   plugins: [
     {
       id: "acme.weather", name: "Weather", description: "Forecast in the bar",
-      author: "acme", category: "Widgets", kind: "Bar widget",
+      author: "acme", version: "v1.2.3", category: "Widgets", kind: "Bar widget",
       repo: "https://github.com/acme/omarchy-weather",
       installCommand: "omarchy plugin add https://github.com/acme/omarchy-weather.git --enable",
       installAvailable: true, verificationStatus: "verified", sourceType: "community",
-      stars: 120, accent: "cyan", initials: "WE", previewThumbnail: "assets/img/w-card.webp"
+      stars: 120, marketplaceHearts: 7,
+      accent: "cyan", initials: "WE", previewThumbnail: "assets/img/w-card.webp"
     },
     {
       id: "acme.suite", name: "Suite", description: "A whole shell",
-      author: "acme", category: "Desktop", kind: "Suite",
+      author: "acme", version: "", category: "Desktop", kind: "Suite",
       repo: "https://github.com/acme/suite", installCommand: "",
       installAvailable: false, installNote: "This repository has its own installer.",
       verificationStatus: "unverified", sourceType: "community",
-      stars: 9, accent: "violet", initials: "SU"
+      stars: 9, marketplaceHearts: 0, accent: "violet", initials: "SU"
     },
     {
       id: "omarchy.clock", name: "Clock", description: "Built in",
@@ -697,6 +700,18 @@ test("catalogEntries drops built-ins, which ship with Omarchy already", () => {
 test("catalogEntries sorts by popularity, not alphabetically", () => {
   const entries = Model.catalogEntries(catalogDoc, {})
   assert.deepEqual(entries.map(e => e.stars), [120, 9])
+})
+
+test("catalogEntries keeps GitHub stars and Marketplace hearts distinct and honest", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.deepEqual(entries.map(e => [e.stars, e.marketplaceHearts]), [[120, 7], [9, 0]])
+
+  for (const value of [undefined, null, "12", false, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(Model.catalogCount(value), null)
+    assert.equal(Model.starLabel(value), "")
+  }
+  assert.equal(Model.catalogCount(0), 0)
+  assert.equal(Model.starLabel(0), "0")
 })
 
 test("installUrlFor takes the url from the curated install command", () => {
@@ -782,7 +797,7 @@ test("starLabel keeps big counts short", () => {
   assert.equal(Model.starLabel(0), "0")
   assert.equal(Model.starLabel(999), "999")
   assert.equal(Model.starLabel(1200), "1.2k")
-  assert.equal(Model.starLabel(undefined), "0")
+  assert.equal(Model.starLabel(undefined), "")
 })
 
 // Omarchy themes define foreground, background, accent, urgent and muted —
@@ -877,6 +892,45 @@ test("manifest versions become bounded encoded Release candidates in determinist
       preferredUrl: "https://github.com/acme/thing/releases/tag/1.2.3%2Bbuild%2Fone"
     }
   ])
+
+  assert.equal(Model.normalizedReleaseVersion("vv1.2.3"), "1.2.3")
+  assert.equal(Model.releaseVersionLabel("V1.2.3"), "v1.2.3")
+  assert.equal(Model.releaseVersionLabel("vv"), "")
+  assert.deepEqual(Model.githubReleaseCandidates(
+    "https://github.com/acme/thing", "v1.2.3"), [
+    {
+      probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/v1.2.3",
+      preferredUrl: "https://github.com/acme/thing/releases/tag/v1.2.3"
+    },
+    {
+      probeUrl: "https://api.github.com/repos/acme/thing/releases/tags/1.2.3",
+      preferredUrl: "https://github.com/acme/thing/releases/tag/1.2.3"
+    }
+  ])
+})
+
+test("catalog versions link only through exact GitHub release candidates with repository fallback", () => {
+  const github = { repo: "https://github.com/acme/thing.git", version: "v1.2.3" }
+  assert.equal(Model.catalogVersionLabel(github), "v1.2.3")
+  assert.deepEqual(Model.catalogVersionReleaseCandidates(github),
+    Model.githubReleaseCandidates(github.repo, "1.2.3"))
+  assert.equal(Model.catalogVersionFallbackUrl(github), "https://github.com/acme/thing")
+
+  const nonGithub = { repo: "https://gitlab.com/acme/thing", version: "1.2.3" }
+  assert.equal(Model.catalogVersionLabel(nonGithub), "v1.2.3")
+  assert.deepEqual(Model.catalogVersionReleaseCandidates(nonGithub), [])
+  assert.equal(Model.catalogVersionFallbackUrl(nonGithub), "")
+
+  for (const entry of [
+    { repo: github.repo, version: "" },
+    { repo: github.repo, version: "v" },
+    { repo: github.repo, version: "x".repeat(101) },
+    null
+  ]) {
+    assert.equal(Model.catalogVersionLabel(entry), "")
+    assert.deepEqual(Model.catalogVersionReleaseCandidates(entry), [])
+    assert.equal(Model.catalogVersionFallbackUrl(entry), "")
+  }
 })
 
 test("installed version eligibility requires checkout, version, and hardened current GitHub origin, not exactTag", () => {
@@ -1644,7 +1698,7 @@ test("release probe start failure clears busy state and uses the active fallback
   assert.equal(failed.openUrl, request.fallbackUrl)
 })
 
-test("repository and Marketplace delegates route browser ownership through Panel", () => {
+test("repository, catalog Release, and Marketplace delegates route browser ownership through Panel", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
   const catalogCard = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
@@ -1656,6 +1710,11 @@ test("repository and Marketplace delegates route browser ownership through Panel
   }
   assert.equal(panel.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
   assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 3)
+  assert.equal(panel.split("onGithubNavigationRequested:").length - 1, 2)
+  assert.match(catalogCard, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
+  assert.match(catalogCard, /githubNavigationRequested\(versionReleaseCandidates, versionFallbackUrl\)/)
+  assert.match(panel,
+    /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{\s+root\.requestGithubNavigation\(candidates, fallbackUrl\)\s+\}/)
   assert.match(panel, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
   assert.match(panel, /onCloseRequested: \{ root\.revokeReleaseNavigation\(\); root\.close\(\) \}/)
   assert.match(panel, /onTabRequested: function\(direction\) \{ root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
@@ -1669,6 +1728,37 @@ test("repository and Marketplace delegates route browser ownership through Panel
     assert.notEqual(start, -1, name)
     assert.match(panel.slice(start, end), /revokeReleaseNavigation\(\)/, name)
   }
+})
+
+test("catalog metadata keeps creator and version-metrics rows separate without reserving empty lines", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+
+  assert.match(card, /id: creator[\s\S]*visible: root\.hasCreator[\s\S]*elide: Text\.ElideRight/)
+  assert.match(card, /id: versionAndMetrics[\s\S]*visible: root\.hasVersionOrMetrics/)
+  assert.match(card, /\? "★ " \+ Model\.starLabel\(entry\.stars\) : ""/)
+  assert.match(card, /\? "♥ " \+ Model\.starLabel\(entry\.marketplaceHearts\) : ""/)
+  assert.doesNotMatch(card, /GH ★|MP ♥/)
+  assert.match(card, /id: metricsLabel[\s\S]*anchors\.right: parent\.right[\s\S]*text: root\.metricsText/)
+  assert.match(card, /id: versionLabel[\s\S]*width: Math\.max\(0, Math\.min\(implicitWidth, availableWidth\)\)[\s\S]*elide: Text\.ElideRight/)
+  assert.match(card, /enabled: root\.versionFallbackUrl !== ""/)
+  assert.match(card, /onClicked: root\.openVersion\(\)/)
+  assert.match(card, /visible: root\.hasCreator \|\| root\.hasVersionOrMetrics \|\| installButton\.visible/)
+  assert.match(card, /Math\.max\(metadata\.height, installButton\.visible \? installButton\.height : 0\)/)
+  assert.match(card, /creator\.height \+ versionAndMetrics\.height[\s\S]*creator\.visible && versionAndMetrics\.visible \? spacing : 0/)
+  assert.match(panel, /cellWidth - Style\.space\(24\)/)
+  assert.match(panel, /Math\.ceil\(cardTextMetrics\.lineSpacing \* 8\)/)
+  assert.match(panel, /\+ Style\.space\(51\)/)
+})
+
+test("catalog projection joins the Marketplace engagement hearts endpoint by plugin id", () => {
+  const model = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  assert.match(model, /MARKETPLACE_STATS_URL = "https:\/\/api\.omarchyplugins\.com\/v1\/stats"/)
+  assert.match(panel, /Model\.MARKETPLACE_STATS_URL/)
+  assert.match(panel, /marketplaceHearts: \(\$stats\[0\]\.plugins\[\$plugin\.id\]\.hearts \/\/ null\)/)
+  assert.match(panel, /printf '%s' '\{\\"plugins\\":\{\}\}'/)
 })
 
 test("secondary text uses one panel-derived foreground without brightening disabled chrome", () => {
@@ -1745,6 +1835,7 @@ exit "$PROBE_EXIT"
 
 test("versionLabel stays silent when no version is known", () => {
   assert.equal(Model.versionLabel({ localVersion: "1.2.3" }), "v1.2.3")
+  assert.equal(Model.versionLabel({ localVersion: "v1.2.3" }), "v1.2.3")
   assert.equal(Model.versionLabel({ localVersion: "  " }), "")
   assert.equal(Model.versionLabel({}), "")
 })

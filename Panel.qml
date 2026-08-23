@@ -791,11 +791,12 @@ Panel {
     + "if [ -n \"$section\" ]; then note \"Installed $label\" \"Placed in the $section section of the bar.\"; "
     + "else note \"Installed $label\" 'Enabled.'; fi"
 
-  // Fetch, shrink, cache. The published catalog is 1.6MB of which we need
-  // about a third, and jq — an Omarchy dependency — projects it down before
-  // any of it reaches the shell's JSON parser. A fetch that fails falls back
-  // to the cached copy rather than emptying the grid: a stale storefront is
-  // far more useful than an apparently empty one.
+  // Fetch, join, shrink, cache. The catalog and its anonymous engagement stats
+  // are separate Marketplace sources; jq joins hearts by plugin id while it
+  // projects the large catalog down before any of it reaches the shell's JSON
+  // parser. Missing stats stay null rather than becoming made-up zeroes. A
+  // catalog fetch failure falls back to the cached copy rather than emptying
+  // the grid: a stale storefront is more useful than an apparently empty one.
   readonly property string catalogScript: ""
     + "set -u; "
     + "dir=\"$HOME/.cache/omarchy-plugin-manager\"; file=\"$dir/catalog.json\"; "
@@ -804,13 +805,19 @@ Panel {
     + "  age=$(( $(date +%s) - $(stat -c %Y \"$file\") )); "
     + "  if [ \"$age\" -lt 21600 ]; then cat \"$file\"; exit 0; fi; "
     + "fi; "
-    + "tmp=$(mktemp); "
-    + "if curl -fsSL --max-time 25 " + Model.CATALOG_URL + " "
-    + "   | jq -c '{generatedAt, plugins: [.plugins[] | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,accent,initials,license,previewThumbnail,listingValidatedBranch}]}' > \"$tmp\" 2>/dev/null "
+    + "catalog_tmp=$(mktemp); stats_tmp=$(mktemp); tmp=$(mktemp); "
+    + "cleanup_catalog() { rm -f \"$catalog_tmp\" \"$stats_tmp\" \"$tmp\"; }; trap cleanup_catalog EXIT; "
+    + "curl -fsSL --max-time 25 " + Model.CATALOG_URL + " -o \"$catalog_tmp\" 2>/dev/null & catalog_pid=$!; "
+    + "curl -fsSL --max-time 15 " + Model.MARKETPLACE_STATS_URL + " -o \"$stats_tmp\" 2>/dev/null & stats_pid=$!; "
+    + "wait \"$catalog_pid\"; catalog_status=$?; wait \"$stats_pid\"; stats_status=$?; "
+    + "if [ \"$stats_status\" -ne 0 ] || ! jq -e '.plugins | type == \"object\"' \"$stats_tmp\" >/dev/null 2>&1; then "
+    + "  printf '%s' '{\"plugins\":{}}' > \"$stats_tmp\"; "
+    + "fi; "
+    + "if [ \"$catalog_status\" -eq 0 ] "
+    + "   && jq -c --slurpfile stats \"$stats_tmp\" '{generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch}]}' \"$catalog_tmp\" > \"$tmp\" 2>/dev/null "
     + "   && [ -s \"$tmp\" ]; then "
     + "  mv \"$tmp\" \"$file\"; cat \"$file\"; "
     + "else "
-    + "  rm -f \"$tmp\"; "
     + "  if [ -s \"$file\" ]; then cat \"$file\"; else exit 1; fi; "
     + "fi"
 
@@ -1560,14 +1567,16 @@ Panel {
         readonly property int columns: 3
         cellWidth: Math.floor(width / columns)
 
-        // Derived rather than guessed: a 16:9 preview, one line of name, five
-        // of description, one for the repository link, and the footer. A magic
-        // constant here would clip the blurb the moment the user's font size
-        // moved.
-        cellHeight: Math.round((cellWidth - Style.space(8)) * 9 / 16)
+        // Mirror the card exactly: delegate and card margins leave 24px less
+        // preview width; captions reserve five description, one repository,
+        // and two footer lines. The final spacing is the two vertical margins,
+        // four Column gaps, and the creator/metrics gap. Keeping those pieces
+        // explicit removes the old unexplained bottom reserve while every
+        // delegate still receives the same height.
+        cellHeight: Math.round((cellWidth - Style.space(24)) * 9 / 16)
           + Math.ceil(cardNameMetrics.lineSpacing)
-          + Math.ceil(cardTextMetrics.lineSpacing * 6)
-          + Style.space(74)
+          + Math.ceil(cardTextMetrics.lineSpacing * 8)
+          + Style.space(51)
 
         FontMetrics {
           id: cardNameMetrics
@@ -1603,6 +1612,9 @@ Panel {
 
             onPreviewUndecodable: root.previewsSupported = false
             onClicked: root.selectedIndex = index
+            onGithubNavigationRequested: function(candidates, fallbackUrl) {
+              root.requestGithubNavigation(candidates, fallbackUrl)
+            }
             onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
             onInstallRequested: {
               root.selectedIndex = index
