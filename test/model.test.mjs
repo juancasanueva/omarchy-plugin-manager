@@ -2,7 +2,7 @@
 // and evaluating the source keeps the shipped file free of node-isms while
 // still letting the parsing rules be tested outside a running shell.
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -42,6 +42,43 @@ const Model = new Function(
     catalogNeedsPlacement
   }`
 )()
+
+const CATALOG_DOWNLOAD_LIMIT = 8 * 1024 * 1024
+const STATS_DOWNLOAD_LIMIT = 1024 * 1024
+const CATALOG_PROJECTION_LIMIT = 8 * 1024 * 1024
+
+function catalogScript(catalogPath, statsPath) {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const marker = "readonly property string catalogScript:"
+  const start = panel.indexOf(marker)
+  const end = panel.indexOf("\n\n  // No fetch", start)
+  assert.notEqual(start, -1)
+  assert.notEqual(end, -1)
+  return Function("Model", `return (${panel.slice(start + marker.length, end).trim()})`)({
+    CATALOG_URL: `file://${catalogPath}`,
+    MARKETPLACE_STATS_URL: `file://${statsPath}`
+  })
+}
+
+function catalogCache(home, value) {
+  const path = join(home, ".cache", "omarchy-plugin-manager", "catalog.json")
+  mkdirSync(join(home, ".cache", "omarchy-plugin-manager"), { recursive: true })
+  writeFileSync(path, value)
+  return path
+}
+
+function runCatalogScript(home, catalogPath, statsPath) {
+  const tempRoot = join(home, "tmp")
+  mkdirSync(tempRoot, { recursive: true })
+  const result = spawnSync("bash", ["-c", catalogScript(catalogPath, statsPath), "catalog", "1"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, LC_ALL: "C", TMPDIR: tempRoot },
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: 30_000
+  })
+  assert.deepEqual(readdirSync(tempRoot), [], "catalogScript should clean its temporary files")
+  return result
+}
 
 const payload = (list, catalog, git, manifest = "") =>
   `===list===\n${list}\n===catalog===\n${catalog}\n===git===\n${git}\n===manifest===\n${manifest}`
@@ -1759,6 +1796,104 @@ test("catalog projection joins the Marketplace engagement hearts endpoint by plu
   assert.match(panel, /Model\.MARKETPLACE_STATS_URL/)
   assert.match(panel, /marketplaceHearts: \(\$stats\[0\]\.plugins\[\$plugin\.id\]\.hearts \/\/ null\)/)
   assert.match(panel, /printf '%s' '\{\\"plugins\\":\{\}\}'/)
+})
+
+test("catalog producer rejects an oversized catalog and serves the bounded cache", () => {
+  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-limit-test-"))
+  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
+  const statsPath = join(root, "stats.json")
+  const cached = JSON.stringify({ generatedAt: "cached", plugins: [{ id: "cached" }] })
+  try {
+    mkdirSync(home, { recursive: true })
+    const cachePath = catalogCache(home, cached)
+    writeFileSync(catalogPath, JSON.stringify({
+      generatedAt: "remote",
+      plugins: [{ id: "oversized", description: "x".repeat(CATALOG_DOWNLOAD_LIMIT) }]
+    }))
+    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
+
+    const result = runCatalogScript(home, catalogPath, statsPath)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout, cached)
+    assert.equal(readFileSync(cachePath, "utf8"), cached)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("catalog producer joins valid stats and treats unavailable inputs as missing", async t => {
+  for (const scenario of [
+    {
+      name: "valid stats",
+      stats: JSON.stringify({ plugins: { "acme.clock": { hearts: 42 } } }),
+      expectedHearts: 42
+    },
+    {
+      name: "oversized stats",
+      stats: JSON.stringify({ plugins: { "acme.clock": { hearts: 42 } }, padding: "x".repeat(STATS_DOWNLOAD_LIMIT) }),
+      expectedHearts: null
+    },
+    { name: "malformed stats", stats: "{not-json", expectedHearts: null },
+    { name: "missing stats", stats: null, expectedHearts: null }
+  ]) await t.test(scenario.name, () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-stats-limit-test-"))
+    const home = join(root, "home"), catalogPath = join(root, "catalog.json")
+    const statsPath = join(root, "stats.json")
+    try {
+      mkdirSync(home, { recursive: true })
+      writeFileSync(catalogPath, JSON.stringify({
+        generatedAt: "remote",
+        plugins: [{ id: "acme.clock", name: "Clock" }]
+      }))
+      if (scenario.stats !== null) writeFileSync(statsPath, scenario.stats)
+
+      const result = runCatalogScript(home, catalogPath, statsPath)
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(JSON.parse(result.stdout).plugins[0].marketplaceHearts, scenario.expectedHearts)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+test("catalog producer bounds projection amplification before replacing the cache", () => {
+  const root = mkdtempSync(join(tmpdir(), "plugin-projection-limit-test-"))
+  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
+  const statsPath = join(root, "stats.json")
+  const cached = JSON.stringify({ generatedAt: "cached", plugins: [{ id: "cached" }] })
+  try {
+    mkdirSync(home, { recursive: true })
+    const cachePath = catalogCache(home, cached)
+    const plugins = Array.from({ length: 40_000 }, () => ({ id: "repeat" }))
+    const catalog = JSON.stringify({ generatedAt: "remote", plugins })
+    assert.ok(catalog.length < CATALOG_DOWNLOAD_LIMIT)
+    writeFileSync(catalogPath, catalog)
+    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
+
+    const result = runCatalogScript(home, catalogPath, statsPath)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout, cached)
+    assert.equal(readFileSync(cachePath, "utf8"), cached)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("catalog producer never emits an oversized pre-existing cache", () => {
+  const root = mkdtempSync(join(tmpdir(), "plugin-cache-limit-test-"))
+  const home = join(root, "home"), missingCatalog = join(root, "missing.json")
+  const statsPath = join(root, "stats.json")
+  try {
+    mkdirSync(home, { recursive: true })
+    catalogCache(home, "x".repeat(CATALOG_PROJECTION_LIMIT + 1))
+    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
+
+    const result = runCatalogScript(home, missingCatalog, statsPath)
+    assert.equal(result.status, 1, result.stderr)
+    assert.equal(result.stdout, "")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test("secondary text uses one panel-derived foreground without brightening disabled chrome", () => {
