@@ -8,7 +8,7 @@ and enable, disable, update, or remove what you already have.
 
 ![The Installed tab: a puzzle icon and Plugins heading above an add-repository
 field, labelled Kind and Status dropdowns, a Search field, and separated plugin
-rows with switches and actions](preview.png)
+rows whose locally proven GitHub version tags link beside switches and actions](preview.png)
 
 ## What it does
 
@@ -43,8 +43,12 @@ description out says so, which is how you tell an empty manifest field
 from a failed read. After the description comes **who wrote it, what it plugs
 into, and which version is on disk** — read from each plugin's own
 `manifest.json` at load time, so it is there for every plugin rather than only
-the git checkouts an update check happens to reach. Last comes a link to the
-plugin's own repository:
+the git checkouts an update check happens to reach. When a Git checkout's
+current `HEAD` has the exact `<version>` or `v<version>` tag and its repository
+is on GitHub, that version links to the tag's source tree. Otherwise it remains
+plain text: the panel never infers a tag or GitHub Release from a version label,
+and it makes no network request to establish the relationship. Last comes a
+link to the plugin's own repository:
 reading what you are running is the whole defence here, and it should not get
 harder once a plugin is installed. Git remotes are converted to something a
 browser can open, so ssh and `git@host:path` checkouts link too.

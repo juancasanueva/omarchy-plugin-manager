@@ -53,22 +53,31 @@ function parseArray(raw) {
   }
 }
 
-// "<plugin dir>\t<origin url>" per line. The url is empty for a checkout with
-// no origin remote — a working copy under development, typically. That line
-// ends in a bare tab, so only the line ending may be trimmed here: stripping
-// trailing whitespace would eat the separator and drop the entry entirely,
-// making a git checkout look like a hand-dropped folder.
+// One compact JSON object per line, with path, remote and exactTag strings.
+// JSON framing matters here: git config and filesystem names are untrusted,
+// and tabs or newlines in either must stay data rather than becoming another
+// checkout record. There is deliberately no legacy TSV fallback.
 function parseGitMap(raw) {
   var map = {}
   var lines = String(raw || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].replace(/\r$/, "")
     if (line === "") continue
-    var tab = line.indexOf("\t")
-    if (tab < 0) continue
-    var dir = line.slice(0, tab)
-    if (dir === "") continue
-    map[dir] = line.slice(tab + 1)
+    var record
+    try {
+      record = JSON.parse(line)
+    } catch (error) {
+      continue
+    }
+    if (!record || Array.isArray(record) || typeof record !== "object") continue
+    var keys = Object.keys(record).sort()
+    if (keys.join(",") !== "exactTag,path,remote") continue
+    if (typeof record.path !== "string" || record.path === ""
+        || typeof record.remote !== "string" || typeof record.exactTag !== "string") continue
+    // Git ref names cannot contain controls. An impossible tag makes the
+    // producer record malformed; it must not contribute provenance.
+    if (/[\u0000-\u001f\u007f]/.test(record.exactTag)) continue
+    map[record.path] = { remote: record.remote, exactTag: record.exactTag }
   }
   return map
 }
@@ -128,9 +137,10 @@ function toStringList(value) {
 }
 
 // `list` carries enabled/first-party state, `catalog` carries the source
-// directory and description, `gitMap` says which checkouts a pull can reach,
-// and `manifestMeta` carries what only the manifest knows — who wrote it and
-// what version is on disk. One row per plugin, joined on id.
+// directory and description, `gitMap` says which checkouts a pull can reach
+// and which exact version tag (if any) is proven at HEAD, and `manifestMeta`
+// carries what only the manifest knows — who wrote it and what version is on
+// disk. One row per plugin, joined on id.
 function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
   var catalog = indexById(catalogEntries)
   var git = gitMap || {}
@@ -145,6 +155,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
     var meta = catalog[id] || {}
     var sourceDir = String(meta.sourceDir || "")
     var gitManaged = sourceDir !== "" && git.hasOwnProperty(sourceDir)
+    var gitInfo = gitManaged ? (git[sourceDir] || {}) : {}
     var firstParty = item.firstParty === true
     var manifest = manifests[id] || {}
 
@@ -165,7 +176,8 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       group: firstParty ? GROUP_BUILT_IN : GROUP_INSTALLED,
       clonedFrom: plainText(item.clonedFrom),
       sourceDir: sourceDir,
-      remote: gitManaged ? plainText(git[sourceDir]) : "",
+      remote: gitManaged ? plainText(gitInfo.remote) : "",
+      exactTag: gitManaged ? plainText(gitInfo.exactTag) : "",
       gitManaged: gitManaged,
       // Built-ins live in /usr/share and are not ours to delete. Everything
       // under the user plugin directory — installed or cloned — is.
@@ -173,7 +185,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       // A checkout with no origin has nothing to fast-forward from, so it
       // gets the git badge but no update button — offering one that can only
       // fail is worse than offering none.
-      updatable: gitManaged && String(git[sourceDir] || "") !== ""
+      updatable: gitManaged && String(gitInfo.remote || "") !== ""
     })
   }
 
@@ -874,13 +886,50 @@ function rowRepoUrl(row) {
   return repoWebUrl(row.remote) || repoWebUrl(row.clonedFrom)
 }
 
-function repoPreviewUrl(repo, branch) {
-  var text = normalizeGitUrl(repo).replace(/\.git$/, "").replace(/\/+$/, "")
-  var match = text.match(/^https:\/\/github\.com\/([^\/\s]+\/[^\/\s]+)$/)
+// Only an exact two-segment GitHub repository is eligible for URLs that claim
+// something about repository contents. Other hosts remain valid row links;
+// they simply do not gain GitHub-specific paths by inference.
+function githubRepoSlug(url) {
+  var web = repoWebUrl(url)
+  var match = web.match(/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)$/i)
   if (!match) return ""
 
+  var owner = match[1]
+  var repo = match[2]
+  // GitHub owner names are at most 39 alphanumeric/hyphen characters and may
+  // not start or end with a hyphen. Repository names are at most 100
+  // alphanumeric/dot/underscore/hyphen characters; dot path segments are not
+  // repositories. The narrow character sets also reject percent escapes,
+  // backslashes, queries and fragments before a browser can normalize them.
+  if (owner.length > 39 || !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(owner)) return ""
+  if (repo.length > 100 || !/^[A-Za-z0-9._-]+$/.test(repo) || repo === "." || repo === "..") return ""
+  return owner + "/" + repo
+}
+
+// The manifest version stays the display truth. A link exists only when the
+// loader separately proved that one of its two conventional exact tags points
+// at this checkout's HEAD and the row resolves to an exact GitHub repository.
+function versionTagUrl(row) {
+  if (!row || row.gitManaged !== true) return ""
+
+  var version = String(row.localVersion || "").trim()
+  var exactTag = String(row.exactTag || "").trim()
+  if (version === "" || (exactTag !== version && exactTag !== "v" + version)) return ""
+
+  // The current origin is authoritative for this checkout. `clonedFrom`
+  // remains useful for the ordinary repository link, but it is historical
+  // provenance and cannot prove where this local tag exists now.
+  var slug = githubRepoSlug(row.remote)
+  if (slug === "") return ""
+  return "https://github.com/" + slug + "/tree/" + encodeURIComponent(exactTag)
+}
+
+function repoPreviewUrl(repo, branch) {
+  var slug = githubRepoSlug(repo)
+  if (slug === "") return ""
+
   var ref = String(branch || "").trim()
-  return "https://raw.githubusercontent.com/" + match[1] + "/" + (ref !== "" ? ref : "main") + "/preview.png"
+  return "https://raw.githubusercontent.com/" + slug + "/" + (ref !== "" ? ref : "main") + "/preview.png"
 }
 
 // Ordered best-first. A card walks this list as each source fails, and lands

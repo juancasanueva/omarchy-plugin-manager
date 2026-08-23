@@ -579,10 +579,10 @@ Panel {
 
   // One round trip for the whole picture: enabled state from `plugin list`,
   // source directories and descriptions from `plugin catalog`, which checkouts
-  // a pull can reach from the filesystem, and the author and version each
-  // manifest declares. The section markers print unconditionally so a failed
-  // command shows up as unparseable output rather than as a silently short
-  // list.
+  // a pull can reach from the filesystem, any exact manifest-version tag proven
+  // at each checkout's HEAD, and the author and version each manifest declares.
+  // The section markers print unconditionally so a failed command shows up as
+  // unparseable output rather than as a silently short list.
   //
   // The catalog is fetched once and reused: it is also the only list of every
   // manifest path on the system, built-ins included, and running the command
@@ -599,7 +599,24 @@ Panel {
       + "for dir in \"$HOME\"/.config/omarchy/plugins/*/; do "
       + "  [ -d \"$dir/.git\" ] || continue; "
       + "  path=\"${dir%/}\"; "
-      + "  printf '%s\\t%s\\n' \"$path\" \"$(git -C \"$path\" remote get-url origin 2>/dev/null)\"; "
+      + "  version=$(jq -r '.version // \"\"' \"$path/manifest.json\" 2>/dev/null); "
+      + "  head=$(git -C \"$path\" rev-parse HEAD 2>/dev/null); exact_tag=; "
+      // Prefer the v-prefixed convention when both exact refs point at HEAD.
+      // show-ref proves the literal ref exists before rev-list peels annotated
+      // tags to the commit they name; neither command contacts the network.
+      + "  if [ -n \"$version\" ] && [ -n \"$head\" ]; then "
+      + "    for tag in \"v$version\" \"$version\"; do "
+      + "      ref=\"refs/tags/$tag\"; "
+      + "      git -C \"$path\" show-ref --verify --quiet \"$ref\" || continue; "
+      + "      tag_commit=$(git -C \"$path\" rev-list -n 1 \"$ref\" 2>/dev/null); "
+      + "      if [ -n \"$tag_commit\" ] && [ \"$tag_commit\" = \"$head\" ]; then exact_tag=$tag; break; fi; "
+      + "    done; "
+      + "  fi; "
+      // JSON escaping keeps hostile path/remote bytes inside this one record;
+      // they cannot forge another checkout or exact-tag field.
+      + "  remote=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
+      + "  jq -cn --arg path \"$path\" --arg remote \"$remote\" --arg exactTag \"$exact_tag\" "
+      + "    '{path: $path, remote: $remote, exactTag: $exactTag}'; "
       + "done; "
       + "printf '\\n===manifest===\\n'; "
       // One jq over every manifest at once rather than one process per plugin.

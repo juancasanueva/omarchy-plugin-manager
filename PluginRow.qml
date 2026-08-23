@@ -53,6 +53,9 @@ Rectangle {
 
   readonly property string repoUrl: Model.rowRepoUrl(row)
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
+  readonly property string metadata: Model.metaLine(row)
+  readonly property string versionText: Model.versionLabel(row)
+  readonly property string versionUrl: Model.versionTagUrl(row)
 
   // Argv array through Omarchy's own launcher, so it opens in whichever
   // browser `omarchy default browser` selected — and the url has already been
@@ -60,6 +63,11 @@ Rectangle {
   function openRepo() {
     if (repoUrl === "") return
     Quickshell.execDetached(["omarchy-launch-browser", repoUrl])
+  }
+
+  function openVersion() {
+    if (versionUrl === "") return
+    Quickshell.execDetached(["omarchy-launch-browser", versionUrl])
   }
 
   height: Math.round(details.implicitHeight + Style.space(16))
@@ -152,19 +160,64 @@ Rectangle {
     // Who wrote it, what it plugs into, and which version is on disk — the
     // three facts you check before updating or removing something, on one
     // glanceable line below the description.
-    Text {
-      // Never rich text: AutoText would fetch what a crafted string points at.
-      textFormat: Text.PlainText
+    Row {
+      id: metadataLine
       width: parent.width
-      text: {
-        var meta = Model.metaLine(root.row)
-        var version = Model.versionLabel(root.row)
-        return version === "" ? meta : meta + "  ·  " + version
+
+      Text {
+        id: metadataText
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        width: Math.max(0, Math.min(implicitWidth,
+          metadataLine.width - (versionLabel.visible
+            ? versionSeparator.implicitWidth + versionLabel.implicitWidth
+            : 0)))
+        text: root.metadata
+        color: Color.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
-      color: Color.muted
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      elide: Text.ElideRight
+
+      Text {
+        id: versionSeparator
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        visible: versionLabel.visible && root.metadata !== ""
+        text: "  ·  "
+        color: Color.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        id: versionLabel
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        visible: root.versionText !== ""
+        text: root.versionText
+        color: versionMouse.containsMouse ? Color.accent : Color.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.underline: versionMouse.containsMouse
+
+        MouseArea {
+          id: versionMouse
+          anchors.fill: parent
+          enabled: root.versionUrl !== ""
+          hoverEnabled: enabled
+          cursorShape: Qt.PointingHandCursor
+          // Swallowed rather than propagated: opening the tag does not also
+          // select the row underneath.
+          onClicked: root.openVersion()
+        }
+
+        PanelToolTip {
+          visible: versionMouse.containsMouse
+          text: "Open this exact installed tag on GitHub"
+          fontFamily: root.fontFamily
+        }
+      }
     }
 
     // The source, one click away. Same link the browse cards carry, for the

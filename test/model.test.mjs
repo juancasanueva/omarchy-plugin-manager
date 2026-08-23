@@ -18,7 +18,7 @@ const Model = new Function(
     catalogAssetUrl,
     catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
-    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, repoPreviewUrl, previewCandidates,
+    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, versionTagUrl, repoPreviewUrl, previewCandidates,
     parseUpdateReport, applyUpdateReport, updateBadge, versionLabel, countBehind,
     metaLine, authorLabel, descriptionLine, hasDescription, sourceBadge,
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
@@ -100,17 +100,51 @@ test("plainText flattens control characters into spaces", () => {
   assert.equal(Model.plainText("a\r\nb\tc"), "a b c")
 })
 
-test("parseGitMap keeps a checkout whose origin remote is empty", () => {
-  const map = Model.parseGitMap("/plugins/withremote\thttps://example.com/a.git\n/plugins/noremote\t\n")
-  assert.equal(map["/plugins/withremote"], "https://example.com/a.git")
-  assert.equal(map["/plugins/noremote"], "")
+test("parseGitMap keeps JSON-framed remotes and exact local tags, including empty fields", () => {
+  const map = Model.parseGitMap([
+    JSON.stringify({ path: "/plugins/prefixed", remote: "https://example.com/a.git", exactTag: "v1.0.3" }),
+    JSON.stringify({ path: "/plugins/plain", remote: "git@example.com:b.git", exactTag: "1.0.3" }),
+    JSON.stringify({ path: "/plugins/noremote", remote: "", exactTag: "" })
+  ].join("\n"))
+  assert.deepEqual(map["/plugins/prefixed"], { remote: "https://example.com/a.git", exactTag: "v1.0.3" })
+  assert.deepEqual(map["/plugins/plain"], { remote: "git@example.com:b.git", exactTag: "1.0.3" })
+  assert.deepEqual(map["/plugins/noremote"], { remote: "", exactTag: "" })
   assert.ok("noremote" in {} === false)
   assert.ok(Object.prototype.hasOwnProperty.call(map, "/plugins/noremote"))
 })
 
-test("parseGitMap skips blank and separator-less lines", () => {
-  const map = Model.parseGitMap("\n/plugins/a\thttps://x/a.git\nnot-a-row\n")
+test("parseGitMap skips malformed, non-object, and wrong-schema JSON records", () => {
+  const valid = JSON.stringify({ path: "/plugins/a", remote: "https://x/a.git", exactTag: "v1" })
+  const records = [
+    "not-json",
+    "/plugins/legacy\thttps://github.com/owner/repo.git\tv1.0.0",
+    "null",
+    "[]",
+    '"string"',
+    JSON.stringify({ path: "/plugins/missing", remote: "https://x/missing.git" }),
+    JSON.stringify({ path: "/plugins/wrong-type", remote: 42, exactTag: "v1" }),
+    JSON.stringify({ path: "/plugins/extra", remote: "https://x/extra.git", exactTag: "v1", forged: true }),
+    JSON.stringify({ path: "/plugins/control", remote: "https://x/control.git", exactTag: "v1\u0001" }),
+    valid
+  ]
+  const map = Model.parseGitMap(records.join("\n"))
   assert.deepEqual(Object.keys(map), ["/plugins/a"])
+})
+
+test("parseGitMap keeps hostile delimiters inside one JSON record", () => {
+  const path = "/plugins/real\n{\"path\":\"/plugins/path-forgery\"}"
+  const remote = "git@github.com:owner/repo.git\n"
+    + "/plugins/tsv-forgery\thttps://github.com/attacker/repo.git\tv9.9.9\n"
+    + "{\"path\":\"/plugins/json-forgery\",\"remote\":\"https://github.com/attacker/repo\",\"exactTag\":\"v9.9.9\"}"
+    + "\\quoted\"tail"
+  const record = JSON.stringify({ path, remote, exactTag: "v1.0.3" })
+  const map = Model.parseGitMap(record)
+
+  assert.deepEqual(Object.keys(map), [path])
+  assert.deepEqual(map[path], { remote, exactTag: "v1.0.3" })
+  assert.equal(map["/plugins/path-forgery"], undefined)
+  assert.equal(map["/plugins/tsv-forgery"], undefined)
+  assert.equal(map["/plugins/json-forgery"], undefined)
 })
 
 const listEntries = [
@@ -123,7 +157,10 @@ const catalogEntries = [
   { id: "acme.weather", sourceDir: "/plugins/acme.weather", description: "Weather" },
   { id: "acme.dev", sourceDir: "/plugins/acme.dev", description: "Dev" }
 ]
-const gitMap = { "/plugins/acme.weather": "https://example.com/weather.git", "/plugins/acme.dev": "" }
+const gitMap = {
+  "/plugins/acme.weather": { remote: "https://example.com/weather.git", exactTag: "v2.0.1" },
+  "/plugins/acme.dev": { remote: "", exactTag: "" }
+}
 
 test("mergePlugins strips markup out of everything a manifest supplied", () => {
   const rows = Model.mergePlugins(
@@ -157,6 +194,7 @@ test("mergePlugins offers update only where a remote exists", () => {
   assert.equal(weather.gitManaged, true)
   assert.equal(weather.updatable, true)
   assert.equal(weather.remote, "https://example.com/weather.git")
+  assert.equal(weather.exactTag, "v2.0.1")
 
   // A working copy with no origin is still git-managed, but a fast-forward
   // has nowhere to pull from.
@@ -191,6 +229,7 @@ test("mergePlugins carries the author and version out of each manifest", () => {
   const weather = rows.find(r => r.id === "acme.weather")
   assert.equal(weather.author, "Acme Corp")
   assert.equal(weather.localVersion, "2.0.1")
+  assert.equal(weather.exactTag, "v2.0.1")
 
   const dev = rows.find(r => r.id === "acme.dev")
   assert.equal(dev.author, "")
@@ -799,6 +838,94 @@ test("rowRepoUrl prefers the live origin over what the plugin was cloned from", 
   assert.equal(Model.rowRepoUrl({ remote: "", clonedFrom: "https://github.com/a/old" }), "https://github.com/a/old")
   assert.equal(Model.rowRepoUrl({ remote: "", clonedFrom: "" }), "")
   assert.equal(Model.rowRepoUrl(null), "")
+})
+
+test("versionTagUrl accepts only the two exact manifest-version tag forms", () => {
+  const row = {
+    gitManaged: true,
+    localVersion: "1.0.3",
+    remote: "https://github.com/acme/thing.git"
+  }
+  assert.equal(
+    Model.versionTagUrl({ ...row, exactTag: "v1.0.3" }),
+    "https://github.com/acme/thing/tree/v1.0.3")
+  assert.equal(
+    Model.versionTagUrl({ ...row, exactTag: "1.0.3" }),
+    "https://github.com/acme/thing/tree/1.0.3")
+  assert.equal(Model.versionTagUrl({ ...row, exactTag: "release-1.0.3" }), "")
+})
+
+test("versionTagUrl normalizes GitHub SSH remotes and encodes the proven tag", () => {
+  const row = { gitManaged: true, localVersion: "1.0.3+build/one", exactTag: "v1.0.3+build/one" }
+  assert.equal(
+    Model.versionTagUrl({ ...row, remote: "git@github.com:acme/thing.git" }),
+    "https://github.com/acme/thing/tree/v1.0.3%2Bbuild%2Fone")
+  assert.equal(
+    Model.versionTagUrl({ ...row, remote: "ssh://git@github.com/acme/thing.git" }),
+    "https://github.com/acme/thing/tree/v1.0.3%2Bbuild%2Fone")
+})
+
+test("versionTagUrl accepts conservative GitHub owner and repository boundaries", () => {
+  const row = { gitManaged: true, localVersion: "1.0.3", exactTag: "v1.0.3" }
+  const owner39 = "a".repeat(39)
+  const repo100 = "r".repeat(100)
+  const accepted = [
+    ["https://github.com/Mixed-Case/.github.git", "Mixed-Case/.github"],
+    ["git@github.com:owner-name/repo_name.git", "owner-name/repo_name"],
+    ["ssh://git@github.com/Owner/repo.name.git", "Owner/repo.name"],
+    ["https://github.com/a/repo-name", "a/repo-name"],
+    ["https://github.com/" + owner39 + "/" + repo100, owner39 + "/" + repo100]
+  ]
+
+  for (const [remote, slug] of accepted) {
+    assert.equal(Model.versionTagUrl({ ...row, remote }),
+      "https://github.com/" + slug + "/tree/v1.0.3")
+  }
+})
+
+test("versionTagUrl rejects malformed or browser-normalized GitHub paths", () => {
+  const row = { gitManaged: true, localVersion: "1.0.3", exactTag: "v1.0.3" }
+  const rejected = [
+    "https://github.com/../repo",
+    "https://github.com/%2e%2e/repo",
+    "https://github.com/owner/.",
+    "https://github.com/owner/..",
+    "https://github.com/owner/%2e%2e",
+    "https://github.com/owner\\evil/repo",
+    "https://github.com/owner/repo\\evil",
+    "https://github.com/owner/repo/tree/main",
+    "https://github.com/owner/repo?tab=readme",
+    "https://github.com/owner/repo#readme",
+    "https://github.com/owner/%72epo",
+    "https://github.com/-owner/repo",
+    "https://github.com/owner-/repo",
+    "https://github.com/owner--name/repo",
+    "https://github.com/owner_name/repo",
+    "https://github.com/" + "a".repeat(40) + "/repo",
+    "https://github.com/owner/" + "r".repeat(101),
+    "https://github.com//repo",
+    "https://github.com/owner/"
+  ]
+
+  for (const remote of rejected)
+    assert.equal(Model.versionTagUrl({ ...row, remote }), "", remote)
+})
+
+test("versionTagUrl stays empty without every piece of local proof", () => {
+  const proven = {
+    gitManaged: true,
+    localVersion: "1.0.3",
+    exactTag: "v1.0.3",
+    remote: "https://github.com/acme/thing.git"
+  }
+  assert.equal(Model.versionTagUrl({ ...proven, gitManaged: false }), "")
+  assert.equal(Model.versionTagUrl({ ...proven, localVersion: "" }), "")
+  // An empty tag is how the loader reports absent, mismatched, or not-at-HEAD.
+  assert.equal(Model.versionTagUrl({ ...proven, exactTag: "" }), "")
+  assert.equal(Model.versionTagUrl({ ...proven, remote: "", clonedFrom: "https://github.com/acme/thing" }), "")
+  assert.equal(Model.versionTagUrl({ ...proven, remote: "https://gitlab.com/acme/thing.git" }), "")
+  assert.equal(Model.versionTagUrl({ ...proven, remote: "https://github.com/acme/thing/tree/main" }), "")
+  assert.equal(Model.versionTagUrl(null), "")
 })
 
 test("repoPreviewUrl points at the repo's own preview.png on the validated branch", () => {
