@@ -18,6 +18,7 @@ Rectangle {
   property bool selected: false
   property bool actionsEnabled: true
   property color foreground: Color.foreground
+  required property color secondaryForeground
   property string fontFamily: Style.font.family
 
   // Cleared by the panel the first time a WebP thumbnail fails to decode, so
@@ -223,7 +224,7 @@ Rectangle {
         textFormat: Text.PlainText
         width: parent.width
         text: "󰊤  " + root.repoLabel
-        color: repoMouse.containsMouse ? Color.accent : Color.muted
+        color: repoMouse.containsMouse ? Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: repoMouse.containsMouse
@@ -264,7 +265,7 @@ Rectangle {
           if (root.entry.stars > 0) parts.push("★ " + Model.starLabel(root.entry.stars))
           return parts.join("   ")
         }
-        color: Color.muted
+        color: root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight

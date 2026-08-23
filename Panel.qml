@@ -46,6 +46,10 @@ Panel {
   // contract instantiates it bare).
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
+  // Secondary copy follows the panel's own text role instead of the palette's
+  // much darker generic muted swatch. At 54% over the current popup surface it
+  // remains subordinate to descriptions while staying well above that swatch.
+  readonly property color secondaryForeground: Util.alpha(contentForeground, 0.54)
 
   // ---- Data ---------------------------------------------------------------
 
@@ -1090,7 +1094,7 @@ Panel {
               if (root.behindCount > 0) return summary + "  ·  " + root.behindCount + " to update"
               return summary
             }
-            color: Color.muted
+            color: root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -1162,6 +1166,7 @@ Panel {
             enabled: !root.busy
             placeholderText: "https://github.com/user/omarchy-plugin.git"
             foreground: root.contentForeground
+            placeholderTextColor: root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.bodySmall
 
@@ -1238,7 +1243,7 @@ Panel {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               text: "Kind"
-              color: Color.muted
+              color: root.secondaryForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -1276,7 +1281,7 @@ Panel {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               text: "Status"
-              color: Color.muted
+              color: root.secondaryForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -1326,6 +1331,7 @@ Panel {
             // controls sharing it.
             placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
             foreground: root.contentForeground
+            placeholderTextColor: root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             verticalPadding: Style.spacing.xs
@@ -1372,7 +1378,7 @@ Panel {
             if (!root.browsing && root.loadError !== "") return root.loadError
             return root.status
           }
-          color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : Color.muted
+          color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -1391,7 +1397,7 @@ Panel {
         text: root.browsing
           ? "←↑↓→ select   ⏎ install   / search   1 installed   r refresh"
           : "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   2 browse"
-        color: Color.muted
+        color: root.secondaryForeground
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
         horizontalAlignment: Text.AlignHCenter
@@ -1427,7 +1433,7 @@ Panel {
             width: parent.width
             visible: root.visibleRows.length === 0 && root.rows.length > 0
             text: Model.emptyMessage(root.kindFilter, root.statusFilter, root.searchQuery)
-            color: Color.muted
+            color: root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             topPadding: Style.space(12)
@@ -1439,6 +1445,7 @@ Panel {
             visible: root.installedRows.length > 0
             text: Model.sectionHeading(root.visibleRows, "installed")
             foreground: root.contentForeground
+            color: root.secondaryForeground
             fontFamily: root.contentFontFamily
             bottomPadding: Style.space(4)
           }
@@ -1457,6 +1464,7 @@ Panel {
               updateEnabled: root.updateActionsEnabled
               showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
+              secondaryForeground: root.secondaryForeground
               fontFamily: root.contentFontFamily
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
@@ -1488,6 +1496,7 @@ Panel {
             visible: root.builtinRows.length > 0
             text: Model.sectionHeading(root.visibleRows, "built-in")
             foreground: root.contentForeground
+            color: root.secondaryForeground
             fontFamily: root.contentFontFamily
             topPadding: Style.space(12)
             bottomPadding: Style.space(4)
@@ -1510,6 +1519,7 @@ Panel {
               actionsEnabled: !root.busy
               showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
+              secondaryForeground: root.secondaryForeground
               fontFamily: root.contentFontFamily
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
@@ -1588,6 +1598,7 @@ Panel {
             actionsEnabled: !root.busy
             previewsEnabled: root.previewsSupported
             foreground: root.contentForeground
+            secondaryForeground: root.secondaryForeground
             fontFamily: root.contentFontFamily
 
             onPreviewUndecodable: root.previewsSupported = false
@@ -1615,7 +1626,7 @@ Panel {
             if (root.catalog.length === 0) return "No catalog yet."
             return Model.catalogEmptyMessage(root.categoryFilter, root.searchQuery)
           }
-          color: Color.muted
+          color: root.secondaryForeground
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap

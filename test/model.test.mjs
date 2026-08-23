@@ -1671,6 +1671,33 @@ test("repository and Marketplace delegates route browser ownership through Panel
   }
 })
 
+test("secondary text uses one panel-derived foreground without brightening disabled chrome", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const catalogCard = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+
+  assert.match(panel,
+    /readonly property color secondaryForeground: Util\.alpha\(contentForeground, 0\.54\)/)
+  assert.equal(panel.split("placeholderTextColor: root.secondaryForeground").length - 1, 2)
+  assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 3)
+  assert.equal(panel.split("color: root.secondaryForeground").length - 1, 8)
+
+  assert.match(pluginRow, /required property color secondaryForeground/)
+  assert.match(pluginRow,
+    /color: versionMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+  assert.match(pluginRow,
+    /color: repoMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+  assert.match(pluginRow,
+    /color: Model\.hasDescription\(root\.row\) \? root\.foreground : root\.secondaryForeground/)
+  assert.match(pluginRow, /color: Color\.muted\s+opacity: 0\.35/)
+  assert.match(pluginRow, /opacity: root\.canToggle \? 1 : 0\.4/)
+
+  assert.match(catalogCard, /required property color secondaryForeground/)
+  assert.match(catalogCard,
+    /color: repoMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+  assert.match(catalogCard, /opacity: enabled \? 1 : 0\.45/)
+})
+
 test("release probe uses fixed bounded curl argv and returns only the HTTP status", () => {
   const root = mkdtempSync(join(tmpdir(), "plugin-release-probe-test-"))
   const curl = join(root, "curl"), argvLog = join(root, "argv")

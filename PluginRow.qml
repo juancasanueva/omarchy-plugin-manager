@@ -26,6 +26,7 @@ Rectangle {
   property bool updateEnabled: true
   property bool showSeparator: false
   property color foreground: Color.foreground
+  required property color secondaryForeground
   property string fontFamily: Style.font.family
 
   signal clicked()
@@ -155,8 +156,8 @@ Rectangle {
       // and kinds above are glanceable metadata and can afford to recede; the
       // description is the line you are actually here to read, and muted
       // renders too close to the background on darker themes.
-      color: root.foreground
-      opacity: Model.hasDescription(root.row) ? 0.85 : 0.45
+      color: Model.hasDescription(root.row) ? root.foreground : root.secondaryForeground
+      opacity: Model.hasDescription(root.row) ? 0.85 : 1
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       font.italic: !Model.hasDescription(root.row)
@@ -180,7 +181,7 @@ Rectangle {
             ? versionSeparator.implicitWidth + versionLabel.implicitWidth
             : 0)))
         text: root.metadata
-        color: Color.muted
+        color: root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
@@ -192,7 +193,7 @@ Rectangle {
         textFormat: Text.PlainText
         visible: versionLabel.visible && root.metadata !== ""
         text: "  ·  "
-        color: Color.muted
+        color: root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       }
@@ -203,7 +204,7 @@ Rectangle {
         textFormat: Text.PlainText
         visible: root.versionText !== ""
         text: root.versionText
-        color: versionMouse.containsMouse ? Color.accent : Color.muted
+        color: versionMouse.containsMouse ? Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: versionMouse.containsMouse
@@ -243,7 +244,7 @@ Rectangle {
         textFormat: Text.PlainText
         width: parent.width
         text: "󰊤  " + root.repoLabel
-        color: repoMouse.containsMouse ? Color.accent : Color.muted
+        color: repoMouse.containsMouse ? Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: repoMouse.containsMouse
@@ -286,7 +287,7 @@ Rectangle {
       anchors.verticalCenter: parent.verticalCenter
       visible: root.badge !== "" && !root.hasUpdate && root.repoUrl === ""
       text: root.badge
-      color: Color.muted
+      color: root.secondaryForeground
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       rightPadding: Style.space(6)
