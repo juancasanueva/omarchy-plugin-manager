@@ -12,6 +12,7 @@ const Model = new Function(
     splitSections, parseArray, parseGitMap, parseManifestMeta, mergePlugins, countRemovable,
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
+    statusOptions, filterByStatus,
     matchesQuery, filterRows, isFiltering, emptyMessage,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled, plainText,
     catalogAssetUrl,
@@ -537,35 +538,60 @@ test("an empty query matches everything, including a whitespace-only one", () =>
   assert.equal(Model.matchesQuery(row, null), true)
 })
 
-test("filterRows applies the kind chip and the search box together", () => {
-  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
-
-  assert.deepEqual(Model.filterRows(rows, "all", "").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
-  assert.deepEqual(Model.filterRows(rows, "all", "acme").map(r => r.id), ["acme.dev", "acme.weather"])
-  assert.deepEqual(Model.filterRows(rows, "bar-widget", "acme").map(r => r.id), ["acme.weather"])
-  assert.deepEqual(Model.filterRows(rows, "service", "weather").map(r => r.id), [])
+test("statusOptions exposes exactly All, Enabled, and Disabled", () => {
+  assert.deepEqual(Model.statusOptions(), [
+    { value: "all", label: "All" },
+    { value: "enabled", label: "Enabled" },
+    { value: "disabled", label: "Disabled" }
+  ])
 })
 
-test("filterRows keeps the installed-before-built-in order the sections rely on", () => {
+test("filterRows applies status, kind, and search together", () => {
   const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
-  const filtered = Model.filterRows(rows, "all", "e")
+
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "all", "enabled", "").map(r => r.id), ["acme.weather", "omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "all", "disabled", "").map(r => r.id), ["acme.dev"])
+  assert.deepEqual(Model.filterRows(rows, "all", "enabled", "acme").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "bar-widget", "enabled", "acme").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "service", "disabled", "dev").map(r => r.id), ["acme.dev"])
+  assert.deepEqual(Model.filterRows(rows, "service", "enabled", "weather").map(r => r.id), [])
+})
+
+test("status filtering preserves both section classes and their flat selection order", () => {
+  const rows = Model.mergePlugins([
+    { id: "z.installed-on", name: "Zed", kinds: ["service"], enabled: true, firstParty: false },
+    { id: "a.installed-off", name: "Alpha", kinds: ["service"], enabled: false, firstParty: false },
+    { id: "z.builtin-on", name: "Zulu", kinds: ["service"], enabled: true, firstParty: true },
+    { id: "a.builtin-off", name: "Able", kinds: ["service"], enabled: false, firstParty: true }
+  ], [], {})
+  const filtered = Model.filterRows(rows, "service", "disabled", "a")
   const rejoined = [...Model.rowsInGroup(filtered, "installed"), ...Model.rowsInGroup(filtered, "built-in")]
+
+  assert.deepEqual(Model.filterByStatus(rows, "all").map(r => r.id), rows.map(r => r.id))
+  assert.deepEqual(rejoined.map(r => r.id), ["a.installed-off", "a.builtin-off"])
+  assert.deepEqual(rejoined.map(r => r.group), ["installed", "built-in"])
   assert.deepEqual(rejoined.map(r => r.id), filtered.map(r => r.id))
 })
 
-test("isFiltering knows when either control is narrowing the list", () => {
-  assert.equal(Model.isFiltering("all", ""), false)
-  assert.equal(Model.isFiltering("all", "   "), false)
-  assert.equal(Model.isFiltering("service", ""), true)
-  assert.equal(Model.isFiltering("all", "clock"), true)
+test("isFiltering includes status and clears only when all controls are neutral", () => {
+  assert.equal(Model.isFiltering("all", "all", ""), false)
+  assert.equal(Model.isFiltering("all", "all", "   "), false)
+  assert.equal(Model.isFiltering("service", "all", ""), true)
+  assert.equal(Model.isFiltering("all", "enabled", ""), true)
+  assert.equal(Model.isFiltering("all", "disabled", ""), true)
+  assert.equal(Model.isFiltering("all", "all", "clock"), true)
 })
 
-test("emptyMessage names whichever control actually excluded everything", () => {
-  assert.match(Model.emptyMessage("all", "zzz"), /No plugins match “zzz”\./)
-  assert.match(Model.emptyMessage("service", "zzz"), /No service plugins match “zzz”\./)
-  assert.match(Model.emptyMessage("service", ""), /No service plugins installed\./)
-  assert.match(Model.emptyMessage("all", ""), /No plugins found\./)
-  assert.match(Model.emptyMessage("bar-widget", ""), /No bar-widget plugins installed\./)
+test("emptyMessage names every active exclusion, including status", () => {
+  assert.equal(Model.emptyMessage("all", "all", "zzz"), "No plugins match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "all", "zzz"), "No service plugins match “zzz”.")
+  assert.equal(Model.emptyMessage("all", "disabled", "zzz"), "No disabled plugins match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "disabled", "zzz"), "No disabled service plugins match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "enabled", ""), "No enabled service plugins found.")
+  assert.equal(Model.emptyMessage("all", "disabled", ""), "No disabled plugins found.")
+  assert.equal(Model.emptyMessage("bar-widget", "all", ""), "No bar-widget plugins found.")
+  assert.equal(Model.emptyMessage("all", "all", ""), "No plugins found.")
 })
 
 // ---- Marketplace catalog ---------------------------------------------------

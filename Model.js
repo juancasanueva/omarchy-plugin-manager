@@ -19,6 +19,9 @@ var GROUP_INSTALLED = "installed"
 var GROUP_BUILT_IN = "built-in"
 
 var ALL_KINDS = "all"
+var ALL_STATUSES = "all"
+var STATUS_ENABLED = "enabled"
+var STATUS_DISABLED = "disabled"
 
 // The loader emits four fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
@@ -217,8 +220,8 @@ function sectionHeading(rows, group) {
 
 // ---- Kinds ----------------------------------------------------------------
 
-// Short chip labels. "bar-widget" is the id the manifest uses, but a row of
-// full kind names does not fit across the panel.
+// Compact filter labels. "bar-widget" is the id the manifest uses, but full
+// kind names waste the limited width of the filter row.
 var KIND_LABELS = {
   "bar-widget": "Widget",
   "panel": "Panel",
@@ -234,7 +237,7 @@ function kindLabel(kind) {
 }
 
 // A plugin that replaces the whole bar and one that mounts inside it both
-// answer "what is in my bar?", so two chips asked the same question twice.
+// answer "what is in my bar?", so two options asked the same question twice.
 // They fold into one for filtering only — a row still names its own kind.
 var FILTER_KIND_ALIASES = {
   "bar": "bar-widget"
@@ -245,7 +248,7 @@ function filterKind(kind) {
   return FILTER_KIND_ALIASES.hasOwnProperty(name) ? FILTER_KIND_ALIASES[name] : name
 }
 
-// The merged chip covers two kinds, so it cannot borrow either one's row
+// The merged option covers two kinds, so it cannot borrow either one's row
 // label without claiming to be narrower than it is.
 var FILTER_KIND_LABELS = {
   "bar-widget": "Bar-widget"
@@ -263,7 +266,7 @@ function kindsLabel(kinds) {
 }
 
 // Derived from what is actually installed rather than from a fixed list, so a
-// kind this build has never heard of still gets a chip instead of being
+// kind this build has never heard of still gets an option instead of being
 // quietly unfilterable.
 function kindOptions(rows) {
   var seen = {}
@@ -296,6 +299,28 @@ function filterByKind(rows, kind) {
   return out
 }
 
+// The shell already reports this truth on every row. Filtering projects that
+// boolean; it does not maintain a second status representation.
+function statusOptions() {
+  return [
+    { value: ALL_STATUSES, label: "All" },
+    { value: STATUS_ENABLED, label: "Enabled" },
+    { value: STATUS_DISABLED, label: "Disabled" }
+  ]
+}
+
+function filterByStatus(rows, status) {
+  if (!status || status === ALL_STATUSES) return rows || []
+  if (status !== STATUS_ENABLED && status !== STATUS_DISABLED) return []
+
+  var wanted = status === STATUS_ENABLED
+  var out = []
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (rows[i].enabled === wanted) out.push(rows[i])
+  }
+  return out
+}
+
 // ---- Search ---------------------------------------------------------------
 
 // Name and id both, because the id is the namespaced form of the name and
@@ -310,38 +335,44 @@ function matchesQuery(row, query) {
     || String(row.id || "").toLowerCase().indexOf(needle) >= 0
 }
 
-function filterRows(rows, kind, query) {
+function filterRows(rows, kind, status, query) {
   var byKind = filterByKind(rows, kind)
-  if (String(query || "").trim() === "") return byKind
+  var byStatus = filterByStatus(byKind, status)
+  if (String(query || "").trim() === "") return byStatus
 
   var out = []
-  for (var i = 0; i < byKind.length; i++) {
-    if (matchesQuery(byKind[i], query)) out.push(byKind[i])
+  for (var i = 0; i < byStatus.length; i++) {
+    if (matchesQuery(byStatus[i], query)) out.push(byStatus[i])
   }
   return out
 }
 
-function isFiltering(kind, query) {
+function isFiltering(kind, status, query) {
   return (kind !== undefined && kind !== null && kind !== ALL_KINDS)
+    || (status !== undefined && status !== null && status !== ALL_STATUSES)
     || String(query || "").trim() !== ""
 }
 
 // Naming what actually excluded everything, so an empty list is never a
-// mystery — a stale search box behind a kind chip is easy to forget about.
-function emptyMessage(kind, query) {
+// mystery — one active dropdown behind another is easy to forget about.
+function emptyMessage(kind, status, query) {
   var needle = String(query || "").trim()
-  var narrowed = kind && kind !== ALL_KINDS
+  var kindNarrowed = kind && kind !== ALL_KINDS
+  var statusNarrowed = status === STATUS_ENABLED || status === STATUS_DISABLED
+  var prefix = statusNarrowed ? status + " " : ""
 
-  if (needle !== "" && narrowed)
-    return "No " + filterKindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
+  if (needle !== "" && kindNarrowed)
+    return "No " + prefix + filterKindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
   if (needle !== "")
-    return "No plugins match “" + needle + "”."
-  if (narrowed)
-    return "No " + filterKindLabel(kind).toLowerCase() + " plugins installed."
+    return "No " + prefix + "plugins match “" + needle + "”."
+  if (kindNarrowed)
+    return "No " + prefix + filterKindLabel(kind).toLowerCase() + " plugins found."
+  if (statusNarrowed)
+    return "No " + status + " plugins found."
   return "No plugins found."
 }
 
-// Wraps around, so the cycle key never dead-ends on the last chip.
+// Wraps around, so the cycle key never dead-ends on the last option.
 function nextKind(options, current) {
   var list = options || []
   if (list.length === 0) return ALL_KINDS

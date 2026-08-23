@@ -56,11 +56,24 @@ Panel {
 
   property string kindFilter: "all"
   readonly property var kindOptions: Model.kindOptions(rows)
+  property string statusFilter: "all"
+  readonly property var statusOptions: Model.statusOptions()
   readonly property string searchQuery: searchField.text
+
+  // A reload can remove the last plugin of a kind. Falling back immediately
+  // keeps the filter visible and truthful instead of retaining a hidden value.
+  onKindOptionsChanged: {
+    for (var i = 0; i < kindOptions.length; i++)
+      if (kindOptions[i].value === kindFilter) return
+    setKindFilter("all")
+  }
+  // Dropdown selection assigns its own value, so replay later model changes.
+  onKindFilterChanged: if (kindDropdown && kindDropdown.value !== kindFilter)
+    kindDropdown.value = kindFilter
 
   // One flat filtered list drives selection; the two section slices below are
   // views onto it, in the same order, so a single index addresses both.
-  readonly property var visibleRows: Model.filterRows(rows, kindFilter, searchQuery)
+  readonly property var visibleRows: Model.filterRows(rows, kindFilter, statusFilter, searchQuery)
   readonly property var installedRows: Model.rowsInGroup(visibleRows, "installed")
   readonly property var builtinRows: Model.rowsInGroup(visibleRows, "built-in")
 
@@ -70,7 +83,7 @@ Panel {
   readonly property int behindCount: Model.countBehind(rows)
 
   readonly property int installedTotal: Model.countRemovable(rows)
-  readonly property bool filtered: Model.isFiltering(kindFilter, searchQuery)
+  readonly property bool filtered: Model.isFiltering(kindFilter, statusFilter, searchQuery)
 
   // ---- Browse tab ---------------------------------------------------------
   //
@@ -250,6 +263,12 @@ Panel {
   function setKindFilter(kind) {
     if (kindFilter === kind) return
     kindFilter = kind
+    resetSelection()
+  }
+
+  function setStatusFilter(status) {
+    if (statusFilter === status) return
+    statusFilter = status
     resetSelection()
   }
 
@@ -771,6 +790,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: root.confirming || root.placing || urlField.activeFocus || searchField.activeFocus
+        || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
 
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
       onActivateRequested: root.browsing ? root.askInstall(root.selectedEntry) : root.startUpdate(root.selectedRow)
@@ -803,14 +823,28 @@ Panel {
           height: Math.max(title.implicitHeight, refreshButton.height)
 
           Text {
+            id: titleIcon
+            // Same puzzle-piece glyph as the plugin manager's bar button.
+            textFormat: Text.PlainText
+            anchors.left: parent.left
+            anchors.baseline: title.baseline
+            text: "󰐱"
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: title.font.pixelSize
+          }
+
+          Text {
             id: title
             // Never rich text: AutoText would fetch what a crafted string points at.
             textFormat: Text.PlainText
+            anchors.left: titleIcon.right
+            anchors.leftMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             text: "Plugins"
             color: root.contentForeground
             font.family: root.contentFontFamily
-            font.pixelSize: Style.font.title
+            font.pixelSize: Style.font.display
             font.bold: true
           }
 
@@ -839,7 +873,7 @@ Panel {
 
           ButtonGroup {
             id: tabs
-            anchors.right: refreshButton.left
+            anchors.right: root.browsing ? marketplaceButton.left : refreshButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -849,6 +883,21 @@ Panel {
             fontSize: Style.font.caption
             focusable: false
             onChanged: function(value) { root.switchTab(value) }
+          }
+
+          Button {
+            id: marketplaceButton
+            anchors.right: refreshButton.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.browsing
+            text: "Marketplace"
+            tooltipText: "Open the official Marketplace"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            fontSize: tabs.fontSize
+            bordered: true
+            onClicked: Quickshell.execDetached(["omarchy-launch-browser", "https://omarchyplugins.com/"])
           }
 
           PanelActionButton {
@@ -917,29 +966,112 @@ Panel {
 
         PanelSeparator { foreground: root.contentForeground }
 
-        // ---- Both narrowing controls on one line. They do the same job, and
-        //      a panel this tall cannot afford a row each: the kind chips at
-        //      their natural width, the search box taking whatever is left.
+        // ---- All narrowing controls share one line. The two Installed
+        //      dropdowns take only the width their options need, leaving the
+        //      remainder to Search. Browse keeps its existing category layout.
         Item {
-          width: parent.width
-          height: Math.max(root.browsing ? categoryDropdown.implicitHeight : kindFilterGroup.implicitHeight,
-                           searchField.implicitHeight)
+          id: filterControls
 
-          // Installed filters on six kinds, which fit as chips. Browse filters
-          // on fourteen categories, which do not — that is a dropdown's job.
-          ButtonGroup {
-            id: kindFilterGroup
+          readonly property real controlHeight: root.browsing
+            ? categoryDropdown.implicitHeight
+            : kindDropdown.implicitHeight
+
+          FontMetrics {
+            id: filterOptionMetrics
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          function optionLabel(option) {
+            return (option && typeof option === "object") ? String(option.label) : String(option)
+          }
+
+          function dropdownWidth(options) {
+            var labelWidth = 0
+            for (var i = 0; i < options.length; i++)
+              labelWidth = Math.max(labelWidth, filterOptionMetrics.advanceWidth(optionLabel(options[i])))
+            return Math.ceil(Style.normalBorderWidth * 2
+              + Style.spacing.controlPaddingX + labelWidth + Style.spacing.md
+              + filterOptionMetrics.advanceWidth("󰅀") + Style.spacing.controlGap
+              + Style.space(16))
+          }
+
+          width: parent.width
+          height: controlHeight
+
+          Item {
+            id: kindFilterControl
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             visible: !root.browsing
-            width: visible ? implicitWidth : 0
-            options: root.kindOptions
-            value: root.kindFilter
-            foreground: root.contentForeground
-            fontFamily: root.contentFontFamily
-            fontSize: Style.font.caption
-            focusable: false
-            onChanged: function(value) { root.setKindFilter(value) }
+            width: visible
+              ? kindFilterLabel.implicitWidth + Style.space(6) + kindDropdown.width
+              : 0
+            height: filterControls.controlHeight
+
+            Text {
+              id: kindFilterLabel
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Kind"
+              color: Color.muted
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Dropdown {
+              id: kindDropdown
+              anchors.left: kindFilterLabel.right
+              anchors.leftMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              width: filterControls.dropdownWidth(root.kindOptions)
+              height: filterControls.controlHeight
+              showLabel: false
+              options: root.kindOptions
+              value: root.kindFilter
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onChanged: function(value) { root.setKindFilter(value) }
+            }
+          }
+
+          Item {
+            id: statusFilterControl
+            anchors.left: kindFilterControl.right
+            anchors.leftMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !root.browsing
+            width: visible
+              ? statusFilterLabel.implicitWidth + Style.space(6) + statusDropdown.width
+              : 0
+            height: filterControls.controlHeight
+
+            Text {
+              id: statusFilterLabel
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Status"
+              color: Color.muted
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Dropdown {
+              id: statusDropdown
+              anchors.left: statusFilterLabel.right
+              anchors.leftMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              width: filterControls.dropdownWidth(root.statusOptions)
+              height: filterControls.controlHeight
+              showLabel: false
+              options: root.statusOptions
+              value: root.statusFilter
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onChanged: function(value) { root.setStatusFilter(value) }
+            }
           }
 
           Dropdown {
@@ -948,6 +1080,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.browsing
             width: visible ? Style.spacing.dropdownWidth : 0
+            height: filterControls.controlHeight
             showLabel: false
             options: root.categoryOptions
             value: root.categoryFilter
@@ -958,11 +1091,12 @@ Panel {
 
           TextField {
             id: searchField
-            anchors.left: root.browsing ? categoryDropdown.right : kindFilterGroup.right
+            anchors.left: root.browsing ? categoryDropdown.right : statusFilterControl.right
             anchors.leftMargin: Style.space(10)
             anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
             anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
             anchors.verticalCenter: parent.verticalCenter
+            height: filterControls.controlHeight
             // The glyph rides in the placeholder rather than sitting in its
             // own column, because every pixel on this row belongs to the two
             // controls sharing it.
@@ -1068,7 +1202,7 @@ Panel {
             textFormat: Text.PlainText
             width: parent.width
             visible: root.visibleRows.length === 0 && root.rows.length > 0
-            text: Model.emptyMessage(root.kindFilter, root.searchQuery)
+            text: Model.emptyMessage(root.kindFilter, root.statusFilter, root.searchQuery)
             color: Color.muted
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -1096,6 +1230,7 @@ Panel {
               row: modelData
               selected: root.selectedIndex === index
               actionsEnabled: !root.busy
+              showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
 
@@ -1144,6 +1279,7 @@ Panel {
               row: modelData
               selected: root.selectedIndex === globalIndex
               actionsEnabled: !root.busy
+              showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
 

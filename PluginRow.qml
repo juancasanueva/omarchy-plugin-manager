@@ -7,8 +7,8 @@ import "Model.js" as Model
 // One plugin in the list: what it is called, what it does, and the two things
 // you can do to it.
 //
-// Four stacked lines: the name, then who wrote it with what it plugs into and
-// what version is on disk, then what it actually does, then where its source
+// Four stacked lines: the name, then what it actually does, then who wrote it
+// with what it plugs into and what version is on disk, then where its source
 // lives. A list of names
 // tells you what is installed but not what any of it is for, and the two
 // facts you weigh before pulling or deleting something are the author and the
@@ -24,6 +24,7 @@ Rectangle {
   property var row: null
   property bool selected: false
   property bool actionsEnabled: true
+  property bool showSeparator: false
   property color foreground: Color.foreground
   property string fontFamily: Style.font.family
 
@@ -116,24 +117,7 @@ Rectangle {
       // A step above the metadata and the blurb under it, so the name reads as
       // the row's heading rather than one more line of text.
       font.pixelSize: Style.font.subtitle
-      elide: Text.ElideRight
-    }
-
-    // Who wrote it, what it plugs into, and which version is on disk — the
-    // three facts you check before updating or removing something, on one
-    // glanceable line under the name.
-    Text {
-      // Never rich text: AutoText would fetch what a crafted string points at.
-      textFormat: Text.PlainText
-      width: parent.width
-      text: {
-        var meta = Model.metaLine(root.row)
-        var version = Model.versionLabel(root.row)
-        return version === "" ? meta : meta + "  ·  " + version
-      }
-      color: Color.muted
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      font.bold: true
       elide: Text.ElideRight
     }
 
@@ -163,6 +147,24 @@ Rectangle {
       font.italic: !Model.hasDescription(root.row)
       wrapMode: Text.WordWrap
       verticalAlignment: Text.AlignTop
+    }
+
+    // Who wrote it, what it plugs into, and which version is on disk — the
+    // three facts you check before updating or removing something, on one
+    // glanceable line below the description.
+    Text {
+      // Never rich text: AutoText would fetch what a crafted string points at.
+      textFormat: Text.PlainText
+      width: parent.width
+      text: {
+        var meta = Model.metaLine(root.row)
+        var version = Model.versionLabel(root.row)
+        return version === "" ? meta : meta + "  ·  " + version
+      }
+      color: Color.muted
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
     }
 
     // The source, one click away. Same link the browse cards carry, for the
@@ -331,5 +333,16 @@ Rectangle {
       opacity: enabled ? 1 : 0.4
       onClicked: root.removeRequested()
     }
+  }
+
+  Rectangle {
+    anchors.left: details.left
+    anchors.right: parent.right
+    anchors.rightMargin: Style.space(8)
+    anchors.bottom: parent.bottom
+    height: 1
+    visible: root.showSeparator
+    color: Color.muted
+    opacity: 0.35
   }
 }

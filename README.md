@@ -6,11 +6,9 @@ and enable, disable, update, or remove what you already have.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
-![The plugin manager panel: a repository url field, kind filter chips beside a
-search box, and the installed plugins listed with an on/off bar down the left
-of each row, the author, kind and version under the name, the description, a
-link to the repository, and an on/off switch beside the row's action
-buttons](preview.png)
+![The Installed tab: a puzzle icon and Plugins heading above an add-repository
+field, labelled Kind and Status dropdowns, a Search field, and separated plugin
+rows with switches and actions](preview.png)
 
 ## What it does
 
@@ -34,18 +32,19 @@ A bar down the left of each row says whether the plugin is on. For a bar
 widget "on" means exactly one thing — it has a place in the bar — because
 that is what the shell itself reports.
 
-Under the name, every row states **who wrote it, what it plugs into, and
-which version is on disk** — read from each plugin's own `manifest.json` at
-load time, so it is there for every plugin rather than only the git checkouts
-an update check happens to reach. Under that is **what the plugin actually
-does** — the description from its manifest, wrapped across as many lines as it
-takes. It used to be pinned at two, which was wrong in both directions: a
+Under the name, every row states **what the plugin actually does** — the
+description from its manifest, wrapped across as many lines as it takes. It
+used to be pinned at two, which was wrong in both directions: a
 one-line blurb paid for a blank line it never used, and anything longer was
 cut off mid-sentence with no way to read the rest. Rows therefore differ in
 height, and that is the better trade — an uneven list is something you can
 see past, a truncated sentence is not. A plugin whose author left the
 description out says so, which is how you tell an empty manifest field
-from a failed read. Last comes a link to the plugin's own repository:
+from a failed read. After the description comes **who wrote it, what it plugs
+into, and which version is on disk** — read from each plugin's own
+`manifest.json` at load time, so it is there for every plugin rather than only
+the git checkouts an update check happens to reach. Last comes a link to the
+plugin's own repository:
 reading what you are running is the whole defence here, and it should not get
 harder once a plugin is installed. Git remotes are converted to something a
 browser can open, so ssh and `git@host:path` checkouts link too.
@@ -56,20 +55,22 @@ no link, where it is the one thing separating a checkout whose origin has
 gone missing from a folder somebody dropped in by hand. Both lose the link
 and the update button; without the badge they would look identical.
 
-Two controls share a row and narrow both lists at once:
+Three controls share a row and narrow both lists at once:
 
+- **Kind filter** (`f`) — bar-widget, panel, overlay, menu, service. The
+  dropdown is built from the kinds actually installed, so the row never offers a
+  filter that would match nothing. A plugin that replaces the whole bar and one
+  that mounts inside it share the **Bar-widget** option, because both answer the
+  same question; each row still names its own kind.
+- **Status filter** — **All**, **Enabled**, or **Disabled**, read directly from
+  the same on/off state shown by each row's switch.
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
   look nothing like what you typed.
-- **Kind filter** (`f`) — bar-widget, panel, overlay, menu, service. The
-  chips are built from the kinds actually installed, so the row never offers a
-  filter that would match nothing. A plugin that replaces the whole bar and one
-  that mounts inside it share the **Bar-widget** chip, because both answer the
-  same question; each row still names its own kind.
 
 When nothing matches, the message names whichever control excluded everything
-— a stale search term sitting behind a kind chip is easy to forget about.
+— including status when it is hiding otherwise matching plugins.
 
 ### Knowing what needs updating
 
@@ -120,9 +121,10 @@ being quietly told nothing is how a stale plugin sits there looking current.
 
 ## The Browse tab
 
-![The Browse tab: a category dropdown and catalog search above a grid of plugin
-cards, each with a preview tile, a five-line description, a link to the source
-repository, author, star count, and an install button](preview-browse.png)
+![The Browse tab: a puzzle icon and Plugins heading with a Browse-only
+Marketplace button between the tabs and refresh, aligned category and search
+controls, and a grid of plugin cards with previews, descriptions, repository
+links, authors, stars, and install or information actions](preview-browse.png)
 
 <sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
 decode too. Without it the second source is skipped and more cards fall back
