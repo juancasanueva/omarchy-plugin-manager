@@ -632,6 +632,13 @@ function catalogAssetUrl(path) {
   return CATALOG_ASSET_BASE + text.replace(/^\/+/, "")
 }
 var ALL_CATEGORIES = "all"
+var ALL_CATALOG_KINDS = "all"
+var CATALOG_AVAILABILITY_ALL = "all"
+var CATALOG_AVAILABILITY_AVAILABLE = "available"
+var CATALOG_AVAILABILITY_INSTALLED = "installed"
+var CATALOG_SORT_STARS = "stars"
+var CATALOG_SORT_HEARTS = "hearts"
+var CATALOG_SORT_NAME = "name"
 
 // The registry assigns every plugin an accent and a pair of initials — its
 // own fallback tile for listings with no screenshot. We reuse them, which
@@ -681,11 +688,18 @@ function parseCatalog(raw) {
 }
 
 function installedIdSet(rows) {
-  var set = {}
+  // Plugin ids are untrusted property names. A null prototype keeps valid ids
+  // such as `constructor` and `__proto__` from becoming object machinery.
+  var set = Object.create(null)
   for (var i = 0; i < (rows || []).length; i++) {
     if (rows[i] && rows[i].id) set[String(rows[i].id)] = true
   }
   return set
+}
+
+function hasOwnKey(object, key) {
+  return object !== null && object !== undefined
+    && Object.prototype.hasOwnProperty.call(object, String(key))
 }
 
 // Counts are remote facts, so malformed and absent values remain unknown. In
@@ -722,13 +736,19 @@ function catalogEntries(doc, installedIds) {
     // "browse and install" would be offering something you already have.
     if (p.sourceType === "builtin") continue
 
+    var sourceCategory = plainText(p.category).trim()
+    var categoryPresent = sourceCategory !== ""
     var entry = {
       id: plainText(p.id),
       name: plainText(p.name || p.id),
       description: plainText(p.description).trim(),
       author: plainText(p.author).trim(),
       version: plainText(p.version).trim(),
-      category: plainText(p.category || "Other"),
+      // Missing categories still belong in the useful Other browse group, but
+      // presence travels separately so details never present that fallback as
+      // a fact supplied by the listing.
+      category: categoryPresent ? sourceCategory : "Other",
+      categoryPresent: categoryPresent,
       kind: plainText(p.kind),
       repo: plainText(p.repo),
       installCommand: plainText(p.installCommand),
@@ -743,7 +763,7 @@ function catalogEntries(doc, installedIds) {
       thumbnail: catalogAssetUrl(p.previewThumbnail),
       branch: String(p.listingValidatedBranch || ""),
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
-      installed: installed.hasOwnProperty(String(p.id))
+      installed: hasOwnKey(installed, p.id)
     }
     entry.installUrl = installUrlFor(entry)
     // A listing with no usable url cannot be installed from here whatever the
@@ -752,31 +772,103 @@ function catalogEntries(doc, installedIds) {
     out.push(entry)
   }
 
-  out.sort(compareCatalogEntries)
-  return out
+  return sortCatalog(out, CATALOG_SORT_STARS)
 }
 
-// Popularity first: a storefront that opens on an alphabetical list buries
-// everything anyone actually uses.
-function compareCatalogEntries(a, b) {
-  var leftStars = a.stars === null ? -1 : a.stars
-  var rightStars = b.stars === null ? -1 : b.stars
-  if (leftStars !== rightStars) return rightStars - leftStars
-  var left = a.name.toLowerCase()
-  var right = b.name.toLowerCase()
+function compareCatalogText(leftValue, rightValue) {
+  var left = String(leftValue || "").toLowerCase()
+  var right = String(rightValue || "").toLowerCase()
+  if (left < right) return -1
+  if (left > right) return 1
+  // Case-insensitive ordering is the contract; raw text only makes values
+  // that differ by case deterministic rather than engine-dependent.
+  left = String(leftValue || "")
+  right = String(rightValue || "")
   if (left < right) return -1
   if (left > right) return 1
   return 0
 }
 
+function compareCatalogEntries(a, b, sort) {
+  var mode = sort || CATALOG_SORT_STARS
+  if (mode === CATALOG_SORT_STARS || mode === CATALOG_SORT_HEARTS) {
+    var field = mode === CATALOG_SORT_HEARTS ? "marketplaceHearts" : "stars"
+    var leftMetric = a[field] === null ? -1 : a[field]
+    var rightMetric = b[field] === null ? -1 : b[field]
+    if (leftMetric !== rightMetric) return rightMetric - leftMetric
+  }
+
+  var leftName = String(a.name || "").toLowerCase()
+  var rightName = String(b.name || "").toLowerCase()
+  var byName = leftName < rightName ? -1 : (leftName > rightName ? 1 : 0)
+  if (byName !== 0) return byName
+  var leftId = String(a.id || "").toLowerCase()
+  var rightId = String(b.id || "").toLowerCase()
+  if (leftId < rightId) return -1
+  if (leftId > rightId) return 1
+  var byRawId = compareCatalogText(a.id, b.id)
+  if (byRawId !== 0) return byRawId
+  return compareCatalogText(a.name, b.name)
+}
+
+// Decorate with the original index so exact duplicates stay stable even on a
+// QML JavaScript engine whose Array.sort stability is not guaranteed.
+function sortCatalog(entries, sort) {
+  var decorated = []
+  for (var i = 0; i < (entries || []).length; i++)
+    decorated.push({ entry: entries[i], index: i })
+  decorated.sort(function(a, b) {
+    return compareCatalogEntries(a.entry, b.entry, sort) || a.index - b.index
+  })
+
+  var out = []
+  for (var j = 0; j < decorated.length; j++) out.push(decorated[j].entry)
+  return out
+}
+
 function catalogCategories(entries) {
-  var seen = {}
+  var seen = Object.create(null)
   for (var i = 0; i < (entries || []).length; i++) seen[entries[i].category] = true
 
   var names = Object.keys(seen).sort()
   var options = [{ value: ALL_CATEGORIES, label: "All" }]
   for (var k = 0; k < names.length; k++) options.push({ value: names[k], label: names[k] })
   return options
+}
+
+function catalogKindKey(kind) {
+  return String(kind || "").trim().toLowerCase()
+}
+
+function catalogKindOptions(entries) {
+  var byKey = Object.create(null)
+  for (var i = 0; i < (entries || []).length; i++) {
+    var kind = String(entries[i] && entries[i].kind || "").trim()
+    var key = catalogKindKey(kind)
+    if (key !== "" && !hasOwnKey(byKey, key)) byKey[key] = kind
+  }
+
+  var keys = Object.keys(byKey)
+  keys.sort(compareCatalogText)
+  var options = [{ value: ALL_CATALOG_KINDS, label: "All" }]
+  for (var k = 0; k < keys.length; k++) options.push({ value: keys[k], label: byKey[keys[k]] })
+  return options
+}
+
+function catalogAvailabilityOptions() {
+  return [
+    { value: CATALOG_AVAILABILITY_ALL, label: "All" },
+    { value: CATALOG_AVAILABILITY_AVAILABLE, label: "Available" },
+    { value: CATALOG_AVAILABILITY_INSTALLED, label: "Installed" }
+  ]
+}
+
+function catalogSortOptions() {
+  return [
+    { value: CATALOG_SORT_STARS, label: "GitHub stars" },
+    { value: CATALOG_SORT_HEARTS, label: "Hearts" },
+    { value: CATALOG_SORT_NAME, label: "Name" }
+  ]
 }
 
 // Author and tags join name and id here, unlike the installed-plugin search:
@@ -792,24 +884,45 @@ function matchesCatalogQuery(entry, query) {
     || String(entry.description).toLowerCase().indexOf(needle) >= 0
 }
 
-function filterCatalog(entries, category, query) {
+function filterCatalog(entries, category, kind, availability, query) {
   var out = []
   for (var i = 0; i < (entries || []).length; i++) {
     var entry = entries[i]
     if (category && category !== ALL_CATEGORIES && entry.category !== category) continue
+    if (kind && kind !== ALL_CATALOG_KINDS
+        && catalogKindKey(entry.kind) !== catalogKindKey(kind)) continue
+    if (availability === CATALOG_AVAILABILITY_AVAILABLE && !entry.installable) continue
+    if (availability === CATALOG_AVAILABILITY_INSTALLED && !entry.installed) continue
     if (!matchesCatalogQuery(entry, query)) continue
     out.push(entry)
   }
   return out
 }
 
-function catalogEmptyMessage(category, query) {
-  var needle = String(query || "").trim()
-  var narrowed = category && category !== ALL_CATEGORIES
+function catalogIsFiltering(category, kind, availability, query) {
+  return !!(category && category !== ALL_CATEGORIES)
+    || !!(kind && kind !== ALL_CATALOG_KINDS)
+    || availability === CATALOG_AVAILABILITY_AVAILABLE
+    || availability === CATALOG_AVAILABILITY_INSTALLED
+    || String(query || "").trim() !== ""
+}
 
-  if (needle !== "" && narrowed) return "No " + category + " plugins match “" + needle + "”."
+function clearedCatalogFilters() {
+  return {
+    category: ALL_CATEGORIES,
+    kind: ALL_CATALOG_KINDS,
+    availability: CATALOG_AVAILABILITY_ALL,
+    query: ""
+  }
+}
+
+function catalogEmptyMessage(category, kind, availability, query) {
+  var needle = String(query || "").trim()
+  var narrowed = catalogIsFiltering(category, kind, availability, "")
+
+  if (needle !== "" && narrowed) return "No plugins match “" + needle + "” and the selected filters."
   if (needle !== "") return "No plugins match “" + needle + "”."
-  if (narrowed) return "No " + category + " plugins in the catalog."
+  if (narrowed) return "No plugins match the selected filters."
   return "The catalog is empty."
 }
 
@@ -846,7 +959,7 @@ function markInstalled(entries, installedIds) {
   var out = []
   for (var i = 0; i < (entries || []).length; i++) {
     var entry = entries[i]
-    var isInstalled = installed.hasOwnProperty(entry.id)
+    var isInstalled = hasOwnKey(installed, entry.id)
     var copy = {}
     for (var key in entry) copy[key] = entry[key]
     copy.installed = isInstalled
@@ -854,6 +967,29 @@ function markInstalled(entries, installedIds) {
     out.push(copy)
   }
   return out
+}
+
+function restampCatalogInstallState(entries, installedIds, detailsEntry) {
+  var stamped = markInstalled(entries, installedIds)
+  return {
+    entries: stamped,
+    detailsEntry: detailsEntry ? findRow(stamped, detailsEntry.id) : null
+  }
+}
+
+// Modal visibility can overlap for one synchronous handoff. The successor has
+// ownership, and a deferred list-focus restore may run only when none remains.
+function browseModalFocusOwner(detailsOpen, confirming, placing) {
+  if (placing) return "placement"
+  if (confirming) return "confirmation"
+  if (detailsOpen) return "details"
+  return "list"
+}
+
+function catalogPlacementConfirmationNote(needsPlacement) {
+  return needsPlacement
+    ? "\n\nNext, choose its bar section. Cloning starts only after that choice."
+    : ""
 }
 
 // "https://github.com/acme/omarchy-weather" -> "acme/omarchy-weather". The

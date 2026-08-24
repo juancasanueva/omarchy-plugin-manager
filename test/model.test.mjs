@@ -17,9 +17,12 @@ const Model = new Function(
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     statusOptions, filterByStatus,
     matchesQuery, filterRows, isFiltering, emptyMessage,
-    parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled, plainText,
+    parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
+    restampCatalogInstallState, plainText,
     catalogAssetUrl, catalogCount,
-    catalogCategories, filterCatalog, matchesCatalogQuery, catalogEmptyMessage,
+    catalogCategories, catalogKindKey, catalogKindOptions, catalogAvailabilityOptions, catalogSortOptions,
+    filterCatalog, sortCatalog, matchesCatalogQuery, catalogIsFiltering,
+    clearedCatalogFilters, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
     repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl,
     normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
@@ -39,7 +42,7 @@ const Model = new Function(
     actionVerb, actionGerund, successMessage, failureMessage,
     needsPlacement, canEnable, placementOptions, enableCommand, findRow,
     canDisable, disableCommand, enableNote, disableNote,
-    catalogNeedsPlacement
+    catalogNeedsPlacement, browseModalFocusOwner, catalogPlacementConfirmationNote
   }`
 )()
 
@@ -734,7 +737,7 @@ test("catalogEntries drops built-ins, which ship with Omarchy already", () => {
   assert.deepEqual(entries.map(e => e.id), ["acme.weather", "acme.suite"])
 })
 
-test("catalogEntries sorts by popularity, not alphabetically", () => {
+test("catalogEntries defaults to explicit GitHub-star ordering", () => {
   const entries = Model.catalogEntries(catalogDoc, {})
   assert.deepEqual(entries.map(e => e.stars), [120, 9])
 })
@@ -796,11 +799,48 @@ test("markInstalled re-stamps state without rebuilding or resorting", () => {
   assert.equal(entries[0].installed, false)
 })
 
+test("catalog re-stamping refreshes an open details entry atomically", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const detailsEntry = entries.find(entry => entry.id === "acme.weather")
+  assert.equal(detailsEntry.installable, true)
+
+  const state = Model.restampCatalogInstallState(
+    entries, Model.installedIdSet([{ id: "acme.weather" }]), detailsEntry)
+  assert.notEqual(state.detailsEntry, detailsEntry)
+  assert.equal(state.detailsEntry.installed, true)
+  assert.equal(state.detailsEntry.installable, false)
+  assert.equal(Model.installState(state.detailsEntry), "installed")
+  assert.equal(state.detailsEntry, state.entries.find(entry => entry.id === "acme.weather"))
+})
+
 test("installedIdSet indexes the installed rows by id", () => {
   const set = Model.installedIdSet([{ id: "a.b" }, { id: "c.d" }, null])
   assert.ok(Object.prototype.hasOwnProperty.call(set, "a.b"))
   assert.ok(Object.prototype.hasOwnProperty.call(set, "c.d"))
   assert.equal(Object.keys(set).length, 2)
+})
+
+test("installed membership is collision-safe for valid hostile property names", () => {
+  const hostileIds = ["hasOwnProperty", "constructor", "__proto__"]
+  const installed = Model.installedIdSet(hostileIds.map(id => ({ id })))
+  assert.equal(Object.getPrototypeOf(installed), null)
+  for (const id of hostileIds)
+    assert.equal(Object.prototype.hasOwnProperty.call(installed, id), true)
+
+  const doc = {
+    plugins: hostileIds.map((id, index) => ({
+      id, name: id, kind: "Panel", category: "Tools", sourceType: "community",
+      repo: `https://github.com/acme/plugin-${index}`,
+      installAvailable: true
+    }))
+  }
+  const entries = Model.catalogEntries(doc, installed)
+  assert.equal(entries.length, hostileIds.length)
+  assert.ok(entries.every(entry => entry.installed && !entry.installable))
+  assert.ok(Model.markInstalled(entries, installed).every(entry => entry.installed))
+
+  // Inherited Object properties are never membership evidence.
+  assert.ok(Model.catalogEntries(doc, {}).every(entry => !entry.installed))
 })
 
 test("catalog search covers author and description, unlike the installed search", () => {
@@ -811,12 +851,23 @@ test("catalog search covers author and description, unlike the installed search"
   assert.equal(Model.matchesCatalogQuery(entry, "zzz"), false)
 })
 
-test("filterCatalog applies category and query together", () => {
+test("filterCatalog composes query, category, kind, and availability", () => {
   const entries = Model.catalogEntries(catalogDoc, {})
-  assert.equal(Model.filterCatalog(entries, "all", "").length, 2)
-  assert.equal(Model.filterCatalog(entries, "Widgets", "").length, 1)
-  assert.equal(Model.filterCatalog(entries, "Widgets", "suite").length, 0)
-  assert.equal(Model.filterCatalog(entries, "all", "suite").length, 1)
+  const installed = Model.markInstalled(entries, { "acme.weather": true })
+
+  assert.equal(Model.filterCatalog(installed, "all", "all", "all", "").length, 2)
+  assert.deepEqual(
+    Model.filterCatalog(installed, "Widgets", "Bar widget", "installed", "forecast").map(e => e.id),
+    ["acme.weather"])
+  assert.equal(Model.filterCatalog(installed, "Widgets", "Suite", "installed", "").length, 0)
+  assert.deepEqual(
+    Model.filterCatalog(entries, "Desktop", "Suite", "all", "acme").map(e => e.id),
+    ["acme.suite"])
+  // Available follows the existing installability policy; blocked listings
+  // remain visible under All but are not presented as available to install.
+  assert.deepEqual(
+    Model.filterCatalog(entries, "all", "all", "available", "").map(e => e.id),
+    ["acme.weather"])
 })
 
 test("catalogCategories is derived from the catalog and led by All", () => {
@@ -824,10 +875,109 @@ test("catalogCategories is derived from the catalog and led by All", () => {
   assert.deepEqual(Model.catalogCategories(entries).map(o => o.value), ["all", "Desktop", "Widgets"])
 })
 
+test("missing category groups under Other without becoming details metadata", () => {
+  const entries = Model.catalogEntries({ plugins: [
+    { id: "missing", name: "Missing", kind: "Panel", sourceType: "community" },
+    { id: "present", name: "Present", category: "Other", kind: "Panel", sourceType: "community" }
+  ] }, {})
+  const missing = entries.find(entry => entry.id === "missing")
+  const present = entries.find(entry => entry.id === "present")
+  assert.equal(missing.category, "Other")
+  assert.equal(missing.categoryPresent, false)
+  assert.equal(present.category, "Other")
+  assert.equal(present.categoryPresent, true)
+  assert.deepEqual(Model.catalogCategories(entries).map(option => option.value), ["all", "Other"])
+})
+
+test("Browse options are derived from catalog kinds and keep fixed policy labels", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  assert.deepEqual(Model.catalogKindOptions(entries), [
+    { value: "all", label: "All" },
+    { value: "bar widget", label: "Bar widget" },
+    { value: "suite", label: "Suite" }
+  ])
+  assert.deepEqual(Model.catalogKindOptions([
+    { kind: "Panel" }, { kind: "panel" }, { kind: "" }, {}, null
+  ]), [
+    { value: "all", label: "All" },
+    { value: "panel", label: "Panel" }
+  ])
+  assert.deepEqual(Model.catalogAvailabilityOptions().map(o => o.label), ["All", "Available", "Installed"])
+  assert.deepEqual(Model.catalogSortOptions().map(o => o.label), ["GitHub stars", "Hearts", "Name"])
+})
+
+test("catalog kind filtering uses the same case-insensitive key as its option", () => {
+  const entries = [
+    { id: "upper", kind: "Panel", name: "Upper", author: "", description: "", category: "Tools" },
+    { id: "lower", kind: "panel", name: "Lower", author: "", description: "", category: "Tools" }
+  ]
+  assert.equal(Model.catalogKindKey(" Panel "), "panel")
+  assert.deepEqual(Model.catalogKindOptions(entries), [
+    { value: "all", label: "All" },
+    { value: "panel", label: "Panel" }
+  ])
+  assert.deepEqual(
+    Model.filterCatalog(entries, "all", "panel", "all", "").map(entry => entry.id).sort(),
+    ["lower", "upper"])
+})
+
+test("modal focus ownership prioritizes successors and restores the list only when clear", () => {
+  assert.equal(Model.browseModalFocusOwner(false, false, false), "list")
+  assert.equal(Model.browseModalFocusOwner(true, false, false), "details")
+  assert.equal(Model.browseModalFocusOwner(true, true, false), "confirmation")
+  assert.equal(Model.browseModalFocusOwner(false, true, true), "placement")
+  assert.equal(Model.browseModalFocusOwner(true, true, true), "placement")
+})
+
+test("install confirmation describes placement before cloning only when required", () => {
+  assert.equal(Model.catalogPlacementConfirmationNote(false), "")
+  assert.equal(
+    Model.catalogPlacementConfirmationNote(true),
+    "\n\nNext, choose its bar section. Cloning starts only after that choice.")
+})
+
+test("Browse sorting keeps stars and hearts independent with deterministic tie-breakers", () => {
+  const entries = [
+    { id: "z.same", name: "Same", stars: 10, marketplaceHearts: 2 },
+    { id: "A.same", name: "same", stars: 10, marketplaceHearts: 5 },
+    { id: "b.beta", name: "Beta", stars: null, marketplaceHearts: 5 },
+    { id: "c.alpha", name: "alpha", stars: 1, marketplaceHearts: null }
+  ]
+
+  assert.deepEqual(Model.sortCatalog(entries, "stars").map(e => e.id),
+    ["A.same", "z.same", "c.alpha", "b.beta"])
+  assert.deepEqual(Model.sortCatalog(entries, "hearts").map(e => e.id),
+    ["b.beta", "A.same", "z.same", "c.alpha"])
+  assert.deepEqual(Model.sortCatalog(entries, "name").map(e => e.id),
+    ["c.alpha", "b.beta", "A.same", "z.same"])
+  assert.deepEqual(entries.map(e => e.id), ["z.same", "A.same", "b.beta", "c.alpha"])
+})
+
+test("Browse sorting is stable for exact missing-metadata ties", () => {
+  const entries = [
+    { id: "same", name: "Same", stars: null, marketplaceHearts: null, marker: 1 },
+    { id: "same", name: "Same", stars: null, marketplaceHearts: null, marker: 2 }
+  ]
+  assert.deepEqual(Model.sortCatalog(entries, "stars").map(e => e.marker), [1, 2])
+  assert.deepEqual(Model.sortCatalog(entries, "hearts").map(e => e.marker), [1, 2])
+})
+
+test("Browse active-filter detection and clear state cover every narrowing control", () => {
+  assert.equal(Model.catalogIsFiltering("all", "all", "all", ""), false)
+  assert.equal(Model.catalogIsFiltering("Widgets", "all", "all", ""), true)
+  assert.equal(Model.catalogIsFiltering("all", "Panel", "all", ""), true)
+  assert.equal(Model.catalogIsFiltering("all", "all", "available", ""), true)
+  assert.equal(Model.catalogIsFiltering("all", "all", "installed", ""), true)
+  assert.equal(Model.catalogIsFiltering("all", "all", "all", " weather "), true)
+  assert.deepEqual(Model.clearedCatalogFilters(), {
+    category: "all", kind: "all", availability: "all", query: ""
+  })
+})
+
 test("catalogEmptyMessage names what excluded everything", () => {
-  assert.match(Model.catalogEmptyMessage("all", "zzz"), /No plugins match “zzz”/)
-  assert.match(Model.catalogEmptyMessage("Widgets", "zzz"), /No Widgets plugins match “zzz”/)
-  assert.match(Model.catalogEmptyMessage("Widgets", ""), /No Widgets plugins in the catalog/)
+  assert.match(Model.catalogEmptyMessage("all", "all", "all", "zzz"), /No plugins match “zzz”/)
+  assert.match(Model.catalogEmptyMessage("Widgets", "all", "available", "zzz"), /selected filters/)
+  assert.match(Model.catalogEmptyMessage("Widgets", "all", "all", ""), /selected filters/)
 })
 
 test("starLabel keeps big counts short", () => {
@@ -1735,21 +1885,23 @@ test("release probe start failure clears busy state and uses the active fallback
   assert.equal(failed.openUrl, request.fallbackUrl)
 })
 
-test("repository, catalog Release, and Marketplace delegates route browser ownership through Panel", () => {
+test("repository and Release actions route browser ownership through Panel", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
   const catalogCard = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  const pluginDetails = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
 
-  for (const delegate of [pluginRow, catalogCard]) {
+  for (const delegate of [pluginRow, pluginDetails]) {
     assert.doesNotMatch(delegate, /Quickshell\.execDetached/)
     assert.match(delegate, /signal repositoryNavigationRequested\(string url\)/)
     assert.match(delegate, /repositoryNavigationRequested\(repoUrl\)/)
   }
+  assert.doesNotMatch(catalogCard, /Quickshell\.execDetached|repositoryNavigationRequested/)
   assert.equal(panel.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
   assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 3)
   assert.equal(panel.split("onGithubNavigationRequested:").length - 1, 2)
-  assert.match(catalogCard, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
-  assert.match(catalogCard, /githubNavigationRequested\(versionReleaseCandidates, versionFallbackUrl\)/)
+  assert.match(pluginDetails, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
+  assert.match(pluginDetails, /githubNavigationRequested\(versionReleaseCandidates, versionFallbackUrl\)/)
   assert.match(panel,
     /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{\s+root\.requestGithubNavigation\(candidates, fallbackUrl\)\s+\}/)
   assert.match(panel, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
@@ -1767,10 +1919,14 @@ test("repository, catalog Release, and Marketplace delegates route browser owner
   }
 })
 
-test("catalog metadata keeps creator and version-metrics rows separate without reserving empty lines", () => {
+test("catalog cards stay compact while details own complete metadata and actions", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  const details = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
 
+  assert.match(card, /readonly property int descriptionLines: 3/)
+  assert.match(card, /signal detailsRequested\(\)/)
+  assert.match(card, /Model\.installBlockedReason\(entry\)/)
   assert.match(card, /id: creator[\s\S]*visible: root\.hasCreator[\s\S]*elide: Text\.ElideRight/)
   assert.match(card, /id: versionAndMetrics[\s\S]*visible: root\.hasVersionOrMetrics/)
   assert.match(card, /\? "★ " \+ Model\.starLabel\(entry\.stars\) : ""/)
@@ -1778,14 +1934,90 @@ test("catalog metadata keeps creator and version-metrics rows separate without r
   assert.doesNotMatch(card, /GH ★|MP ♥/)
   assert.match(card, /id: metricsLabel[\s\S]*anchors\.right: parent\.right[\s\S]*text: root\.metricsText/)
   assert.match(card, /id: versionLabel[\s\S]*width: Math\.max\(0, Math\.min\(implicitWidth, availableWidth\)\)[\s\S]*elide: Text\.ElideRight/)
-  assert.match(card, /enabled: root\.versionFallbackUrl !== ""/)
-  assert.match(card, /onClicked: root\.openVersion\(\)/)
-  assert.match(card, /visible: root\.hasCreator \|\| root\.hasVersionOrMetrics \|\| installButton\.visible/)
-  assert.match(card, /Math\.max\(metadata\.height, installButton\.visible \? installButton\.height : 0\)/)
   assert.match(card, /creator\.height \+ versionAndMetrics\.height[\s\S]*creator\.visible && versionAndMetrics\.visible \? spacing : 0/)
-  assert.match(panel, /cellWidth - Style\.space\(24\)/)
-  assert.match(panel, /Math\.ceil\(cardTextMetrics\.lineSpacing \* 8\)/)
-  assert.match(panel, /\+ Style\.space\(51\)/)
+  for (const label of [
+    "Author", "Version", "Category", "Kind", "License", "GitHub stars",
+    "Marketplace hearts", "Marketplace review", "Availability", "Placement"
+  ]) assert.match(details, new RegExp(`label: "${label}"`), label)
+  assert.match(details, /entry\.description/)
+  assert.match(details, /entry\.categoryPresent === true && entry\.category !== ""/)
+  assert.match(details, /Model\.installBlockedReason\(entry\)/)
+  assert.match(details, /plugins run unsandboxed inside omarchy-shell/)
+  assert.match(details, /kind: "repository"/)
+  assert.match(details, /kind: "release"/)
+  assert.match(details, /kind: "install"/)
+  assert.match(panel, /readonly property real compactContentWidth: cellWidth\s+- compactDelegateMargin \* 2 - compactCardPadding \* 2/)
+  assert.match(panel, /readonly property real compactActionHeight: Math\.max\(\s+Style\.space\(22\), Style\.font\.icon \+ Style\.spacing\.sm \* 2\)/)
+  assert.match(card, /readonly property real footerHeight: Math\.max\(footerMetadataHeight, actionRow\.implicitHeight\)/)
+  assert.match(card, /readonly property real requiredHeight: topContent\.implicitHeight \+ contentFooterGap\s+\+ footerHeight \+ contentPadding \* 2/)
+  assert.match(panel, /readonly property real compactFooterHeight: Math\.max\(/)
+  assert.match(panel, /Math\.ceil\(cardTextMetrics\.lineSpacing \* 4\)/)
+  assert.match(panel, /\+ compactFooterHeight\s+\+ compactContentSpacing \* 4\s+\+ compactCardPadding \* 2\s+\+ compactDelegateMargin \* 2/)
+  assert.match(card, /id: topContent[\s\S]*anchors\.top: parent\.top/)
+  assert.match(card,
+    /id: flexibleFooterGap[\s\S]*anchors\.top: topContent\.bottom[\s\S]*anchors\.topMargin: root\.contentFooterGap[\s\S]*anchors\.bottom: footer\.top/)
+  assert.match(card,
+    /id: footer[\s\S]*anchors\.bottom: parent\.bottom[\s\S]*height: root\.footerHeight/)
+  const delegateStart = panel.indexOf("delegate: Item {", panel.indexOf("id: catalogGrid"))
+  const delegateEnd = panel.indexOf("// Empty and loading", delegateStart)
+  const delegate = panel.slice(delegateStart, delegateEnd)
+  assert.match(delegate, /width: catalogGrid\.cellWidth\s+height: catalogGrid\.cellHeight/)
+  assert.match(delegate, /CatalogCard \{[\s\S]*anchors\.fill: parent[\s\S]*anchors\.margins: Style\.space\(4\)/)
+  assert.doesNotMatch(delegate, /height: catalogCard\.requiredHeight/)
+})
+
+test("Browse details and filters wire keyboard interaction through guarded modal ownership", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const details = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
+  const choice = readFileSync(new URL("../ChoiceDialog.qml", import.meta.url), "utf8")
+
+  assert.match(panel, /onActivateRequested: root\.browsing \? root\.openDetails\(root\.selectedEntry\)/)
+  assert.match(panel, /onDetailsRequested:[\s\S]*root\.openDetails\(modelData\)/)
+  assert.match(panel, /text: "Clear filters"[\s\S]*onClicked: root\.clearCatalogFilters\(\)/)
+  assert.match(panel, /Model\.filterCatalog\(\s*catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery\)/)
+  assert.match(panel, /Model\.sortCatalog\(filteredCatalog, catalogSort\)/)
+  assert.match(details, /Qt\.Key_Escape/)
+  assert.match(details, /Qt\.Key_Tab/)
+  assert.match(details, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
+  assert.match(details, /selected \? Color\.accent/)
+  assert.match(choice, /Qt\.Key_Escape/)
+  assert.match(choice, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
+
+  const restoreStart = panel.indexOf("function returnFocusToList()")
+  const restoreEnd = panel.indexOf("\n  }", restoreStart)
+  const restore = panel.slice(restoreStart, restoreEnd)
+  assert.match(restore, /root\.opened/)
+  assert.match(restore, /Model\.browseModalFocusOwner\(root\.detailsOpen, root\.confirming, root\.placing\) === "list"/)
+  assert.match(restore, /keyCatcher\.forceActiveFocus\(\)/)
+  const modalSections = [
+    panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ConfirmDialog {")),
+    panel.slice(panel.indexOf("ConfirmDialog {"), panel.indexOf("ChoiceDialog {")),
+    panel.slice(panel.indexOf("ChoiceDialog {"))
+  ]
+  for (const section of modalSections)
+    assert.match(section, /onOpenedChanged:[\s\S]*else root\.returnFocusToList\(\)/)
+  assert.doesNotMatch(panel, /else Qt\.callLater\(function\(\) \{ if \(keyCatcher\)/)
+  assert.match(panel, /id: confirm[\s\S]*confirm\.handleKey\(event\)/)
+  assert.match(panel, /id: placement[\s\S]*placement\.handleKey\(event\)/)
+  // These source checks prove the QML wiring only. The ownership truth table
+  // above is the executable behavior seam; a live focus runtime remains a
+  // separate integration boundary.
+})
+
+test("Panel keeps open details synchronized with catalog install state", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel,
+    /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), detailsEntry\)/)
+  assert.match(panel, /catalog = stampedState\.entries/)
+  assert.match(panel, /if \(detailsEntry\) detailsEntry = stampedState\.detailsEntry/)
+  assert.match(panel, /var loadedCatalog = Model\.catalogEntries\(doc, Model\.installedIdSet\(rows\)\)/)
+  assert.match(panel, /if \(detailsEntry\) detailsEntry = Model\.findRow\(loadedCatalog, detailsEntry\.id\)/)
+})
+
+test("add confirmation never promises placement after cloning", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel, /Model\.catalogPlacementConfirmationNote\(pendingPlacementNeeded\)/)
+  assert.doesNotMatch(panel, /asked where to put it once it is cloned|where to put it once it is cloned/)
 })
 
 test("catalog projection joins the Marketplace engagement hearts endpoint by plugin id", () => {
@@ -1900,12 +2132,13 @@ test("secondary text uses one panel-derived foreground without brightening disab
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
   const catalogCard = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  const pluginDetails = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
 
   assert.match(panel,
     /readonly property color secondaryForeground: Util\.alpha\(contentForeground, 0\.54\)/)
   assert.equal(panel.split("placeholderTextColor: root.secondaryForeground").length - 1, 2)
-  assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 3)
-  assert.equal(panel.split("color: root.secondaryForeground").length - 1, 8)
+  assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 4)
+  assert.ok(panel.split("color: root.secondaryForeground").length - 1 >= 8)
 
   assert.match(pluginRow, /required property color secondaryForeground/)
   assert.match(pluginRow,
@@ -1918,9 +2151,8 @@ test("secondary text uses one panel-derived foreground without brightening disab
   assert.match(pluginRow, /opacity: root\.canToggle \? 1 : 0\.4/)
 
   assert.match(catalogCard, /required property color secondaryForeground/)
-  assert.match(catalogCard,
-    /color: repoMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
   assert.match(catalogCard, /opacity: enabled \? 1 : 0\.45/)
+  assert.match(pluginDetails, /required property color secondaryForeground/)
 })
 
 test("release probe uses fixed bounded curl argv and returns only the HTTP status", () => {

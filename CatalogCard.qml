@@ -3,7 +3,8 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// One plugin in the browse grid: a preview, what it is, and one button.
+// One compact plugin summary in the Browse grid. Full metadata and navigation
+// live in PluginDetails.qml so every card stays scannable.
 //
 // The preview is the registry's WebP thumbnail, which Qt can only decode when
 // qt6-imageformats is installed. Rather than making the whole tab depend on an
@@ -26,18 +27,16 @@ Rectangle {
   // one warning in the log instead of one per visible card.
   property bool previewsEnabled: true
 
-  signal clicked()
+  signal detailsRequested()
   signal installRequested()
-  signal githubNavigationRequested(var candidates, string fallbackUrl)
-  signal repositoryNavigationRequested(string url)
   signal previewUndecodable()
 
   readonly property string state_: Model.installState(entry)
   readonly property color accent: Model.accentColor(entry ? entry.accent : "")
 
-  // Five lines of blurb, always reserved, so the cards stay on a grid instead
+  // Three lines of blurb, always reserved, so the cards stay on a grid instead
   // of ragging as you filter.
-  readonly property int descriptionLines: 5
+  readonly property int descriptionLines: 3
   readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * descriptionLines)
 
   // Sources are tried best-first: the repository's own preview.png, then the
@@ -51,8 +50,6 @@ Rectangle {
 
   onEntryChanged: previewIndex = 0
 
-  readonly property string repoUrl: Model.browsableUrl(entry ? entry.repo : "")
-  readonly property string repoLabel: Model.repoShortLabel(entry ? entry.repo : "")
   readonly property string creatorText: entry ? entry.author : ""
   readonly property string versionText: Model.catalogVersionLabel(entry)
   readonly property string starText: entry && Model.starLabel(entry.stars) !== ""
@@ -67,18 +64,16 @@ Rectangle {
   }
   readonly property bool hasCreator: creatorText !== ""
   readonly property bool hasVersionOrMetrics: versionText !== "" || metricsText !== ""
-  readonly property var versionReleaseCandidates: Model.catalogVersionReleaseCandidates(entry)
-  readonly property string versionFallbackUrl: Model.catalogVersionFallbackUrl(entry)
-
-  function openRepo() {
-    if (repoUrl === "") return
-    repositoryNavigationRequested(repoUrl)
-  }
-
-  function openVersion() {
-    if (versionFallbackUrl === "") return
-    githubNavigationRequested(versionReleaseCandidates, versionFallbackUrl)
-  }
+  readonly property string blockedText: state_ === "unavailable"
+    ? Model.installBlockedReason(entry) : ""
+  readonly property real contentPadding: Style.space(8)
+  readonly property real contentFooterGap: Style.space(6)
+  readonly property real footerMetadataHeight: Math.ceil(descriptionMetrics.lineSpacing * 2)
+    + Style.space(3)
+  readonly property real footerHeight: Math.max(footerMetadataHeight, actionRow.implicitHeight)
+  readonly property real requiredHeight: topContent.implicitHeight + contentFooterGap
+    + footerHeight + contentPadding * 2
+  implicitHeight: requiredHeight
 
   radius: Style.cornerRadius
   color: selected ? Style.selectedFill : (mouse.containsMouse ? Style.hoverFill : Style.normalFill)
@@ -89,12 +84,18 @@ Rectangle {
     id: mouse
     anchors.fill: parent
     hoverEnabled: true
-    onClicked: root.clicked()
+    cursorShape: Qt.PointingHandCursor
+    onClicked: root.detailsRequested()
   }
 
   Column {
-    anchors.fill: parent
-    anchors.margins: Style.space(8)
+    id: topContent
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: parent.top
+    anchors.leftMargin: root.contentPadding
+    anchors.rightMargin: root.contentPadding
+    anchors.topMargin: root.contentPadding
     spacing: Style.space(6)
 
     // ---- Preview.
@@ -232,146 +233,146 @@ Rectangle {
       verticalAlignment: Text.AlignTop
     }
 
-    // ---- The repository, one click away. Reading the source before you run
-    //      it is the whole defence here, so the way to it is on the card
-    //      rather than buried behind a detail view.
-    Item {
+    Text {
+      textFormat: Text.PlainText
       width: parent.width
-      height: repoLink.implicitHeight
-      visible: root.repoUrl !== ""
+      visible: root.blockedText !== ""
+      height: visible ? implicitHeight : 0
+      text: visible ? "󰋼  " + root.blockedText : ""
+      color: root.secondaryForeground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
 
-      Text {
-        id: repoLink
-        // Never rich text: AutoText would fetch what a crafted string points at.
-        textFormat: Text.PlainText
-        width: parent.width
-        text: "󰊤  " + root.repoLabel
-        color: repoMouse.containsMouse ? Color.accent : root.secondaryForeground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.underline: repoMouse.containsMouse
-        elide: Text.ElideRight
+      PanelToolTip {
+        visible: parent.truncated && cardMouse.containsMouse
+        text: root.blockedText
+        fontFamily: root.fontFamily
       }
 
       MouseArea {
-        id: repoMouse
+        id: cardMouse
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        // Swallowed rather than propagated: clicking the link opens the repo,
-        // it does not also select the card underneath.
-        onClicked: root.openRepo()
+        onClicked: root.detailsRequested()
       }
     }
+  }
 
-    // ---- Footer: creator, release version, both popularity metrics, and action.
-    Item {
-      id: footer
-      width: parent.width
-      visible: root.hasCreator || root.hasVersionOrMetrics || installButton.visible
+  // Every card gets the same visible height. This item absorbs only the space
+  // left after top content and the footer's content-derived minimum sizes.
+  Item {
+    id: flexibleFooterGap
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: topContent.bottom
+    anchors.topMargin: root.contentFooterGap
+    anchors.bottom: footer.top
+  }
+
+  // ---- Footer: creator, release version, both popularity metrics, and action.
+  Item {
+    id: footer
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    anchors.leftMargin: root.contentPadding
+    anchors.rightMargin: root.contentPadding
+    anchors.bottomMargin: root.contentPadding
+    height: root.footerHeight
+
+    Column {
+      id: metadata
+      anchors.left: parent.left
+      anchors.right: actionRow.left
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.hasCreator || root.hasVersionOrMetrics
       height: visible
-        ? Math.max(metadata.height, installButton.visible ? installButton.height : 0)
+        ? creator.height + versionAndMetrics.height
+          + (creator.visible && versionAndMetrics.visible ? spacing : 0)
         : 0
+      spacing: Style.space(3)
 
-      Column {
-        id: metadata
-        anchors.left: parent.left
-        anchors.right: installButton.visible ? installButton.left : parent.right
-        anchors.rightMargin: installButton.visible ? Style.space(6) : 0
-        anchors.verticalCenter: parent.verticalCenter
-        visible: root.hasCreator || root.hasVersionOrMetrics
-        height: visible
-          ? creator.height + versionAndMetrics.height
-            + (creator.visible && versionAndMetrics.visible ? spacing : 0)
-          : 0
-        spacing: Style.space(3)
+      Text {
+        id: creator
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        width: parent.width
+        visible: root.hasCreator
+        height: visible ? implicitHeight : 0
+        text: root.creatorText
+        color: root.secondaryForeground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+
+      Item {
+        id: versionAndMetrics
+        width: parent.width
+        visible: root.hasVersionOrMetrics
+        height: visible ? Math.max(versionLabel.implicitHeight, metricsLabel.implicitHeight) : 0
 
         Text {
-          id: creator
+          id: metricsLabel
+          // Distinct Unicode symbols keep GitHub stars separate from anonymous
+          // Marketplace hearts. A long version yields space before either
+          // available metric is elided or displaced.
+          textFormat: Text.PlainText
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          visible: root.metricsText !== ""
+          text: root.metricsText
+          color: root.secondaryForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          id: versionLabel
           // Never rich text: AutoText would fetch what a crafted string points at.
           textFormat: Text.PlainText
-          width: parent.width
-          visible: root.hasCreator
-          height: visible ? implicitHeight : 0
-          text: root.creatorText
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          readonly property real availableWidth: metricsLabel.visible
+            ? Math.max(0, metricsLabel.x - Style.space(8))
+            : parent.width
+          width: Math.max(0, Math.min(implicitWidth, availableWidth))
+          visible: root.versionText !== ""
+          text: root.versionText
           color: root.secondaryForeground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+    }
 
-        Item {
-          id: versionAndMetrics
-          width: parent.width
-          visible: root.hasVersionOrMetrics
-          height: visible ? Math.max(versionLabel.implicitHeight, metricsLabel.implicitHeight) : 0
+    Row {
+      id: actionRow
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(4)
 
-          Text {
-            id: metricsLabel
-            // Distinct Unicode symbols keep GitHub stars separate from anonymous
-            // Marketplace hearts. A long version yields space before either
-            // available metric is elided or displaced.
-            textFormat: Text.PlainText
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.metricsText !== ""
-            text: root.metricsText
-            color: root.secondaryForeground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            id: versionLabel
-            // Never rich text: AutoText would fetch what a crafted string points at.
-            textFormat: Text.PlainText
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            readonly property real availableWidth: metricsLabel.visible
-              ? Math.max(0, metricsLabel.x - Style.space(8))
-              : parent.width
-            width: Math.max(0, Math.min(implicitWidth, availableWidth))
-            visible: root.versionText !== ""
-            text: root.versionText
-            color: versionMouse.containsMouse ? Color.accent : root.secondaryForeground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.underline: versionMouse.containsMouse
-            elide: Text.ElideRight
-
-            MouseArea {
-              id: versionMouse
-              anchors.fill: parent
-              enabled: root.versionFallbackUrl !== ""
-              hoverEnabled: enabled
-              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-              // Swallowed rather than propagated: opening a Release does not
-              // also select the card or trigger its install action.
-              onClicked: root.openVersion()
-            }
-
-            PanelToolTip {
-              visible: versionMouse.containsMouse
-              text: "Open " + root.versionText + " on GitHub"
-              fontFamily: root.fontFamily
-            }
-          }
-        }
+      PanelActionButton {
+        iconText: "󰋼"
+        tooltipText: "View plugin details"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        onClicked: root.detailsRequested()
       }
 
       PanelActionButton {
         id: installButton
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        visible: root.state_ !== "installed"
-        iconText: root.state_ === "installable" ? "󰐕" : "󰋼"
-        tooltipText: root.state_ === "installable"
-          ? "Install " + (root.entry ? root.entry.name : "")
-          : Model.installBlockedReason(root.entry)
+        visible: root.state_ === "installable"
+        iconText: "󰐕"
+        tooltipText: "Install " + (root.entry ? root.entry.name : "")
         foreground: root.foreground
         fontFamily: root.fontFamily
-        bordered: root.state_ === "installable"
-        enabled: root.actionsEnabled && root.state_ === "installable"
+        bordered: true
+        enabled: root.actionsEnabled
         opacity: enabled ? 1 : 0.45
         onClicked: root.installRequested()
       }

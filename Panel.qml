@@ -124,6 +124,9 @@ Panel {
   property bool catalogLoaded: false
   property string catalogError: ""
   property string categoryFilter: "all"
+  property string catalogKindFilter: "all"
+  property string availabilityFilter: "all"
+  property string catalogSort: "stars"
 
   // The registry's previews are WebP, which Qt only decodes when
   // qt6-imageformats is installed. Rather than probing for it, the first card
@@ -132,11 +135,33 @@ Panel {
   property bool previewsSupported: true
 
   readonly property var categoryOptions: Model.catalogCategories(catalog)
-  readonly property var visibleCatalog: Model.filterCatalog(catalog, categoryFilter, searchQuery)
+  readonly property var catalogKindOptions: Model.catalogKindOptions(catalog)
+  readonly property var availabilityOptions: Model.catalogAvailabilityOptions()
+  readonly property var catalogSortOptions: Model.catalogSortOptions()
+  readonly property bool catalogFiltered: Model.catalogIsFiltering(
+    categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
+  readonly property var filteredCatalog: Model.filterCatalog(
+    catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
+  readonly property var visibleCatalog: Model.sortCatalog(filteredCatalog, catalogSort)
+
+  onCategoryOptionsChanged: {
+    for (var i = 0; i < categoryOptions.length; i++)
+      if (categoryOptions[i].value === categoryFilter) return
+    setCategoryFilter("all")
+  }
+  onCatalogKindOptionsChanged: {
+    for (var i = 0; i < catalogKindOptions.length; i++)
+      if (catalogKindOptions[i].value === catalogKindFilter) return
+    setCatalogKindFilter("all")
+  }
+
+  property var detailsEntry: null
+  readonly property bool detailsOpen: detailsEntry !== null
 
   function switchTab(tab) {
     if (activeTab === tab) return
     revokeReleaseNavigation()
+    closeDetails()
     activeTab = tab
     resetSelection()
     if (tab === "browse" && !catalogLoaded && !catalogLoading) loadCatalog(false)
@@ -151,7 +176,10 @@ Panel {
   // rather than rebuild: the catalog's sort and its fetch both survive.
   onRowsChanged: {
     if (catalog.length === 0) return
-    catalog = Model.markInstalled(catalog, Model.installedIdSet(rows))
+    var stampedState = Model.restampCatalogInstallState(
+      catalog, Model.installedIdSet(rows), detailsEntry)
+    catalog = stampedState.entries
+    if (detailsEntry) detailsEntry = stampedState.detailsEntry
   }
   readonly property var selectedRow: selectedIndex >= 0 && selectedIndex < visibleRows.length
     ? visibleRows[selectedIndex]
@@ -218,7 +246,7 @@ Panel {
         // judgement the next sentence is asking for.
         + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
         + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
-        + "\n\nYou will be asked where to put it once it is cloned."
+        + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
     if (pendingKind === "disable")
@@ -390,6 +418,44 @@ Panel {
     resetSelection()
   }
 
+  function setCatalogKindFilter(kind) {
+    if (catalogKindFilter === kind) return
+    catalogKindFilter = kind
+    resetSelection()
+  }
+
+  function setAvailabilityFilter(availability) {
+    if (availabilityFilter === availability) return
+    availabilityFilter = availability
+    resetSelection()
+  }
+
+  function setCatalogSort(sort) {
+    if (catalogSort === sort) return
+    catalogSort = sort
+    resetSelection()
+  }
+
+  function clearCatalogFilters() {
+    var cleared = Model.clearedCatalogFilters()
+    categoryFilter = cleared.category
+    catalogKindFilter = cleared.kind
+    availabilityFilter = cleared.availability
+    searchField.text = cleared.query
+    resetSelection()
+  }
+
+  function openDetails(entry) {
+    if (!entry) return
+    revokeReleaseNavigation()
+    detailsEntry = entry
+  }
+
+  function closeDetails() {
+    revokeReleaseNavigation()
+    detailsEntry = null
+  }
+
   // ---- Catalog ------------------------------------------------------------
 
   function loadCatalog(force) {
@@ -412,7 +478,9 @@ Panel {
       return
     }
 
-    catalog = Model.catalogEntries(doc, Model.installedIdSet(rows))
+    var loadedCatalog = Model.catalogEntries(doc, Model.installedIdSet(rows))
+    catalog = loadedCatalog
+    if (detailsEntry) detailsEntry = Model.findRow(loadedCatalog, detailsEntry.id)
     catalogLoaded = true
     catalogError = ""
   }
@@ -428,6 +496,9 @@ Panel {
     pendingVerified = entry.verified === true
     pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
     pendingKind = "add"
+    // Open the successor before closing details. Modal focus ownership gives
+    // confirmation priority during this intentional one-turn overlap.
+    detailsEntry = null
   }
 
   function cycleKindFilter() {
@@ -675,11 +746,15 @@ Panel {
   }
 
   function returnFocusToList() {
-    Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() {
+      if (root.opened
+          && Model.browseModalFocusOwner(root.detailsOpen, root.confirming, root.placing) === "list"
+          && keyCatcher) keyCatcher.forceActiveFocus()
+    })
   }
 
   onOpenedChanged: {
-    if (!opened) { revokeReleaseNavigation(); return }
+    if (!opened) { detailsEntry = null; revokeReleaseNavigation(); return }
     setStatus("", false)
     reload()
     checkUpdates()
@@ -1034,17 +1109,22 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || root.placing || urlField.activeFocus || searchField.activeFocus
+      blocked: root.confirming || root.placing || root.detailsOpen
+        || urlField.activeFocus || searchField.activeFocus
         || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
+        || catalogKindDropdown.popupOpen || availabilityDropdown.popupOpen || sortDropdown.popupOpen
 
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
-      onActivateRequested: root.browsing ? root.askInstall(root.selectedEntry) : root.startUpdate(root.selectedRow)
+      onActivateRequested: root.browsing ? root.openDetails(root.selectedEntry) : root.startUpdate(root.selectedRow)
       onDeleteRequested: if (!root.browsing) root.askRemove(root.selectedRow)
       onCloseRequested: { root.revokeReleaseNavigation(); root.close() }
       onTabRequested: function(direction) { root.revokeReleaseNavigation(); root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "/") root.focusSearchField()
-        else if (t === "r" || t === "R") root.reload()
+        else if (t === "r" || t === "R") {
+          if (root.browsing) root.loadCatalog(true)
+          else { root.reload(); root.checkUpdates() }
+        }
         else if (t === "a" || t === "A") root.focusUrlField()
         else if (t === "f" || t === "F") root.cycleKindFilter()
         else if (t === "j") root.moveSelection(0, 1)
@@ -1212,20 +1292,25 @@ Panel {
 
         PanelSeparator { foreground: root.contentForeground }
 
-        // ---- All narrowing controls share one line. The two Installed
-        //      dropdowns take only the width their options need, leaving the
-        //      remainder to Search. Browse keeps its existing category layout.
+        // ---- Installed keeps one compact row. Browse uses a labelled filter
+        //      row above Search so four independent controls remain readable.
         Item {
           id: filterControls
 
-          readonly property real controlHeight: root.browsing
-            ? categoryDropdown.implicitHeight
-            : kindDropdown.implicitHeight
+          readonly property real controlHeight: kindDropdown.implicitHeight
+          readonly property real browseFilterHeight: browseLabelMetrics.height
+            + Style.space(4) + categoryDropdown.implicitHeight
 
           FontMetrics {
             id: filterOptionMetrics
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
+          }
+
+          FontMetrics {
+            id: browseLabelMetrics
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
           }
 
           function optionLabel(option) {
@@ -1243,7 +1328,9 @@ Panel {
           }
 
           width: parent.width
-          height: controlHeight
+          height: root.browsing
+            ? browseFilterHeight + Style.space(8) + controlHeight
+            : controlHeight
 
           Item {
             id: kindFilterControl
@@ -1320,28 +1407,152 @@ Panel {
             }
           }
 
-          Dropdown {
-            id: categoryDropdown
+          Item {
+            id: browseFilters
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.top: parent.top
             visible: root.browsing
-            width: visible ? Style.spacing.dropdownWidth : 0
-            height: filterControls.controlHeight
-            showLabel: false
-            options: root.categoryOptions
-            value: root.categoryFilter
-            foreground: root.contentForeground
-            fontFamily: root.contentFontFamily
-            onChanged: function(value) { root.setCategoryFilter(value) }
+            height: visible ? filterControls.browseFilterHeight : 0
+
+            readonly property real gap: Style.space(6)
+            readonly property real optionWidth: Math.floor((width - gap * 3) / 4)
+
+            Item {
+              id: categoryFilterControl
+              anchors.left: parent.left
+              width: browseFilters.optionWidth
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Category"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: categoryDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.categoryOptions
+                value: root.categoryFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setCategoryFilter(value) }
+              }
+            }
+
+            Item {
+              id: catalogKindFilterControl
+              anchors.left: categoryFilterControl.right
+              anchors.leftMargin: browseFilters.gap
+              width: browseFilters.optionWidth
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Kind"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: catalogKindDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.catalogKindOptions
+                value: root.catalogKindFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setCatalogKindFilter(value) }
+              }
+            }
+
+            Item {
+              id: availabilityFilterControl
+              anchors.left: catalogKindFilterControl.right
+              anchors.leftMargin: browseFilters.gap
+              width: browseFilters.optionWidth
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Availability"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: availabilityDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.availabilityOptions
+                value: root.availabilityFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setAvailabilityFilter(value) }
+              }
+            }
+
+            Item {
+              id: sortFilterControl
+              anchors.left: availabilityFilterControl.right
+              anchors.leftMargin: browseFilters.gap
+              anchors.right: parent.right
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Sort"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: sortDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.catalogSortOptions
+                value: root.catalogSort
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setCatalogSort(value) }
+              }
+            }
           }
 
           TextField {
             id: searchField
-            anchors.left: root.browsing ? categoryDropdown.right : statusFilterControl.right
-            anchors.leftMargin: Style.space(10)
-            anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
-            anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: root.browsing ? parent.left : statusFilterControl.right
+            anchors.leftMargin: root.browsing ? 0 : Style.space(10)
+            anchors.right: clearFiltersButton.visible ? clearFiltersButton.left : parent.right
+            anchors.rightMargin: clearFiltersButton.visible ? Style.space(4) : 0
+            y: root.browsing ? browseFilters.height + Style.space(8) : 0
             height: filterControls.controlHeight
             // The glyph rides in the placeholder rather than sitting in its
             // own column, because every pixel on this row belongs to the two
@@ -1367,16 +1578,17 @@ Panel {
           }
 
           PanelActionButton {
-            id: clearSearchButton
+            id: clearFiltersButton
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.searchQuery !== ""
+            y: root.browsing ? browseFilters.height + Style.space(8) : 0
+            visible: root.browsing ? root.catalogFiltered : root.searchQuery !== ""
             iconText: "󰅙"
-            tooltipText: "Clear the search"
+            tooltipText: root.browsing ? "Clear Browse filters" : "Clear the search"
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
             onClicked: {
-              root.clearSearch()
+              if (root.browsing) root.clearCatalogFilters()
+              else root.clearSearch()
               root.returnFocusToList()
             }
           }
@@ -1412,7 +1624,7 @@ Panel {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         text: root.browsing
-          ? "←↑↓→ select   ⏎ install   / search   1 installed   r refresh"
+          ? "←↑↓→ select   ⏎ details   / search   1 installed   r refresh"
           : "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   2 browse"
         color: root.secondaryForeground
         font.family: root.contentFontFamily
@@ -1577,16 +1789,26 @@ Panel {
         readonly property int columns: 3
         cellWidth: Math.floor(width / columns)
 
-        // Mirror the card exactly: delegate and card margins leave 24px less
-        // preview width; captions reserve five description, one repository,
-        // and two footer lines. The final spacing is the two vertical margins,
-        // four Column gaps, and the creator/metrics gap. Keeping those pieces
-        // explicit removes the old unexplained bottom reserve while every
-        // delegate still receives the same height.
-        cellHeight: Math.round((cellWidth - Style.space(24)) * 9 / 16)
+        // Worst-case compact-card content, expressed from the same line and
+        // spacing metrics as the delegate: three description lines, one
+        // blocked-reason line, and a two-line-or-button footer.
+        readonly property real compactDelegateMargin: Style.space(4)
+        readonly property real compactCardPadding: Style.space(8)
+        readonly property real compactContentSpacing: Style.space(6)
+        readonly property real compactContentWidth: cellWidth
+          - compactDelegateMargin * 2 - compactCardPadding * 2
+        readonly property real compactActionHeight: Math.max(
+          Style.space(22), Style.font.icon + Style.spacing.sm * 2)
+        readonly property real compactFooterHeight: Math.max(
+          Math.ceil(cardTextMetrics.lineSpacing * 2) + Style.space(3),
+          compactActionHeight)
+        cellHeight: Math.round(compactContentWidth * 9 / 16)
           + Math.ceil(cardNameMetrics.lineSpacing)
-          + Math.ceil(cardTextMetrics.lineSpacing * 8)
-          + Style.space(51)
+          + Math.ceil(cardTextMetrics.lineSpacing * 4)
+          + compactFooterHeight
+          + compactContentSpacing * 4
+          + compactCardPadding * 2
+          + compactDelegateMargin * 2
 
         FontMetrics {
           id: cardNameMetrics
@@ -1610,6 +1832,7 @@ Panel {
           height: catalogGrid.cellHeight
 
           CatalogCard {
+            id: catalogCard
             anchors.fill: parent
             anchors.margins: Style.space(4)
             entry: modelData
@@ -1621,11 +1844,10 @@ Panel {
             fontFamily: root.contentFontFamily
 
             onPreviewUndecodable: root.previewsSupported = false
-            onClicked: root.selectedIndex = index
-            onGithubNavigationRequested: function(candidates, fallbackUrl) {
-              root.requestGithubNavigation(candidates, fallbackUrl)
+            onDetailsRequested: {
+              root.selectedIndex = index
+              root.openDetails(modelData)
             }
-            onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
             onInstallRequested: {
               root.selectedIndex = index
               root.askInstall(modelData)
@@ -1636,24 +1858,71 @@ Panel {
         // Empty and loading are different states and read differently: one
         // says the fetch is still running, the other that the filters matched
         // nothing.
-        Text {
-          // Never rich text: AutoText would fetch what a crafted string points at.
-          textFormat: Text.PlainText
+        Column {
           anchors.centerIn: parent
           width: parent.width - Style.space(40)
           visible: root.visibleCatalog.length === 0
-          text: {
-            if (root.catalogLoading) return "Fetching the catalog from omarchyplugins.com…"
-            if (root.catalogError !== "") return root.catalogError
-            if (root.catalog.length === 0) return "No catalog yet."
-            return Model.catalogEmptyMessage(root.categoryFilter, root.searchQuery)
+          spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: {
+              if (root.catalogLoading) return "Fetching the catalog from omarchyplugins.com…"
+              if (root.catalogError !== "") return root.catalogError
+              if (root.catalog.length === 0) return "No catalog yet."
+              return Model.catalogEmptyMessage(
+                root.categoryFilter, root.catalogKindFilter,
+                root.availabilityFilter, root.searchQuery)
+            }
+            color: root.secondaryForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
           }
-          color: root.secondaryForeground
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-          horizontalAlignment: Text.AlignHCenter
+
+          Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.catalogFiltered && !root.catalogLoading
+            height: visible ? implicitHeight : 0
+            text: "Clear filters"
+            tooltipText: "Show the full catalog"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            fontSize: Style.font.caption
+            bordered: true
+            onClicked: root.clearCatalogFilters()
+          }
         }
+      }
+
+      PluginDetails {
+        id: pluginDetails
+        anchors.fill: parent
+        z: 10
+        opened: root.detailsOpen
+        entry: root.detailsEntry
+        background: Color.popups.background
+        foreground: root.contentForeground
+        secondaryForeground: root.secondaryForeground
+        fontFamily: root.contentFontFamily
+
+        onOpenedChanged: {
+          if (opened) forceActiveFocus()
+          else root.returnFocusToList()
+        }
+
+        Keys.onPressed: function(event) {
+          if (pluginDetails.handleKey(event)) event.accepted = true
+        }
+
+        onClosed: root.closeDetails()
+        onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+        onGithubNavigationRequested: function(candidates, fallbackUrl) {
+          root.requestGithubNavigation(candidates, fallbackUrl)
+        }
+        onInstallRequested: root.askInstall(root.detailsEntry)
       }
 
       ConfirmDialog {
@@ -1671,7 +1940,7 @@ Panel {
 
         onOpenedChanged: {
           if (opened) forceActiveFocus()
-          else Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+          else root.returnFocusToList()
         }
 
         Keys.onPressed: function(event) {
@@ -1695,7 +1964,7 @@ Panel {
 
         onOpenedChanged: {
           if (opened) forceActiveFocus()
-          else Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+          else root.returnFocusToList()
         }
 
         Keys.onPressed: function(event) {

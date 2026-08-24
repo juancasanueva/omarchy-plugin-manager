@@ -142,42 +142,56 @@ quietly told nothing is how a stale plugin sits there looking current.
 
 ![The Browse tab: a puzzle icon and Plugins heading with a Browse-only
 Marketplace button between the tabs and refresh, aligned category and search
-controls, and a grid of plugin cards with previews, descriptions, repository
-links, creator lines, linked versions, GitHub stars, Marketplace hearts, and
-install or information actions](preview-browse.png)
+controls, and a grid of compact plugin cards with previews, descriptions,
+creator lines, versions, GitHub stars, Marketplace hearts, installed or blocked
+state, and details or install actions](preview-browse.png)
 
 <sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
 decode too. Without it the second source is skipped and more cards fall back
 to accent tiles — see below.</sub>
 
 The second tab is the [omarchyplugins.com](https://omarchyplugins.com)
-marketplace — 726 community plugins, searchable by name, author, or
-description, filterable by category, sorted by stars. Installing runs the same
-`omarchy plugin add` the Installed tab does, behind the same confirmation.
+marketplace. Search matches name, id, author, and description. Category and
+kind options come from the current catalog, while Availability narrows to
+plugins that can be installed here or plugins already installed. All four
+filters compose, and an empty result offers **Clear filters** rather than
+leaving you at a dead end.
 
-Each card carries five lines of the plugin's own description and a clickable
-link to its source repository, because reading the code before you run it is
-the whole defence here — the way to it belongs on the card, not behind a
-detail view. Links open through `omarchy-launch-browser`, so they land in
-whichever browser `omarchy default browser` selected, and only `https://` urls
-are ever passed to it.
+Sort explicitly by **GitHub stars**, **Marketplace hearts**, or **Name**.
+Unknown counts stay unknown and sort after real counts; stars and hearts are
+never combined. Names and ids provide deterministic tie-breakers.
 
-Below the repository, the creator gets one line and the catalog version shares
-the next with `★` GitHub stars and `♥` anonymous Marketplace hearts. The
+Cards are summaries: preview, three description lines, creator, version,
+separate popularity counts, installed state, and an install or details action.
+Open details by clicking a card or selecting it and pressing `Enter`. The
+details surface shows every available catalog fact used by the manager,
+including the full description, author, version, category, kind, license,
+repository and Release actions, both popularity counts, install state,
+placement requirement, and installation limitations. Missing fields are
+omitted rather than replaced with claims the catalog did not make.
+
+Repository and Release actions open through `omarchy-launch-browser`, so they
+land in whichever browser `omarchy default browser` selected, and only trusted
+`https://` URLs are passed to it. Use `Tab`, arrow keys, or `Shift+Tab` to move
+between details actions, `Enter` to activate one, and `Esc` to close.
+
+The creator gets one line and the catalog version shares the next with `★`
+GitHub stars and `♥` anonymous Marketplace hearts. The
 metrics stay separate: stars come from each `catalog.json` listing, while hearts
 come from `https://api.omarchyplugins.com/v1/stats` at
 `plugins[pluginId].hearts`. Missing or malformed counts are omitted rather than
 shown as zero.
 
-For an exact GitHub repository, clicking the version checks Releases named
+For an exact GitHub repository, opening the Release action checks names
 `v<version>` and then `<version>` through the same bounded, click-time probe used
 by Installed rows. A match opens the published Release; absence or failure falls
 back to the validated repository root. Non-GitHub and missing versions remain
 plain or absent, and opening Browse never performs a Release API request.
 
 Not everything the registry lists is installable in one command — suites ship
-their own installers, and some repos are not plugin-shaped. Those cards show
-the registry's own explanation instead of a button that could only fail.
+their own installers, and some repos are not plugin-shaped. Those cards show a
+visible blocked reason, with the full explanation in details, instead of a
+button that could only fail.
 Plugins you already have carry an `installed` badge on the preview, beside the
 `verified` one, rather than offering themselves again.
 
@@ -250,15 +264,18 @@ url cannot become a command. Urls are also validated against `https://`,
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `k` `j` | Move the selection, across both sections |
-| `Enter` | Update the selected plugin |
+| `↑` `↓` / `k` `j` | Move the selection; Browse also supports `←` `→` |
+| `Enter` | Update the selected Installed plugin; open the selected Browse card's details |
 | `Delete` | Remove the selected plugin |
 | `/` | Focus the search box |
 | `a` | Focus the repository url field |
 | `f` | Cycle the kind filter (Installed) |
 | `1` `2` | Switch to the Installed / Browse tab |
-| `r` | Re-read the plugin list |
+| `r` | Re-read the plugin list or re-fetch the active Browse catalog |
 | `Esc` | Clear the search, then leave the field, then close the panel |
+
+In Browse details, `Tab`, `Shift+Tab`, and the arrow keys move between actions;
+`Enter` activates the selected action and `Esc` returns to the card grid.
 
 ## Install
 
@@ -342,7 +359,8 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | Both tabs, search, filters, actions, and confirmations |
 | `PluginRow.qml` | One row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
-| `CatalogCard.qml` | One marketplace card: preview, blurb, creator, linked version, GitHub stars, Marketplace hearts, install |
+| `CatalogCard.qml` | One compact marketplace card: preview, summary, state, metrics, details, and install |
+| `PluginDetails.qml` | Full Marketplace metadata, trusted links, limitations, and keyboard actions |
 | `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 
