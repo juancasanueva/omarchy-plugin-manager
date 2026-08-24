@@ -1102,9 +1102,9 @@ Panel {
     // every time. Past the cap the list scrolls, which it was built to do.
     contentHeight: panel.fittedContentHeight(
       header.implicitHeight
-        + (root.browsing ? Style.space(500) : listColumn.implicitHeight)
+        + (root.browsing ? Style.space(600) : listColumn.implicitHeight)
         + hints.implicitHeight + Style.space(20),
-      Style.space(500))
+      Style.space(600))
 
     PanelKeyCatcher {
       id: keyCatcher

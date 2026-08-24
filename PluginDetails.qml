@@ -120,7 +120,7 @@ Item {
     BorderSurface {
       id: card
       width: Math.min(parent.width - Style.space(32), Style.space(520))
-      height: Math.min(parent.height - Style.space(32), Style.space(460))
+      height: Math.min(parent.height - Style.space(32), Style.space(600))
       anchors.centerIn: parent
       color: root.background
       borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
