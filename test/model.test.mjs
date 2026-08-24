@@ -706,7 +706,8 @@ const catalogDoc = {
       repo: "https://github.com/acme/omarchy-weather",
       installCommand: "omarchy plugin add https://github.com/acme/omarchy-weather.git --enable",
       installAvailable: true, verificationStatus: "verified", sourceType: "community",
-      stars: 120, marketplaceHearts: 7,
+      stars: 120, marketplaceHearts: 7, addedAt: "2026-08-19",
+      listedAt: "2026-08-19T14:30:00.000Z",
       accent: "cyan", initials: "WE", previewThumbnail: "assets/img/w-card.webp"
     },
     {
@@ -752,6 +753,12 @@ test("catalogEntries keeps GitHub stars and Marketplace hearts distinct and hone
   }
   assert.equal(Model.catalogCount(0), 0)
   assert.equal(Model.starLabel(0), "0")
+})
+
+test("catalogEntries keeps listing timestamps for Recently added sorting", () => {
+  const weather = Model.catalogEntries(catalogDoc, {}).find(entry => entry.id === "acme.weather")
+  assert.equal(weather.listedAt, "2026-08-19T14:30:00.000Z")
+  assert.equal(weather.addedAt, "2026-08-19")
 })
 
 test("installUrlFor takes the url from the curated install command", () => {
@@ -903,7 +910,12 @@ test("Browse options are derived from catalog kinds and keep fixed policy labels
     { value: "panel", label: "Panel" }
   ])
   assert.deepEqual(Model.catalogAvailabilityOptions().map(o => o.label), ["All", "Available", "Installed"])
-  assert.deepEqual(Model.catalogSortOptions().map(o => o.label), ["GitHub stars", "Hearts", "Name"])
+  assert.deepEqual(Model.catalogSortOptions(), [
+    { value: "stars", label: "GitHub stars" },
+    { value: "hearts", label: "Hearts" },
+    { value: "recently-added", label: "Recently added" },
+    { value: "name", label: "Name" }
+  ])
 })
 
 test("catalog kind filtering uses the same case-insensitive key as its option", () => {
@@ -960,6 +972,83 @@ test("Browse sorting is stable for exact missing-metadata ties", () => {
   ]
   assert.deepEqual(Model.sortCatalog(entries, "stars").map(e => e.marker), [1, 2])
   assert.deepEqual(Model.sortCatalog(entries, "hearts").map(e => e.marker), [1, 2])
+})
+
+test("Recently added sorts precise listing timestamps newest first", () => {
+  const entries = [
+    { id: "old", name: "Old", listedAt: "2026-08-20T08:15:00.000Z" },
+    { id: "new", name: "New", listedAt: "2026-08-20T16:45:00.000Z" }
+  ]
+  assert.deepEqual(Model.sortCatalog(entries, "recently-added").map(e => e.id), ["new", "old"])
+})
+
+test("Recently added prefers listedAt and falls back to addedAt when needed", () => {
+  const entries = [
+    { id: "listed", name: "Listed", listedAt: "2026-08-02T10:00:00Z", addedAt: "2026-08-31" },
+    { id: "missing-listed", name: "Missing", listedAt: "", addedAt: "2026-08-03" },
+    { id: "invalid-listed", name: "Invalid", listedAt: "not-a-date", addedAt: "2026-08-01" }
+  ]
+  assert.deepEqual(Model.sortCatalog(entries, "recently-added").map(e => e.id),
+    ["missing-listed", "listed", "invalid-listed"])
+})
+
+test("Recently added puts invalid and missing timestamps after valid timestamps", () => {
+  const entries = [
+    { id: "invalid", name: "Zulu", listedAt: "not-a-date", addedAt: "also-not-a-date" },
+    { id: "valid", name: "Middle", listedAt: "2026-08-01T00:00:00Z" },
+    { id: "missing", name: "Alpha" }
+  ]
+  assert.deepEqual(Model.sortCatalog(entries, "recently-added").map(e => e.id),
+    ["valid", "missing", "invalid"])
+})
+
+test("Recently added uses the existing text tie-breaker for equal timestamps", () => {
+  const entries = [
+    { id: "z.same", name: "Same", listedAt: "2026-08-01T00:00:00Z" },
+    { id: "A.same", name: "same", listedAt: "2026-08-01T00:00:00Z" },
+    { id: "beta", name: "Beta", listedAt: "2026-08-01T00:00:00Z" }
+  ]
+  assert.deepEqual(Model.sortCatalog(entries, "recently-added").map(e => e.id),
+    ["beta", "A.same", "z.same"])
+})
+
+test("Recently added normalizes catalog-scale timestamps at most once per entry", () => {
+  const entries = []
+  for (let i = 0; i < 1203; i++) {
+    entries.push({
+      id: `listed-${i}`,
+      name: `Listed ${String(i).padStart(4, "0")}`,
+      listedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
+      addedAt: "2024-01-01"
+    })
+  }
+  for (let i = 0; i < 36; i++) {
+    entries.push({
+      id: `fallback-${i}`,
+      name: `Fallback ${String(i).padStart(2, "0")}`,
+      listedAt: i < 18 ? "   " : (i < 27 ? "not-a-date" : "2026-02-30T12:00:00Z"),
+      addedAt: new Date(Date.UTC(2025, 0, i + 1)).toISOString().slice(0, 10)
+    })
+  }
+  entries.reverse()
+
+  const originalParse = Date.parse
+  let parseCalls = 0
+  Date.parse = value => {
+    parseCalls++
+    return originalParse(value)
+  }
+  try {
+    const sorted = Model.sortCatalog(entries, "recently-added")
+    assert.equal(parseCalls, entries.length,
+      "normalization should parse at most once per entry")
+    assert.equal(sorted[0].id, "listed-1202")
+    assert.equal(sorted[1202].id, "listed-0")
+    assert.equal(sorted[1203].id, "fallback-35")
+    assert.equal(sorted[1238].id, "fallback-0")
+  } finally {
+    Date.parse = originalParse
+  }
 })
 
 test("Browse active-filter detection and clear state cover every narrowing control", () => {
@@ -2035,6 +2124,7 @@ test("catalog projection joins the Marketplace engagement hearts endpoint by plu
   assert.match(model, /MARKETPLACE_STATS_URL = "https:\/\/api\.omarchyplugins\.com\/v1\/stats"/)
   assert.match(panel, /Model\.MARKETPLACE_STATS_URL/)
   assert.match(panel, /marketplaceHearts: \(\$stats\[0\]\.plugins\[\$plugin\.id\]\.hearts \/\/ null\)/)
+  assert.match(panel, /stars,addedAt,listedAt,marketplaceHearts:/)
   assert.match(panel, /printf '%s' '\{\\"plugins\\":\{\}\}'/)
 })
 
@@ -2083,13 +2173,19 @@ test("catalog producer joins valid stats and treats unavailable inputs as missin
       mkdirSync(home, { recursive: true })
       writeFileSync(catalogPath, JSON.stringify({
         generatedAt: "remote",
-        plugins: [{ id: "acme.clock", name: "Clock" }]
+        plugins: [{
+          id: "acme.clock", name: "Clock", addedAt: "2026-08-20",
+          listedAt: "2026-08-20T12:34:56.789Z"
+        }]
       }))
       if (scenario.stats !== null) writeFileSync(statsPath, scenario.stats)
 
       const result = runCatalogScript(home, catalogPath, statsPath)
       assert.equal(result.status, 0, result.stderr)
-      assert.equal(JSON.parse(result.stdout).plugins[0].marketplaceHearts, scenario.expectedHearts)
+      const projected = JSON.parse(result.stdout).plugins[0]
+      assert.equal(projected.marketplaceHearts, scenario.expectedHearts)
+      assert.equal(projected.addedAt, "2026-08-20")
+      assert.equal(projected.listedAt, "2026-08-20T12:34:56.789Z")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

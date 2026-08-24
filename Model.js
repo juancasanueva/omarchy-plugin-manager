@@ -638,6 +638,7 @@ var CATALOG_AVAILABILITY_AVAILABLE = "available"
 var CATALOG_AVAILABILITY_INSTALLED = "installed"
 var CATALOG_SORT_STARS = "stars"
 var CATALOG_SORT_HEARTS = "hearts"
+var CATALOG_SORT_RECENTLY_ADDED = "recently-added"
 var CATALOG_SORT_NAME = "name"
 
 // The registry assigns every plugin an accent and a pair of initials — its
@@ -757,6 +758,8 @@ function catalogEntries(doc, installedIds) {
       verified: p.verificationStatus === "verified",
       stars: catalogCount(p.stars),
       marketplaceHearts: catalogCount(p.marketplaceHearts),
+      listedAt: plainText(p.listedAt).trim(),
+      addedAt: plainText(p.addedAt).trim(),
       accent: String(p.accent || ""),
       initials: plainText(p.initials).toUpperCase(),
       license: plainText(p.license).trim(),
@@ -789,9 +792,40 @@ function compareCatalogText(leftValue, rightValue) {
   return 0
 }
 
-function compareCatalogEntries(a, b, sort) {
+function isCatalogListedTimestamp(value) {
+  var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/.exec(value)
+  if (!match) return false
+
+  var year = Number(match[1])
+  var month = Number(match[2])
+  var day = Number(match[3])
+  var hour = Number(match[4])
+  var minute = Number(match[5])
+  var second = Number(match[6])
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false
+
+  var daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) daysInMonth[1] = 29
+  return day >= 1 && day <= daysInMonth[month - 1]
+}
+
+function catalogTimestamp(entry) {
+  var listedAt = plainText(entry && entry.listedAt).trim()
+  var addedAt = plainText(entry && entry.addedAt).trim()
+  var value = isCatalogListedTimestamp(listedAt) ? listedAt : addedAt
+  if (value === "") return null
+  var timestamp = Date.parse(value)
+  return isFinite(timestamp) ? timestamp : null
+}
+
+function compareCatalogEntries(a, b, sort, leftTimestamp, rightTimestamp) {
   var mode = sort || CATALOG_SORT_STARS
-  if (mode === CATALOG_SORT_STARS || mode === CATALOG_SORT_HEARTS) {
+  if (mode === CATALOG_SORT_RECENTLY_ADDED) {
+    var leftHasTimestamp = leftTimestamp !== null
+    var rightHasTimestamp = rightTimestamp !== null
+    if (leftHasTimestamp !== rightHasTimestamp) return leftHasTimestamp ? -1 : 1
+    if (leftHasTimestamp && leftTimestamp !== rightTimestamp) return leftTimestamp > rightTimestamp ? -1 : 1
+  } else if (mode === CATALOG_SORT_STARS || mode === CATALOG_SORT_HEARTS) {
     var field = mode === CATALOG_SORT_HEARTS ? "marketplaceHearts" : "stars"
     var leftMetric = a[field] === null ? -1 : a[field]
     var rightMetric = b[field] === null ? -1 : b[field]
@@ -814,11 +848,17 @@ function compareCatalogEntries(a, b, sort) {
 // Decorate with the original index so exact duplicates stay stable even on a
 // QML JavaScript engine whose Array.sort stability is not guaranteed.
 function sortCatalog(entries, sort) {
+  var mode = sort || CATALOG_SORT_STARS
   var decorated = []
-  for (var i = 0; i < (entries || []).length; i++)
-    decorated.push({ entry: entries[i], index: i })
+  for (var i = 0; i < (entries || []).length; i++) {
+    decorated.push({
+      entry: entries[i],
+      index: i,
+      timestamp: mode === CATALOG_SORT_RECENTLY_ADDED ? catalogTimestamp(entries[i]) : null
+    })
+  }
   decorated.sort(function(a, b) {
-    return compareCatalogEntries(a.entry, b.entry, sort) || a.index - b.index
+    return compareCatalogEntries(a.entry, b.entry, mode, a.timestamp, b.timestamp) || a.index - b.index
   })
 
   var out = []
@@ -867,6 +907,7 @@ function catalogSortOptions() {
   return [
     { value: CATALOG_SORT_STARS, label: "GitHub stars" },
     { value: CATALOG_SORT_HEARTS, label: "Hearts" },
+    { value: CATALOG_SORT_RECENTLY_ADDED, label: "Recently added" },
     { value: CATALOG_SORT_NAME, label: "Name" }
   ]
 }

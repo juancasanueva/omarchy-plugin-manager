@@ -896,7 +896,7 @@ Panel {
     + "  printf '%s' '{\"plugins\":{}}' > \"$stats_tmp\"; "
     + "fi; "
     + "if [ \"$catalog_status\" -eq 0 ] "
-    + "   && jq -c --slurpfile stats \"$stats_tmp\" '{generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch}]}' \"$catalog_tmp\" 2>/dev/null "
+    + "   && jq -c --slurpfile stats \"$stats_tmp\" '{generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,addedAt,listedAt,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch}]}' \"$catalog_tmp\" 2>/dev/null "
     // One sentinel byte distinguishes an exact-limit projection from an
     // oversized one; pipefail also rejects jq errors and its bounded SIGPIPE.
     + "      | head -c \"$((projection_max + 1))\" > \"$tmp\" "

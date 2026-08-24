@@ -157,7 +157,8 @@ plugins that can be installed here or plugins already installed. All four
 filters compose, and an empty result offers **Clear filters** rather than
 leaving you at a dead end.
 
-Sort explicitly by **GitHub stars**, **Marketplace hearts**, or **Name**.
+Sort explicitly by **GitHub stars**, **Marketplace hearts**, **Recently added**
+(newest first), or **Name**.
 Unknown counts stay unknown and sort after real counts; stars and hearts are
 never combined. Names and ids provide deterministic tie-breakers.
 
