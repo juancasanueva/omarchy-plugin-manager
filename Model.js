@@ -905,9 +905,9 @@ function catalogAvailabilityOptions() {
 
 function catalogSortOptions() {
   return [
+    { value: CATALOG_SORT_RECENTLY_ADDED, label: "Recently added" },
     { value: CATALOG_SORT_STARS, label: "GitHub stars" },
     { value: CATALOG_SORT_HEARTS, label: "Hearts" },
-    { value: CATALOG_SORT_RECENTLY_ADDED, label: "Recently added" },
     { value: CATALOG_SORT_NAME, label: "Name" }
   ]
 }
