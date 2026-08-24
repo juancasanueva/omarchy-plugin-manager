@@ -1011,7 +1011,7 @@ function repoShortLabel(url) {
 function browsableUrl(url) {
   var text = normalizeGitUrl(url)
   if (/\s/.test(text)) return ""
-  return /^https:\/\/[^\/\s]+\/.+/.test(text) ? text : ""
+  return /^https:\/\/[^\/\s]+\/.*/.test(text) ? text : ""
 }
 
 // Plugin repositories overwhelmingly ship a preview.png at their root — 31 of

@@ -1022,6 +1022,7 @@ test("repoShortLabel drops the host, which is the same on every card", () => {
 test("browsableUrl only ever hands https to the browser", () => {
   // The repo field arrives over the network, so a url that is not a web page
   // must never reach the launcher.
+  assert.equal(Model.browsableUrl("https://omarchyplugins.com/"), "https://omarchyplugins.com/")
   assert.equal(Model.browsableUrl("https://github.com/a/b"), "https://github.com/a/b")
   assert.equal(Model.browsableUrl("http://github.com/a/b"), "")
   assert.equal(Model.browsableUrl("javascript:alert(1)"), "")
@@ -1751,6 +1752,13 @@ test("repository and direct fallback navigation revoke A and open immediately", 
     const settled = settleProbe(transition.state, ["exit", "output"])
     for (const effect of settled.effects) assert.equal(effect.openUrl, "")
   }
+})
+
+test("Browse Marketplace root URL survives direct navigation validation", () => {
+  const url = "https://omarchyplugins.com/"
+  const transition = Model.releaseNavigationDirectTransition(
+    Model.releaseNavigationInitialState(), url)
+  assert.equal(transition.openUrl, url)
 })
 
 test("actions, tab switches, reload, and close revoke A in either callback order", () => {
