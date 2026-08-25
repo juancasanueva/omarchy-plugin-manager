@@ -2509,5 +2509,31 @@ test("versionLabel stays silent when no version is known", () => {
 
 test("countBehind counts only rows a check actually found behind", () => {
   assert.equal(Model.countBehind(Model.applyUpdateReport(baseRows, report)), 1)
+  assert.equal(Model.countBehind([
+    { behind: true },
+    { behind: false },
+    { behind: "unknown" },
+    { behind: 1 },
+    null
+  ]), 1)
   assert.equal(Model.countBehind([]), 0)
+})
+
+test("bar update badge projects the panel's confirmed count without changing button behavior", () => {
+  const barWidget = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
+
+  assert.match(barWidget,
+    /readonly property int updateCount: panelLoader\.item \? panelLoader\.item\.behindCount : 0/)
+  assert.match(barWidget, /visible: root\.updateCount > 0/)
+  assert.match(barWidget, /text: root\.updateCount > 9 \? "9\+" : String\(root\.updateCount\)/)
+  assert.match(barWidget, /anchors\.top: button\.top\s+anchors\.right: button\.right/)
+  assert.match(barWidget, /enabled: false/)
+  const tooltipExpression = /tooltipText:\s*(.+)/.exec(barWidget)?.[1]
+  assert.ok(tooltipExpression)
+  const tooltipText = new Function("root", `return ${tooltipExpression}`)
+  assert.equal(tooltipText({ updateCount: 0 }), "Plugins")
+  assert.equal(tooltipText({ updateCount: 2 }), "Plugins - 2 to update")
+  assert.equal(tooltipText({ updateCount: 12 }), "Plugins - 12 to update")
+  assert.match(barWidget,
+    /if \(b === Qt\.MiddleButton\) root\.refresh\(\)\s+else root\.togglePanel\(\)/)
 })

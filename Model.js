@@ -1676,6 +1676,7 @@ function versionLabel(row) {
 
 function countBehind(rows) {
   var total = 0
-  for (var i = 0; i < (rows || []).length; i++) if (rows[i].behind) total++
+  for (var i = 0; i < (rows || []).length; i++)
+    if (rows[i] && rows[i].behind === true) total++
   return total
 }

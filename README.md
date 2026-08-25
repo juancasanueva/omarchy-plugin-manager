@@ -87,7 +87,8 @@ When nothing matches, the message names whichever control excluded everything
 
 Rows with an update carry an accent badge — `1.0.0 → 1.2.0` when the versions
 differ, or just `update` when they do not. The header counts them, so you know
-before scrolling. When the current origin is a valid GitHub repository and both
+before scrolling; the bar's puzzle icon shows the same confirmed count in a
+compact amber badge. When the current origin is a valid GitHub repository and both
 commits are known, the badge always has GitHub's exact commit comparison as its
 fallback. If the remote manifest names a different version, clicking the badge
 checks published Releases named `v<remoteVersion>` and then `<remoteVersion>`.
