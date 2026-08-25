@@ -645,16 +645,18 @@ test("an empty query matches everything, including a whitespace-only one", () =>
   assert.equal(Model.matchesQuery(row, null), true)
 })
 
-test("statusOptions exposes exactly All, Enabled, and Disabled", () => {
+test("statusOptions exposes All, Enabled, Disabled, and Update", () => {
   assert.deepEqual(Model.statusOptions(), [
     { value: "all", label: "All" },
     { value: "enabled", label: "Enabled" },
-    { value: "disabled", label: "Disabled" }
+    { value: "disabled", label: "Disabled" },
+    { value: "update", label: "Update" }
   ])
 })
 
 test("filterRows applies status, kind, and search together", () => {
   const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap)
+  const checkedRows = rows.map(row => ({ ...row, behind: row.id === "acme.weather" }))
 
   assert.deepEqual(Model.filterRows(rows, "all", "all", "").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
   assert.deepEqual(Model.filterRows(rows, "all", "enabled", "").map(r => r.id), ["acme.weather", "omarchy.clock"])
@@ -663,6 +665,9 @@ test("filterRows applies status, kind, and search together", () => {
   assert.deepEqual(Model.filterRows(rows, "bar-widget", "enabled", "acme").map(r => r.id), ["acme.weather"])
   assert.deepEqual(Model.filterRows(rows, "service", "disabled", "dev").map(r => r.id), ["acme.dev"])
   assert.deepEqual(Model.filterRows(rows, "service", "enabled", "weather").map(r => r.id), [])
+  assert.deepEqual(Model.filterRows(checkedRows, "all", "update", "").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(checkedRows, "bar-widget", "update", "weather").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(checkedRows, "service", "update", "weather").map(r => r.id), [])
 })
 
 test("status filtering preserves both section classes and their flat selection order", () => {
@@ -671,14 +676,21 @@ test("status filtering preserves both section classes and their flat selection o
     { id: "a.installed-off", name: "Alpha", kinds: ["service"], enabled: false, firstParty: false },
     { id: "z.builtin-on", name: "Zulu", kinds: ["service"], enabled: true, firstParty: true },
     { id: "a.builtin-off", name: "Able", kinds: ["service"], enabled: false, firstParty: true }
-  ], [], {})
+  ], [], {}).map(row => ({
+    ...row,
+    behind: row.id === "a.installed-off" || row.id === "z.builtin-on"
+  }))
   const filtered = Model.filterRows(rows, "service", "disabled", "a")
   const rejoined = [...Model.rowsInGroup(filtered, "installed"), ...Model.rowsInGroup(filtered, "built-in")]
+  const updates = Model.filterRows(rows, "service", "update", "")
+  const rejoinedUpdates = [...Model.rowsInGroup(updates, "installed"), ...Model.rowsInGroup(updates, "built-in")]
 
   assert.deepEqual(Model.filterByStatus(rows, "all").map(r => r.id), rows.map(r => r.id))
   assert.deepEqual(rejoined.map(r => r.id), ["a.installed-off", "a.builtin-off"])
   assert.deepEqual(rejoined.map(r => r.group), ["installed", "built-in"])
   assert.deepEqual(rejoined.map(r => r.id), filtered.map(r => r.id))
+  assert.deepEqual(rejoinedUpdates.map(r => r.id), ["a.installed-off", "z.builtin-on"])
+  assert.deepEqual(rejoinedUpdates.map(r => r.id), updates.map(r => r.id))
 })
 
 test("isFiltering includes status and clears only when all controls are neutral", () => {
@@ -687,6 +699,7 @@ test("isFiltering includes status and clears only when all controls are neutral"
   assert.equal(Model.isFiltering("service", "all", ""), true)
   assert.equal(Model.isFiltering("all", "enabled", ""), true)
   assert.equal(Model.isFiltering("all", "disabled", ""), true)
+  assert.equal(Model.isFiltering("all", "update", ""), true)
   assert.equal(Model.isFiltering("all", "all", "clock"), true)
 })
 
@@ -697,6 +710,10 @@ test("emptyMessage names every active exclusion, including status", () => {
   assert.equal(Model.emptyMessage("service", "disabled", "zzz"), "No disabled service plugins match “zzz”.")
   assert.equal(Model.emptyMessage("service", "enabled", ""), "No enabled service plugins found.")
   assert.equal(Model.emptyMessage("all", "disabled", ""), "No disabled plugins found.")
+  assert.equal(Model.emptyMessage("all", "update", "zzz"), "No confirmed plugin updates match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "update", "zzz"), "No confirmed service plugin updates match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "update", ""), "No confirmed service plugin updates found.")
+  assert.equal(Model.emptyMessage("all", "update", ""), "No confirmed updates found.")
   assert.equal(Model.emptyMessage("bar-widget", "all", ""), "No bar-widget plugins found.")
   assert.equal(Model.emptyMessage("all", "all", ""), "No plugins found.")
 })

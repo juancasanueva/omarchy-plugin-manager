@@ -22,6 +22,7 @@ var ALL_KINDS = "all"
 var ALL_STATUSES = "all"
 var STATUS_ENABLED = "enabled"
 var STATUS_DISABLED = "disabled"
+var STATUS_UPDATE = "update"
 
 // The loader emits four fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
@@ -317,24 +318,28 @@ function filterByKind(rows, kind) {
   return out
 }
 
-// The shell already reports this truth on every row. Filtering projects that
-// boolean; it does not maintain a second status representation.
+// Enabled state and update availability are already authoritative row facts.
+// Filtering projects those booleans; it does not maintain another status.
 function statusOptions() {
   return [
     { value: ALL_STATUSES, label: "All" },
     { value: STATUS_ENABLED, label: "Enabled" },
-    { value: STATUS_DISABLED, label: "Disabled" }
+    { value: STATUS_DISABLED, label: "Disabled" },
+    { value: STATUS_UPDATE, label: "Update" }
   ]
 }
 
 function filterByStatus(rows, status) {
   if (!status || status === ALL_STATUSES) return rows || []
-  if (status !== STATUS_ENABLED && status !== STATUS_DISABLED) return []
+  if (status !== STATUS_ENABLED && status !== STATUS_DISABLED && status !== STATUS_UPDATE) return []
 
-  var wanted = status === STATUS_ENABLED
   var out = []
   for (var i = 0; i < (rows || []).length; i++) {
-    if (rows[i].enabled === wanted) out.push(rows[i])
+    if (status === STATUS_UPDATE) {
+      if (rows[i].behind === true) out.push(rows[i])
+    } else if (rows[i].enabled === (status === STATUS_ENABLED)) {
+      out.push(rows[i])
+    }
   }
   return out
 }
@@ -376,9 +381,18 @@ function isFiltering(kind, status, query) {
 function emptyMessage(kind, status, query) {
   var needle = String(query || "").trim()
   var kindNarrowed = kind && kind !== ALL_KINDS
-  var statusNarrowed = status === STATUS_ENABLED || status === STATUS_DISABLED
+  var updateNarrowed = status === STATUS_UPDATE
+  var statusNarrowed = status === STATUS_ENABLED || status === STATUS_DISABLED || updateNarrowed
   var prefix = statusNarrowed ? status + " " : ""
 
+  if (updateNarrowed && needle !== "" && kindNarrowed)
+    return "No confirmed " + filterKindLabel(kind).toLowerCase() + " plugin updates match “" + needle + "”."
+  if (updateNarrowed && needle !== "")
+    return "No confirmed plugin updates match “" + needle + "”."
+  if (updateNarrowed && kindNarrowed)
+    return "No confirmed " + filterKindLabel(kind).toLowerCase() + " plugin updates found."
+  if (updateNarrowed)
+    return "No confirmed updates found."
   if (needle !== "" && kindNarrowed)
     return "No " + prefix + filterKindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
   if (needle !== "")

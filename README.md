@@ -8,7 +8,7 @@ and enable, disable, update, or remove what you already have.
 
 ![The Installed tab: a puzzle icon and Plugins heading above an add-repository
 field, labelled Kind and Status dropdowns, a Search field, and separated plugin
-rows whose GitHub checkout versions link beside switches and actions](preview.png)
+rows with descriptions, metadata, repository links, switches, and actions](preview.png)
 
 ## What it does
 
@@ -71,8 +71,10 @@ Three controls share a row and narrow both lists at once:
   filter that would match nothing. A plugin that replaces the whole bar and one
   that mounts inside it share the **Bar-widget** option, because both answer the
   same question; each row still names its own kind.
-- **Status filter** — **All**, **Enabled**, or **Disabled**, read directly from
-  the same on/off state shown by each row's switch.
+- **Status filter** — **All**, **Enabled**, **Disabled**, or **Update**.
+  Enabled/Disabled read the same on/off state shown by each row's switch;
+  Update shows checkouts whose background check confirmed a different remote
+  commit.
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
