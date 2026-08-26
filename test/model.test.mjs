@@ -2519,14 +2519,17 @@ test("countBehind counts only rows a check actually found behind", () => {
   assert.equal(Model.countBehind([]), 0)
 })
 
-test("bar update badge projects the panel's confirmed count without changing button behavior", () => {
+test("bar update dot projects the panel's confirmed count without changing button behavior", () => {
   const barWidget = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
 
   assert.match(barWidget,
     /readonly property int updateCount: panelLoader\.item \? panelLoader\.item\.behindCount : 0/)
   assert.match(barWidget, /visible: root\.updateCount > 0/)
-  assert.match(barWidget, /text: root\.updateCount > 9 \? "9\+" : String\(root\.updateCount\)/)
-  assert.match(barWidget, /anchors\.top: button\.top\s+anchors\.right: button\.right/)
+  assert.match(barWidget,
+    /anchors\.right: button\.right\s+anchors\.rightMargin: Style\.space\(3\)\s+anchors\.top: button\.top\s+anchors\.topMargin: Style\.space\(5\)/)
+  assert.match(barWidget,
+    /width: Style\.space\(6\)\s+height: width\s+radius: width \/ 2\s+color: Color\.accent/)
+  assert.doesNotMatch(barWidget, /id: badgeLabel|String\(root\.updateCount\)/)
   assert.match(barWidget, /enabled: false/)
   const tooltipExpression = /tooltipText:\s*(.+)/.exec(barWidget)?.[1]
   assert.ok(tooltipExpression)

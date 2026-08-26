@@ -102,26 +102,13 @@ BarWidget {
     enabled: false
     visible: root.updateCount > 0
     z: button.z + 1
-    anchors.top: button.top
     anchors.right: button.right
-    anchors.topMargin: Style.space(1)
-    anchors.rightMargin: Style.space(1)
-    width: Math.max(Style.space(13), badgeLabel.implicitWidth + Style.space(6))
-    height: Style.space(13)
-    radius: height / 2
-    // Omarchy has no warning palette role; amber distinguishes available
-    // updates from the accent-colored puzzle icon on every theme.
-    color: "#d6a43a"
-
-    Text {
-      id: badgeLabel
-      anchors.centerIn: parent
-      text: root.updateCount > 9 ? "9+" : String(root.updateCount)
-      textFormat: Text.PlainText
-      color: Color.background
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-      font.pixelSize: Math.max(8, Style.font.caption - Style.space(2))
-      font.bold: true
-    }
+    anchors.rightMargin: Style.space(3)
+    anchors.top: button.top
+    anchors.topMargin: Style.space(5)
+    width: Style.space(6)
+    height: width
+    radius: width / 2
+    color: Color.accent
   }
 }
