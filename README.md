@@ -168,11 +168,12 @@ never combined. Names and ids provide deterministic tie-breakers.
 Cards are summaries: preview, three description lines, creator, version,
 separate popularity counts, installed state, and an install or details action.
 Open details by clicking a card or selecting it and pressing `Enter`. The
-details surface shows every available catalog fact used by the manager,
-including the full description, author, version, category, kind, license,
-repository and Release actions, both popularity counts, install state,
-placement requirement, and installation limitations. Missing fields are
-omitted rather than replaced with claims the catalog did not make.
+details surface leads with the same preview the card showed, then shows every
+available catalog fact used by the manager, including the full description,
+author, version, category, kind, license, repository and Release actions,
+both popularity counts, install state, placement requirement, and
+installation limitations. Missing fields are omitted rather than replaced
+with claims the catalog did not make.
 
 Repository and Release actions open through `omarchy-launch-browser`, so they
 land in whichever browser `omarchy default browser` selected, and only trusted

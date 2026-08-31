@@ -2048,6 +2048,36 @@ test("repository and Release actions route browser ownership through Panel", () 
   }
 })
 
+test("plugin details lead with the same preview walk the Browse card uses", () => {
+  const details = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  assert.match(details, /property bool previewsEnabled: true/)
+  assert.match(details, /signal previewUndecodable\(\)/)
+  assert.match(details, /readonly property var previewSources: Model\.previewCandidates\(entry, previewsEnabled\)/)
+  assert.match(details, /onEntryChanged: previewIndex = 0/)
+
+  // The preview leads the scrolling body: it is the first child of the
+  // details column, above the description.
+  const bodyStart = details.indexOf("id: detailsContent")
+  const previewStart = details.indexOf("id: detailsPreview", bodyStart)
+  const descriptionStart = details.indexOf("root.entry.description", bodyStart)
+  assert.notEqual(previewStart, -1)
+  assert.ok(previewStart < descriptionStart)
+
+  assert.match(details, /id: detailsThumbnail[\s\S]*source: root\.previewSource/)
+  assert.match(details,
+    /root\.previewSource === \(root\.entry \? root\.entry\.thumbnail : ""\)\) root\.previewUndecodable\(\)/)
+  assert.match(details, /id: detailsThumbnail[\s\S]*fillMode: Image\.PreserveAspectCrop/)
+  assert.match(details, /visible: detailsThumbnail\.status !== Image\.Ready/)
+
+  // One WebP verdict for the whole panel: details report undecodable sources
+  // to the same flag the grid does.
+  const detailsSection = panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ConfirmDialog {"))
+  assert.match(detailsSection, /previewsEnabled: root\.previewsSupported/)
+  assert.match(detailsSection, /onPreviewUndecodable: root\.previewsSupported = false/)
+})
+
 test("catalog cards stay compact while details own complete metadata and actions", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")

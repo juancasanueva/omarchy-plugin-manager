@@ -1905,10 +1905,13 @@ Panel {
         z: 10
         opened: root.detailsOpen
         entry: root.detailsEntry
+        previewsEnabled: root.previewsSupported
         background: Color.popups.background
         foreground: root.contentForeground
         secondaryForeground: root.secondaryForeground
         fontFamily: root.contentFontFamily
+
+        onPreviewUndecodable: root.previewsSupported = false
 
         onOpenedChanged: {
           if (opened) forceActiveFocus()

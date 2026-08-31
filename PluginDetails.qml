@@ -18,12 +18,28 @@ Item {
   property string fontFamily: Style.font.family
   property int selectedAction: 0
 
+  // Cleared by the panel the first time a WebP thumbnail fails to decode, so
+  // details and the grid share one verdict about this Qt build.
+  property bool previewsEnabled: true
+
   signal closed()
   signal installRequested()
+  signal previewUndecodable()
   signal githubNavigationRequested(var candidates, string fallbackUrl)
   signal repositoryNavigationRequested(string url)
 
   readonly property string repoUrl: Model.browsableUrl(entry ? entry.repo : "")
+
+  // Same best-first walk the Browse card uses: the repository's preview.png,
+  // then the registry's WebP thumbnail, then the accent-and-initials tile. The
+  // walk restarts whenever the panel hands this surface another plugin.
+  readonly property color accent: Model.accentColor(entry ? entry.accent : "")
+  readonly property var previewSources: Model.previewCandidates(entry, previewsEnabled)
+  property int previewIndex: 0
+  readonly property string previewSource: previewIndex < previewSources.length
+    ? previewSources[previewIndex]
+    : ""
+
   readonly property string versionText: Model.catalogVersionLabel(entry)
   readonly property var versionReleaseCandidates: Model.catalogVersionReleaseCandidates(entry)
   readonly property string versionFallbackUrl: Model.catalogVersionFallbackUrl(entry)
@@ -107,6 +123,7 @@ Item {
       detailsScroll.contentY = bottom - detailsScroll.height
   }
 
+  onEntryChanged: previewIndex = 0
   onOpenedChanged: if (opened) { selectedAction = 0; detailsScroll.contentY = 0 }
   onActionsChanged: if (selectedAction >= actions.length) selectedAction = Math.max(0, actions.length - 1)
   visible: opened
@@ -203,6 +220,54 @@ Item {
             id: detailsContent
             width: detailsScroll.width
             spacing: Style.space(12)
+
+            // ---- Preview. It leads the body because the picture is what the
+            // card promised: opening details should confirm the listing you
+            // clicked before it starts explaining it.
+            Rectangle {
+              id: detailsPreview
+              width: parent.width
+              height: Math.round(width * 9 / 16)
+              radius: Style.cornerRadius
+              clip: true
+              // The tile is the fallback and the backdrop both: it sits under
+              // the image so a half-loaded photo never flashes the card.
+              gradient: Gradient {
+                GradientStop { position: 0.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.38) }
+                GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.14) }
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                anchors.centerIn: parent
+                visible: detailsThumbnail.status !== Image.Ready
+                text: root.entry ? root.entry.initials : ""
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.displayLarge
+                font.bold: true
+              }
+
+              Image {
+                id: detailsThumbnail
+                anchors.fill: parent
+                source: root.previewSource
+                onStatusChanged: {
+                  if (status !== Image.Error) return
+                  // A WebP failure is a fact about this Qt build, not about
+                  // this plugin, so it is reported up once and the whole panel
+                  // stops asking for that format.
+                  if (root.previewSource === (root.entry ? root.entry.thumbnail : "")) root.previewUndecodable()
+                  root.previewIndex++
+                }
+                asynchronous: true
+                cache: true
+                fillMode: Image.PreserveAspectCrop
+                sourceSize.width: 720
+                visible: status === Image.Ready
+              }
+            }
 
             Text {
               textFormat: Text.PlainText
