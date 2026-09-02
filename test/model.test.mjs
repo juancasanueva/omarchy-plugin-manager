@@ -16,7 +16,7 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     statusOptions, filterByStatus,
-    matchesQuery, filterRows, isFiltering, emptyMessage,
+    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     restampCatalogInstallState, plainText,
     catalogAssetUrl, catalogCount,
@@ -691,6 +691,43 @@ test("status filtering preserves both section classes and their flat selection o
   assert.deepEqual(rejoined.map(r => r.id), filtered.map(r => r.id))
   assert.deepEqual(rejoinedUpdates.map(r => r.id), ["a.installed-off", "z.builtin-on"])
   assert.deepEqual(rejoinedUpdates.map(r => r.id), updates.map(r => r.id))
+})
+
+test("groupOptions offers the two sections plus All, in section order", () => {
+  assert.deepEqual(Model.groupOptions(), [
+    { value: "all", label: "All" },
+    { value: "installed", label: "Installed" },
+    { value: "built-in", label: "Built-in" }
+  ])
+})
+
+test("filterRows narrows by group alongside kind, status, and search", () => {
+  const rows = [
+    { id: "acme.dev", name: "Dev", kinds: ["service"], enabled: false, group: "installed" },
+    { id: "acme.weather", name: "Weather", kinds: ["bar-widget"], enabled: true, group: "installed" },
+    { id: "omarchy.clock", name: "Clock", kinds: ["bar-widget"], enabled: true, group: "built-in" }
+  ]
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "", "all").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "").map(r => r.id), ["acme.dev", "acme.weather", "omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "", "installed").map(r => r.id), ["acme.dev", "acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "", "built-in").map(r => r.id), ["omarchy.clock"])
+  assert.deepEqual(Model.filterRows(rows, "bar-widget", "enabled", "", "installed").map(r => r.id), ["acme.weather"])
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "clock", "installed").map(r => r.id), [])
+  assert.deepEqual(Model.filterRows(rows, "all", "all", "", "nonsense").map(r => r.id), [])
+})
+
+test("isFiltering and emptyMessage account for the group filter", () => {
+  assert.equal(Model.isFiltering("all", "all", "", "all"), false)
+  assert.equal(Model.isFiltering("all", "all", ""), false)
+  assert.equal(Model.isFiltering("all", "all", "", "installed"), true)
+  assert.equal(Model.isFiltering("all", "all", "", "built-in"), true)
+
+  assert.equal(Model.emptyMessage("all", "all", "", "built-in"), "No built-in plugins found.")
+  assert.equal(Model.emptyMessage("all", "all", "zzz", "installed"), "No installed plugins match “zzz”.")
+  assert.equal(Model.emptyMessage("service", "disabled", "", "built-in"), "No disabled built-in service plugins found.")
+  assert.equal(Model.emptyMessage("all", "update", "", "installed"), "No confirmed installed plugin updates found.")
+  assert.equal(Model.emptyMessage("service", "update", "zzz", "built-in"), "No confirmed built-in service plugin updates match “zzz”.")
+  assert.equal(Model.emptyMessage("all", "all", "", "all"), "No plugins found.")
 })
 
 test("isFiltering includes status and clears only when all controls are neutral", () => {
@@ -2038,7 +2075,7 @@ test("repository and Release actions route browser ownership through Panel", () 
   assert.match(panel, /onTabRequested: function\(direction\) \{ root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
 
   for (const name of [
-    "switchTab", "reload", "loadCatalog", "askInstall", "askAdd",
+    "switchTab", "reload", "loadCatalog", "askInstall",
     "askRemove", "askEnable", "askDisable", "startUpdate"
   ]) {
     const start = panel.indexOf(`function ${name}(`)
@@ -2046,6 +2083,184 @@ test("repository and Release actions route browser ownership through Panel", () 
     assert.notEqual(start, -1, name)
     assert.match(panel.slice(start, end), /revokeReleaseNavigation\(\)/, name)
   }
+})
+
+test("the Installed tab has no url field: plugins are added from Browse only", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  assert.doesNotMatch(panel, /urlField|addButton/)
+  assert.doesNotMatch(panel, /function askAdd\(|function focusUrlField\(/)
+  assert.doesNotMatch(panel, /https:\/\/github\.com\/user\/omarchy-plugin\.git/)
+  assert.doesNotMatch(panel, /\ba add\b/)
+  // The clone-and-place path survives: Browse still installs through it.
+  assert.match(panel, /function startAdd\(section\)/)
+})
+
+test("Installed filters share the Browse shape: labels on top, Search on its own row", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  assert.match(panel, /property string groupFilter: "all"/)
+  assert.match(panel, /readonly property var groupOptions: Model\.groupOptions\(\)/)
+  assert.match(panel, /Model\.filterRows\(rows, kindFilter, statusFilter, searchQuery, groupFilter\)/)
+  assert.match(panel, /Model\.isFiltering\(kindFilter, statusFilter, searchQuery, groupFilter\)/)
+  assert.match(panel, /Model\.emptyMessage\(root\.kindFilter, root\.statusFilter, root\.searchQuery, root\.groupFilter\)/)
+  assert.match(panel, /function setGroupFilter\(group\)/)
+
+  // The Installed row is one labelled block, Source · Kind · Status, sized in
+  // equal columns exactly like the Browse row.
+  const start = panel.indexOf("id: installedFilters")
+  const end = panel.indexOf("id: browseFilters", start)
+  assert.notEqual(start, -1)
+  assert.notEqual(end, -1)
+  const block = panel.slice(start, end)
+  assert.match(block, /visible: !root\.browsing/)
+  assert.match(block, /readonly property real optionWidth: Math\.floor\(\(width - gap \* 2\) \/ 3\)/)
+  for (const label of ["Source", "Kind", "Status"]) {
+    assert.match(block, new RegExp(`anchors\\.top: parent\\.top\\s+text: "${label}"`), label)
+  }
+  for (const id of ["groupDropdown", "kindDropdown", "statusDropdown"]) {
+    assert.match(block, new RegExp(`id: ${id}\\s+anchors\\.left: parent\\.left\\s+anchors\\.right: parent\\.right\\s+anchors\\.bottom: parent\\.bottom`), id)
+  }
+
+  // Search sits below the filter row on both tabs, and the key catcher
+  // yields to the new dropdown's popup like the others.
+  assert.doesNotMatch(panel, /anchors\.left: root\.browsing \? parent\.left : statusFilterControl\.right/)
+  assert.doesNotMatch(panel, /function dropdownWidth\(/)
+  assert.match(panel, /groupDropdown\.popupOpen/)
+})
+
+test("the tab buttons sit in the same place on both tabs; Marketplace goes to their left", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  const tabs = panel.slice(panel.indexOf("id: tabs"), panel.indexOf("id: marketplaceLink"))
+  assert.match(tabs, /anchors\.right: refreshButton\.left/)
+  assert.doesNotMatch(tabs, /root\.browsing/)
+
+  const marketplace = panel.slice(panel.indexOf("id: marketplaceLink"), panel.indexOf("id: refreshButton"))
+  assert.match(marketplace, /anchors\.right: tabs\.left/)
+  assert.match(marketplace, /visible: root\.browsing/)
+})
+
+test("Marketplace is drawn as a link, in the same idiom as the repository links", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const link = panel.slice(panel.indexOf("id: marketplaceLink"), panel.indexOf("id: refreshButton"))
+
+  assert.doesNotMatch(link, /^\s*Button \{/m)
+  assert.doesNotMatch(link, /bordered: true/)
+  assert.match(link, /textFormat: Text\.PlainText/)
+  assert.match(link, /text: "󰖟  Marketplace"/)
+  assert.match(link, /color: marketplaceMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+  assert.match(link, /font\.underline: marketplaceMouse\.containsMouse/)
+  assert.match(link, /cursorShape: Qt\.PointingHandCursor/)
+  assert.match(link, /PanelToolTip \{\s+visible: marketplaceMouse\.containsMouse/)
+  assert.match(link, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
+  assert.doesNotMatch(panel, /marketplaceButton/)
+})
+
+test("browseFilterHints names the filter when neutral and its value when narrowing", () => {
+  const options = {
+    category: [{ value: "all", label: "All" }, { value: "Games", label: "Games" }],
+    kind: [{ value: "all", label: "All" }, { value: "bar-widget", label: "bar-widget" }],
+    availability: Model.catalogAvailabilityOptions(),
+    sort: Model.catalogSortOptions()
+  }
+
+  assert.deepEqual(Model.browseFilterHints(
+    { category: "all", kind: "all", availability: "all", sort: "recently-added" }, options), [
+    { key: "c", text: "CATEGORY", active: false },
+    { key: "f", text: "KIND", active: false },
+    { key: "a", text: "AVAILABILITY", active: false },
+    { key: "s", text: "RECENTLY ADDED", active: false }
+  ])
+  assert.deepEqual(Model.browseFilterHints(
+    { category: "Games", kind: "bar-widget", availability: "installed", sort: "stars" }, options), [
+    { key: "c", text: "GAMES", active: true },
+    { key: "f", text: "BAR-WIDGET", active: true },
+    { key: "a", text: "INSTALLED", active: true },
+    { key: "s", text: "GITHUB STARS", active: true }
+  ])
+  // A value the options no longer carry still reads as itself, never blank.
+  assert.equal(Model.browseFilterHints({ category: "gone" }, options)[0].text, "GONE")
+})
+
+test("installedFilterHints mirrors the Browse row for Source, Kind, and Status", () => {
+  const options = {
+    group: Model.groupOptions(),
+    kind: [{ value: "all", label: "All" }, { value: "service", label: "Service" }],
+    status: Model.statusOptions()
+  }
+
+  assert.deepEqual(Model.installedFilterHints({ group: "all", kind: "all", status: "all" }, options), [
+    { key: "s", text: "SOURCE", active: false },
+    { key: "f", text: "KIND", active: false },
+    { key: "t", text: "STATUS", active: false }
+  ])
+  assert.deepEqual(Model.installedFilterHints({ group: "built-in", kind: "service", status: "update" }, options), [
+    { key: "s", text: "BUILT-IN", active: true },
+    { key: "f", text: "SERVICE", active: true },
+    { key: "t", text: "UPDATE", active: true }
+  ])
+  assert.equal(Model.installedFilterHints({}, options)[0].text, "SOURCE")
+})
+
+test("actionHints lists the row actions of each tab in the same hint shape", () => {
+  assert.deepEqual(Model.actionHints(true), [
+    { key: "↵", text: "DETAILS", active: false },
+    { key: "/", text: "SEARCH", active: false }
+  ])
+  assert.deepEqual(Model.actionHints(false), [
+    { key: "↵", text: "UPDATE", active: false },
+    { key: "⌦", text: "REMOVE", active: false },
+    { key: "/", text: "SEARCH", active: false }
+  ])
+})
+
+test("nextOption cycles any option list and nextKind is that same walk", () => {
+  const options = Model.catalogSortOptions()
+  assert.equal(Model.nextOption(options, "recently-added"), "stars")
+  assert.equal(Model.nextOption(options, "name"), "recently-added")
+  assert.equal(Model.nextOption(options, "gone"), "recently-added")
+  assert.equal(Model.nextKind(options, "hearts"), Model.nextOption(options, "hearts"))
+})
+
+test("one hint bar on both tabs: filter hints left, action hints right, keys cycle the dropdowns", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  assert.match(panel, /readonly property var browseFilterHints: Model\.browseFilterHints\(/)
+  assert.match(panel, /readonly property var installedFilterHints: Model\.installedFilterHints\(/)
+  for (const name of ["cycleCategoryFilter", "cycleCatalogKindFilter", "cycleAvailabilityFilter", "cycleCatalogSort",
+                      "cycleGroupFilter", "cycleKindFilter", "cycleStatusFilter"])
+    assert.match(panel, new RegExp(`function ${name}\\(\\) \\{\\s+set\\w+\\(Model\\.nextOption\\(`), name)
+
+  const keys = panel.slice(panel.indexOf("onTextKey:"), panel.indexOf("// ---- Fixed chrome"))
+  assert.match(keys, /t === "f" \|\| t === "F"\) root\.browsing \? root\.cycleCatalogKindFilter\(\) : root\.cycleKindFilter\(\)/)
+  assert.match(keys, /t === "s" \|\| t === "S"\) root\.browsing \? root\.cycleCatalogSort\(\) : root\.cycleGroupFilter\(\)/)
+  assert.match(keys, /\(t === "c" \|\| t === "C"\) && root\.browsing\) root\.cycleCategoryFilter\(\)/)
+  assert.match(keys, /\(t === "a" \|\| t === "A"\) && root\.browsing\) root\.cycleAvailabilityFilter\(\)/)
+  assert.match(keys, /\(t === "t" \|\| t === "T"\) && !root\.browsing\) root\.cycleStatusFilter\(\)/)
+
+  // The old centred hints line is gone; one bar carries both groups.
+  assert.doesNotMatch(panel, /id: hints\b/)
+  assert.doesNotMatch(panel, /select   ⏎/)
+  const bar = panel.slice(panel.indexOf("id: hintBar"), panel.indexOf("id: listScroll"))
+  assert.match(bar, /anchors\.bottom: parent\.bottom/)
+  assert.match(bar, /PanelSeparator \{/)
+  assert.match(bar, /id: filterHints\s+anchors\.left: parent\.left/)
+  assert.match(bar, /id: actionHints\s+anchors\.right: parent\.right/)
+  assert.match(bar, /model: root\.browsing \? root\.browseFilterHints : root\.installedFilterHints/)
+  assert.match(bar, /model: Model\.actionHints\(root\.browsing\)/)
+  // One delegate for both groups, keys shown uppercase in the accent.
+  assert.equal(bar.split("delegate: hintDelegate").length - 1, 2)
+  assert.match(bar, /text: "\[" \+ hint\.modelData\.key\.toUpperCase\(\) \+ "\]"\s+color: Color\.accent/)
+  assert.match(bar, /color: hint\.modelData\.active \? root\.contentForeground : root\.secondaryForeground/)
+  assert.doesNotMatch(bar, /Text\.RichText|Text\.AutoText|StyledText/)
+
+  // Both scroll regions stop above the bar.
+  const grid = panel.slice(panel.indexOf("id: catalogGrid"), panel.indexOf("id: catalogGrid") + 600)
+  assert.match(grid, /anchors\.bottom: hintBar\.top/)
+  const list = panel.slice(panel.indexOf("id: listScroll"), panel.indexOf("id: listScroll") + 600)
+  assert.match(list, /anchors\.bottom: hintBar\.top/)
+  assert.doesNotMatch(panel, /hints\.implicitHeight|hints\.top/)
 })
 
 test("plugin details lead with the same preview walk the Browse card uses", () => {
@@ -2068,8 +2283,17 @@ test("plugin details lead with the same preview walk the Browse card uses", () =
   assert.match(details, /id: detailsThumbnail[\s\S]*source: root\.previewSource/)
   assert.match(details,
     /root\.previewSource === \(root\.entry \? root\.entry\.thumbnail : ""\)\) root\.previewUndecodable\(\)/)
-  assert.match(details, /id: detailsThumbnail[\s\S]*fillMode: Image\.PreserveAspectCrop/)
+  // Never cropped: the frame takes the picture's own aspect once it has
+  // loaded (16:9 only as the placeholder tile), and the image fits inside it.
+  assert.match(details, /id: detailsThumbnail[\s\S]*fillMode: Image\.PreserveAspectFit/)
+  assert.doesNotMatch(details, /id: detailsThumbnail[\s\S]*PreserveAspectCrop/)
+  assert.match(details, /id: detailsPreview[\s\S]*height: detailsThumbnail\.status === Image\.Ready && detailsThumbnail\.implicitWidth > 0\s+\? Math\.min\(width, Math\.round\(width \* detailsThumbnail\.implicitHeight \/ detailsThumbnail\.implicitWidth\)\)\s+: Math\.round\(width \* 9 \/ 16\)/)
   assert.match(details, /visible: detailsThumbnail\.status !== Image\.Ready/)
+  // The accent tile is only the placeholder: once the picture is up, the
+  // gutters around a fitted image are the panel background, not a tint.
+  assert.match(details, /id: detailsPreview[\s\S]*color: root\.background/)
+  assert.match(details, /gradient: detailsThumbnail\.status === Image\.Ready \? null : previewTileGradient/)
+  assert.match(details, /Gradient \{\s+id: previewTileGradient/)
 
   // One WebP verdict for the whole panel: details report undecodable sources
   // to the same flag the grid does.
@@ -2466,7 +2690,7 @@ test("secondary text uses one panel-derived foreground without brightening disab
 
   assert.match(panel,
     /readonly property color secondaryForeground: Util\.alpha\(contentForeground, 0\.54\)/)
-  assert.equal(panel.split("placeholderTextColor: root.secondaryForeground").length - 1, 2)
+  assert.equal(panel.split("placeholderTextColor: root.secondaryForeground").length - 1, 1)
   assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 4)
   assert.ok(panel.split("color: root.secondaryForeground").length - 1 >= 8)
 

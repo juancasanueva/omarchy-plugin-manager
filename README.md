@@ -6,9 +6,10 @@ and enable, disable, update, or remove what you already have.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
-![The Installed tab: a puzzle icon and Plugins heading above an add-repository
-field, labelled Kind and Status dropdowns, a Search field, and separated plugin
-rows with descriptions, metadata, repository links, switches, and actions](preview.png)
+![The Installed tab: a puzzle icon and Plugins heading above labelled Source,
+Kind, and Status dropdowns, a Search field, separated plugin rows with
+descriptions, metadata, repository links, switches, and actions, and a hint
+bar with filter keys on the left and row actions on the right](preview.png)
 
 ## What it does
 
@@ -64,14 +65,18 @@ no link, where it is the one thing separating a checkout whose origin has
 gone missing from a folder somebody dropped in by hand. Both lose the link
 and the update button; without the badge they would look identical.
 
-Three controls share a row and narrow both lists at once:
+A labelled filter row sits above Search, in the same shape the Browse tab
+uses, and every control narrows both lists at once:
 
+- **Source filter** (`s`) — **All**, **Installed**, or **Built-in**. Picking one
+  section hides the other, which is also the quickest way to see that a
+  section is empty.
 - **Kind filter** (`f`) — bar-widget, panel, overlay, menu, service. The
   dropdown is built from the kinds actually installed, so the row never offers a
   filter that would match nothing. A plugin that replaces the whole bar and one
   that mounts inside it share the **Bar-widget** option, because both answer the
   same question; each row still names its own kind.
-- **Status filter** — **All**, **Enabled**, **Disabled**, or **Update**.
+- **Status filter** (`t`) — **All**, **Enabled**, **Disabled**, or **Update**.
   Enabled/Disabled read the same on/off state shown by each row's switch;
   Update shows checkouts whose background check confirmed a different remote
   commit.
@@ -80,8 +85,11 @@ Three controls share a row and narrow both lists at once:
   descriptions: a search that matched prose would surface plugins whose names
   look nothing like what you typed.
 
-When nothing matches, the message names whichever control excluded everything
-— including status when it is hiding otherwise matching plugins.
+The hint bar under the list shows the filters on the left — `[S] SOURCE
+[F] KIND  [T] STATUS`, each naming its dropdown while neutral and its value,
+brighter, once it narrows — and the row actions on the right.
+When nothing matches, the message names whichever controls excluded everything
+— including source and status when they are hiding otherwise matching plugins.
 
 ### Knowing what needs updating
 
@@ -116,10 +124,9 @@ quietly told nothing is how a stale plugin sits there looking current.
 
 ### The actions
 
-- **Add** — paste a git repository url; runs `omarchy plugin add <url> --yes`
-  behind a confirmation. The plugin is cloned and left switched off, because a
-  bare url says nothing about what is inside it; the row it becomes carries
-  the switch.
+- **Add** — from the Browse tab only; there is no url field. Installing a
+  card runs `omarchy plugin add <url> --yes` behind a confirmation, with the
+  url taken from the catalog entry rather than typed in.
 - **Enable / disable** — one switch per row, not a pair of icons that trade
   places. An icon that changes with the state makes you read the glyph to
   learn where the plugin stands and read it again to work out what clicking
@@ -144,10 +151,11 @@ quietly told nothing is how a stale plugin sits there looking current.
 ## The Browse tab
 
 ![The Browse tab: a puzzle icon and Plugins heading with a Browse-only
-Marketplace button between the tabs and refresh, aligned category and search
+Marketplace link to the left of the tabs, aligned category and search
 controls, and a grid of compact plugin cards with previews, descriptions,
 creator lines, versions, GitHub stars, Marketplace hearts, installed or blocked
-state, and details or install actions](preview-browse.png)
+state, and details or install actions, above a hint bar with filter keys on
+the left and details and search keys on the right](preview-browse.png)
 
 <sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
 decode too. Without it the second source is skipped and more cards fall back
@@ -158,7 +166,10 @@ marketplace. Search matches name, id, author, and description. Category and
 kind options come from the current catalog, while Availability narrows to
 plugins that can be installed here or plugins already installed. All four
 filters compose, and an empty result offers **Clear filters** rather than
-leaving you at a dead end.
+leaving you at a dead end. The hint bar under the grid shows the filters on
+the left — `[C] CATEGORY  [F] KIND  [A] AVAILABILITY  [S] RECENTLY ADDED`,
+each naming its dropdown while neutral and its value, brighter, once it
+narrows — and `[↵] DETAILS  [/] SEARCH` on the right.
 
 Sort explicitly by **GitHub stars**, **Marketplace hearts**, **Recently added**
 (newest first), or **Name**.
@@ -258,8 +269,8 @@ or not it carries a badge.
 Adding a plugin clones a repository and loads its QML into the long-running
 `omarchy-shell` process. Plugin code is **unsandboxed**: it runs with your
 user's full privileges. Removing deletes a directory. Both actions confirm
-first, and the add dialog shows the full url so you can read it before it
-runs.
+first, and the install dialog shows the full url so you can read it before it
+runs. There is no free-text url entry: every url comes from a catalog entry.
 
 Commands are executed as argv arrays, never through a shell, so a repository
 url cannot become a command. Urls are also validated against `https://`,
@@ -273,8 +284,10 @@ url cannot become a command. Urls are also validated against `https://`,
 | `Enter` | Update the selected Installed plugin; open the selected Browse card's details |
 | `Delete` | Remove the selected plugin |
 | `/` | Focus the search box |
-| `a` | Focus the repository url field |
-| `f` | Cycle the kind filter (Installed) |
+| `f` | Cycle the Kind dropdown on either tab |
+| `s` | Cycle Source (Installed) or Sort (Browse) |
+| `t` | Installed: cycle the Status dropdown |
+| `c` `a` | Browse: cycle the Category and Availability dropdowns |
 | `1` `2` | Switch to the Installed / Browse tab |
 | `r` | Re-read the plugin list or re-fetch the active Browse catalog |
 | `Esc` | Clear the search, then leave the field, then close the panel |

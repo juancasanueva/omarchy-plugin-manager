@@ -227,12 +227,26 @@ Item {
             Rectangle {
               id: detailsPreview
               width: parent.width
-              height: Math.round(width * 9 / 16)
+              // The frame takes the picture's own shape once it is known, so
+              // nothing is ever cropped away: the card crops to stay uniform
+              // in a grid, but details exist to show the whole thing. Capped
+              // at square so a tall image cannot push the text off screen —
+              // it still fits inside, just with gutters. 16:9 is only the
+              // placeholder tile while nothing has loaded.
+              height: detailsThumbnail.status === Image.Ready && detailsThumbnail.implicitWidth > 0
+                ? Math.min(width, Math.round(width * detailsThumbnail.implicitHeight / detailsThumbnail.implicitWidth))
+                : Math.round(width * 9 / 16)
               radius: Style.cornerRadius
               clip: true
-              // The tile is the fallback and the backdrop both: it sits under
-              // the image so a half-loaded photo never flashes the card.
-              gradient: Gradient {
+              // The accent tile is only the placeholder. Once the picture is
+              // up, a fitted image narrower than the frame leaves gutters,
+              // and those read as part of the panel — not as a coloured
+              // mat around the photo — only if they are the panel's colour.
+              color: root.background
+              gradient: detailsThumbnail.status === Image.Ready ? null : previewTileGradient
+
+              Gradient {
+                id: previewTileGradient
                 GradientStop { position: 0.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.38) }
                 GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.14) }
               }
@@ -263,7 +277,7 @@ Item {
                 }
                 asynchronous: true
                 cache: true
-                fillMode: Image.PreserveAspectCrop
+                fillMode: Image.PreserveAspectFit
                 sourceSize.width: 720
                 visible: status === Image.Ready
               }

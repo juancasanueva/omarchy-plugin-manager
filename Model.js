@@ -18,6 +18,7 @@ var SECTION_MANIFEST = "===manifest==="
 var GROUP_INSTALLED = "installed"
 var GROUP_BUILT_IN = "built-in"
 
+var ALL_GROUPS = "all"
 var ALL_KINDS = "all"
 var ALL_STATUSES = "all"
 var STATUS_ENABLED = "enabled"
@@ -237,6 +238,23 @@ function sectionHeading(rows, group) {
   return groupLabel(group).toUpperCase() + "  ·  " + count
 }
 
+// The two sections are a fixed pair, so unlike kinds the options need no
+// deriving from the rows — and an empty section is still worth naming, since
+// picking it is how you learn that it is empty.
+function groupOptions() {
+  return [
+    { value: ALL_GROUPS, label: "All" },
+    { value: GROUP_INSTALLED, label: groupLabel(GROUP_INSTALLED) },
+    { value: GROUP_BUILT_IN, label: groupLabel(GROUP_BUILT_IN) }
+  ]
+}
+
+function filterByGroup(rows, group) {
+  if (!group || group === ALL_GROUPS) return rows || []
+  if (group !== GROUP_INSTALLED && group !== GROUP_BUILT_IN) return []
+  return rowsInGroup(rows, group)
+}
+
 // ---- Kinds ----------------------------------------------------------------
 
 // Compact filter labels. "bar-widget" is the id the manifest uses, but full
@@ -358,8 +376,9 @@ function matchesQuery(row, query) {
     || String(row.id || "").toLowerCase().indexOf(needle) >= 0
 }
 
-function filterRows(rows, kind, status, query) {
-  var byKind = filterByKind(rows, kind)
+function filterRows(rows, kind, status, query, group) {
+  var byGroup = filterByGroup(rows, group)
+  var byKind = filterByKind(byGroup, kind)
   var byStatus = filterByStatus(byKind, status)
   if (String(query || "").trim() === "") return byStatus
 
@@ -370,48 +389,48 @@ function filterRows(rows, kind, status, query) {
   return out
 }
 
-function isFiltering(kind, status, query) {
+function isFiltering(kind, status, query, group) {
   return (kind !== undefined && kind !== null && kind !== ALL_KINDS)
     || (status !== undefined && status !== null && status !== ALL_STATUSES)
+    || (group !== undefined && group !== null && group !== ALL_GROUPS)
     || String(query || "").trim() !== ""
 }
 
 // Naming what actually excluded everything, so an empty list is never a
 // mystery — one active dropdown behind another is easy to forget about.
-function emptyMessage(kind, status, query) {
+function emptyMessage(kind, status, query, group) {
   var needle = String(query || "").trim()
-  var kindNarrowed = kind && kind !== ALL_KINDS
   var updateNarrowed = status === STATUS_UPDATE
-  var statusNarrowed = status === STATUS_ENABLED || status === STATUS_DISABLED || updateNarrowed
-  var prefix = statusNarrowed ? status + " " : ""
+  var statusNarrowed = status === STATUS_ENABLED || status === STATUS_DISABLED
+  // Each narrowing control contributes one word, in the order they read
+  // naturally: "disabled built-in service plugins".
+  var groupWord = group && group !== ALL_GROUPS ? groupLabel(group).toLowerCase() + " " : ""
+  var kindWord = kind && kind !== ALL_KINDS ? filterKindLabel(kind).toLowerCase() + " " : ""
+  var subject = groupWord + kindWord
 
-  if (updateNarrowed && needle !== "" && kindNarrowed)
-    return "No confirmed " + filterKindLabel(kind).toLowerCase() + " plugin updates match “" + needle + "”."
-  if (updateNarrowed && needle !== "")
-    return "No confirmed plugin updates match “" + needle + "”."
-  if (updateNarrowed && kindNarrowed)
-    return "No confirmed " + filterKindLabel(kind).toLowerCase() + " plugin updates found."
-  if (updateNarrowed)
+  if (updateNarrowed) {
+    if (needle !== "") return "No confirmed " + subject + "plugin updates match “" + needle + "”."
+    if (subject !== "") return "No confirmed " + subject + "plugin updates found."
     return "No confirmed updates found."
-  if (needle !== "" && kindNarrowed)
-    return "No " + prefix + filterKindLabel(kind).toLowerCase() + " plugins match “" + needle + "”."
-  if (needle !== "")
-    return "No " + prefix + "plugins match “" + needle + "”."
-  if (kindNarrowed)
-    return "No " + prefix + filterKindLabel(kind).toLowerCase() + " plugins found."
-  if (statusNarrowed)
-    return "No " + status + " plugins found."
-  return "No plugins found."
+  }
+  var scope = (statusNarrowed ? status + " " : "") + subject
+  if (needle !== "") return "No " + scope + "plugins match “" + needle + "”."
+  return "No " + scope + "plugins found."
 }
 
-// Wraps around, so the cycle key never dead-ends on the last option.
-function nextKind(options, current) {
+// Wraps around, so a cycle key never dead-ends on the last option. Any
+// {value, label} list will do — every dropdown in the panel is one.
+function nextOption(options, current) {
   var list = options || []
   if (list.length === 0) return ALL_KINDS
   for (var i = 0; i < list.length; i++) {
     if (list[i].value === current) return list[(i + 1) % list.length].value
   }
   return list[0].value
+}
+
+function nextKind(options, current) {
+  return nextOption(options, current)
 }
 
 // ---- Row text -------------------------------------------------------------
@@ -960,6 +979,75 @@ function catalogIsFiltering(category, kind, availability, query) {
     || availability === CATALOG_AVAILABILITY_AVAILABLE
     || availability === CATALOG_AVAILABILITY_INSTALLED
     || String(query || "").trim() !== ""
+}
+
+// ---- Browse key hints -----------------------------------------------------
+
+function optionLabel(options, value) {
+  for (var i = 0; i < (options || []).length; i++) {
+    if (options[i].value === value) return String(options[i].label)
+  }
+  return String(value || "")
+}
+
+// The "[key] value" hints under the Browse grid: one per filter, so the
+// keyboard can drive the dropdowns without looking up at them. A neutral
+// filter names itself — "CATEGORY" is what the key cycles — and a narrowing
+// one shows its value, marked active so the eye finds what is hiding cards.
+// Names rather than "ALL CATEGORIES" because the bar shares one line with
+// the action hints, and at the panel's width every column counts.
+function browseFilterHints(filters, options) {
+  var f = filters || {}
+  var o = options || {}
+  var categoryNeutral = !f.category || f.category === ALL_CATEGORIES
+  var kindNeutral = !f.kind || f.kind === ALL_CATALOG_KINDS
+  var availabilityNeutral = !f.availability || f.availability === CATALOG_AVAILABILITY_ALL
+  var sort = f.sort || CATALOG_SORT_RECENTLY_ADDED
+  return [
+    { key: "c", active: !categoryNeutral,
+      text: categoryNeutral ? "CATEGORY" : optionLabel(o.category, f.category).toUpperCase() },
+    { key: "f", active: !kindNeutral,
+      text: kindNeutral ? "KIND" : optionLabel(o.kind, f.kind).toUpperCase() },
+    { key: "a", active: !availabilityNeutral,
+      text: availabilityNeutral ? "AVAILABILITY" : optionLabel(o.availability, f.availability).toUpperCase() },
+    // Sort has no neutral: it always says how the grid is ordered.
+    { key: "s", active: sort !== CATALOG_SORT_RECENTLY_ADDED,
+      text: optionLabel(o.sort, sort).toUpperCase() }
+  ]
+}
+
+// The Installed tab's row: same shape, its own three dropdowns. `s` and `f`
+// land on the same keys as Browse's Sort and Kind so the hand does not
+// relearn the row when the tab changes.
+function installedFilterHints(filters, options) {
+  var f = filters || {}
+  var o = options || {}
+  var groupNeutral = !f.group || f.group === ALL_GROUPS
+  var kindNeutral = !f.kind || f.kind === ALL_KINDS
+  var statusNeutral = !f.status || f.status === ALL_STATUSES
+  return [
+    { key: "s", active: !groupNeutral,
+      text: groupNeutral ? "SOURCE" : optionLabel(o.group, f.group).toUpperCase() },
+    { key: "f", active: !kindNeutral,
+      text: kindNeutral ? "KIND" : optionLabel(o.kind, f.kind).toUpperCase() },
+    { key: "t", active: !statusNeutral,
+      text: statusNeutral ? "STATUS" : optionLabel(o.status, f.status).toUpperCase() }
+  ]
+}
+
+// The other end of the same bar: what Enter, Delete, and / do on this tab.
+// Refresh and the tab switch have buttons in the header and Escape closes
+// every panel, so none of those earn a column here.
+function actionHints(browsing) {
+  if (browsing) return [
+    { key: "↵", text: "DETAILS", active: false },
+    { key: "/", text: "SEARCH", active: false }
+  ]
+  return [
+    { key: "↵", text: "UPDATE", active: false },
+    { key: "⌦", text: "REMOVE", active: false },
+    { key: "/", text: "SEARCH", active: false }
+  ]
 }
 
 function clearedCatalogFilters() {

@@ -24,7 +24,8 @@ import "Model.js" as Model
 //
 // Add and remove both confirm first. Adding clones and runs unsandboxed code
 // inside the shell process, and removing deletes a directory — neither is a
-// thing to do on a mis-click.
+// thing to do on a mis-click. Adding happens only from a Browse card; there
+// is no free-text url field, so every url comes from a catalog entry.
 //
 // BarWidget.qml owns the bar icon and hands this panel the button to anchor
 // against.
@@ -58,6 +59,8 @@ Panel {
   property string loadError: ""
   property int selectedIndex: -1
 
+  property string groupFilter: "all"
+  readonly property var groupOptions: Model.groupOptions()
   property string kindFilter: "all"
   readonly property var kindOptions: Model.kindOptions(rows)
   property string statusFilter: "all"
@@ -77,7 +80,7 @@ Panel {
 
   // One flat filtered list drives selection; the two section slices below are
   // views onto it, in the same order, so a single index addresses both.
-  readonly property var visibleRows: Model.filterRows(rows, kindFilter, statusFilter, searchQuery)
+  readonly property var visibleRows: Model.filterRows(rows, kindFilter, statusFilter, searchQuery, groupFilter)
   readonly property var installedRows: Model.rowsInGroup(visibleRows, "installed")
   readonly property var builtinRows: Model.rowsInGroup(visibleRows, "built-in")
 
@@ -104,7 +107,10 @@ Panel {
   readonly property bool releaseProbeBusy: releaseNavigationState.activeGeneration !== 0
 
   readonly property int installedTotal: Model.countRemovable(rows)
-  readonly property bool filtered: Model.isFiltering(kindFilter, statusFilter, searchQuery)
+  readonly property bool filtered: Model.isFiltering(kindFilter, statusFilter, searchQuery, groupFilter)
+  readonly property var installedFilterHints: Model.installedFilterHints(
+    { group: groupFilter, kind: kindFilter, status: statusFilter },
+    { group: groupOptions, kind: kindOptions, status: statusOptions })
 
   // ---- Browse tab ---------------------------------------------------------
   //
@@ -143,6 +149,9 @@ Panel {
   readonly property var filteredCatalog: Model.filterCatalog(
     catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
   readonly property var visibleCatalog: Model.sortCatalog(filteredCatalog, catalogSort)
+  readonly property var browseFilterHints: Model.browseFilterHints(
+    { category: categoryFilter, kind: catalogKindFilter, availability: availabilityFilter, sort: catalogSort },
+    { category: categoryOptions, kind: catalogKindOptions, availability: availabilityOptions, sort: catalogSortOptions })
 
   onCategoryOptionsChanged: {
     for (var i = 0; i < categoryOptions.length; i++)
@@ -390,6 +399,12 @@ Panel {
 
   // ---- Filtering ----------------------------------------------------------
 
+  function setGroupFilter(group) {
+    if (groupFilter === group) return
+    groupFilter = group
+    resetSelection()
+  }
+
   function setKindFilter(kind) {
     if (kindFilter === kind) return
     kindFilter = kind
@@ -434,6 +449,24 @@ Panel {
     if (catalogSort === sort) return
     catalogSort = sort
     resetSelection()
+  }
+
+  // One key per Browse dropdown, each walking its own option list; the hint
+  // row under the grid shows where each one currently stands.
+  function cycleCategoryFilter() {
+    setCategoryFilter(Model.nextOption(categoryOptions, categoryFilter))
+  }
+
+  function cycleCatalogKindFilter() {
+    setCatalogKindFilter(Model.nextOption(catalogKindOptions, catalogKindFilter))
+  }
+
+  function cycleAvailabilityFilter() {
+    setAvailabilityFilter(Model.nextOption(availabilityOptions, availabilityFilter))
+  }
+
+  function cycleCatalogSort() {
+    setCatalogSort(Model.nextOption(catalogSortOptions, catalogSort))
   }
 
   function clearCatalogFilters() {
@@ -501,8 +534,16 @@ Panel {
     detailsEntry = null
   }
 
+  function cycleGroupFilter() {
+    setGroupFilter(Model.nextOption(groupOptions, groupFilter))
+  }
+
   function cycleKindFilter() {
-    setKindFilter(Model.nextKind(kindOptions, kindFilter))
+    setKindFilter(Model.nextOption(kindOptions, kindFilter))
+  }
+
+  function cycleStatusFilter() {
+    setStatusFilter(Model.nextOption(statusOptions, statusFilter))
   }
 
   function clampSelection() {
@@ -514,24 +555,6 @@ Panel {
   function setStatus(text, isError) {
     status = text
     statusIsError = isError === true
-  }
-
-  function askAdd() {
-    var url = Model.normalizeGitUrl(urlField.text)
-    if (!Model.isValidGitUrl(url)) {
-      setStatus("Enter an https://, ssh://, or git@ repository url", true)
-      return
-    }
-    revokeReleaseNavigation()
-    pendingUrl = url
-    pendingLabel = Model.repoLabel(url)
-    // A bare url says nothing about what is inside it. The plugin is cloned
-    // and left off; the row it becomes carries its own Enable button, which
-    // asks the same question once there is a manifest to answer it from.
-    pendingId = ""
-    pendingVerified = false
-    pendingPlacementNeeded = false
-    pendingKind = "add"
   }
 
   function askRemove(row) {
@@ -733,11 +756,6 @@ Panel {
     var bottom = top + item.height
     if (top < listScroll.contentY) listScroll.contentY = top
     else if (bottom > listScroll.contentY + listScroll.height) listScroll.contentY = bottom - listScroll.height
-  }
-
-  function focusUrlField() {
-    urlField.forceActiveFocus()
-    urlField.selectAll()
   }
 
   function focusSearchField() {
@@ -1066,7 +1084,6 @@ Panel {
 
       if (exitCode === 0) {
         root.setStatus(Model.successMessage(kind, label), false)
-        if (kind === "add") urlField.text = ""
         if (kind === "update") {
           // The successful pull invalidates the old report immediately. Load
           // and the fresh check may finish in either order; HEAD equality makes
@@ -1105,15 +1122,15 @@ Panel {
     contentHeight: panel.fittedContentHeight(
       header.implicitHeight
         + (root.browsing ? Style.space(600) : listColumn.implicitHeight)
-        + hints.implicitHeight + Style.space(20),
+        + hintBar.implicitHeight + Style.space(20),
       Style.space(600))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       blocked: root.confirming || root.placing || root.detailsOpen
-        || urlField.activeFocus || searchField.activeFocus
-        || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
+        || searchField.activeFocus
+        || groupDropdown.popupOpen || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
         || catalogKindDropdown.popupOpen || availabilityDropdown.popupOpen || sortDropdown.popupOpen
 
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
@@ -1127,8 +1144,11 @@ Panel {
           if (root.browsing) root.loadCatalog(true)
           else { root.reload(); root.checkUpdates() }
         }
-        else if (t === "a" || t === "A") root.focusUrlField()
-        else if (t === "f" || t === "F") root.cycleKindFilter()
+        else if (t === "f" || t === "F") root.browsing ? root.cycleCatalogKindFilter() : root.cycleKindFilter()
+        else if (t === "s" || t === "S") root.browsing ? root.cycleCatalogSort() : root.cycleGroupFilter()
+        else if ((t === "c" || t === "C") && root.browsing) root.cycleCategoryFilter()
+        else if ((t === "a" || t === "A") && root.browsing) root.cycleAvailabilityFilter()
+        else if ((t === "t" || t === "T") && !root.browsing) root.cycleStatusFilter()
         else if (t === "j") root.moveSelection(0, 1)
         else if (t === "k") root.moveSelection(0, -1)
         else if (t === "1") root.switchTab("installed")
@@ -1198,9 +1218,12 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
+          // The tabs keep one fixed spot on both tabs, so switching never
+          // moves the button you just clicked out from under the pointer.
+          // Browse's extra button goes on the far side of them.
           ButtonGroup {
             id: tabs
-            anchors.right: root.browsing ? marketplaceButton.left : refreshButton.left
+            anchors.right: refreshButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -1212,19 +1235,35 @@ Panel {
             onChanged: function(value) { root.switchTab(value) }
           }
 
-          Button {
-            id: marketplaceButton
-            anchors.right: refreshButton.left
+          // A link, not a button: it leaves the panel for a web page, and the
+          // rows' repository links already taught the eye what that looks like.
+          Text {
+            id: marketplaceLink
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            anchors.right: tabs.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             visible: root.browsing
-            text: "Marketplace"
-            tooltipText: "Open the official Marketplace"
-            foreground: root.contentForeground
-            fontFamily: root.contentFontFamily
-            fontSize: tabs.fontSize
-            bordered: true
-            onClicked: root.navigateExternalUrl("https://omarchyplugins.com/")
+            text: "󰖟  Marketplace"
+            color: marketplaceMouse.containsMouse ? Color.accent : root.secondaryForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            font.underline: marketplaceMouse.containsMouse
+
+            MouseArea {
+              id: marketplaceMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.navigateExternalUrl("https://omarchyplugins.com/")
+            }
+
+            PanelToolTip {
+              visible: marketplaceMouse.containsMouse
+              text: "Open the official Marketplace"
+              fontFamily: root.contentFontFamily
+            }
           }
 
           PanelActionButton {
@@ -1247,165 +1286,131 @@ Panel {
           }
         }
 
-        // ---- Add: a repository url and one button. Confirmed before it runs.
-        //      Only on the Installed tab — on Browse you install by clicking a
-        //      card, and this is the escape hatch for repos the catalog has
-        //      never heard of.
-        Item {
-          width: parent.width
-          visible: !root.browsing
-          height: visible ? Math.max(urlField.implicitHeight, addButton.height) : 0
-
-          TextField {
-            id: urlField
-            anchors.left: parent.left
-            anchors.right: addButton.left
-            anchors.rightMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            enabled: !root.busy
-            placeholderText: "https://github.com/user/omarchy-plugin.git"
-            foreground: root.contentForeground
-            placeholderTextColor: root.secondaryForeground
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.bodySmall
-
-            onAccepted: root.askAdd()
-            Keys.onPressed: function(event) {
-              if (event.key !== Qt.Key_Escape) return
-              root.returnFocusToList()
-              event.accepted = true
-            }
-          }
-
-          PanelActionButton {
-            id: addButton
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.busyKind === "add" ? "󰇘" : "󰐕"
-            tooltipText: "Clone and enable this repository"
-            foreground: root.contentForeground
-            fontFamily: root.contentFontFamily
-            bordered: true
-            enabled: !root.busy && Model.isValidGitUrl(urlField.text)
-            opacity: enabled ? 1 : 0.4
-            onClicked: root.askAdd()
-          }
-        }
-
         PanelSeparator { foreground: root.contentForeground }
 
-        // ---- Installed keeps one compact row. Browse uses a labelled filter
-        //      row above Search so four independent controls remain readable.
+        // ---- Both tabs use the same labelled filter row above Search: the
+        //      caption names the control and the dropdown shows its value, so
+        //      several independent controls stay readable at a glance.
         Item {
           id: filterControls
 
           readonly property real controlHeight: kindDropdown.implicitHeight
-          readonly property real browseFilterHeight: browseLabelMetrics.height
-            + Style.space(4) + categoryDropdown.implicitHeight
+          readonly property real filterRowHeight: filterLabelMetrics.height
+            + Style.space(4) + controlHeight
 
           FontMetrics {
-            id: filterOptionMetrics
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.body
-          }
-
-          FontMetrics {
-            id: browseLabelMetrics
+            id: filterLabelMetrics
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
 
-          function optionLabel(option) {
-            return (option && typeof option === "object") ? String(option.label) : String(option)
-          }
-
-          function dropdownWidth(options) {
-            var labelWidth = 0
-            for (var i = 0; i < options.length; i++)
-              labelWidth = Math.max(labelWidth, filterOptionMetrics.advanceWidth(optionLabel(options[i])))
-            return Math.ceil(Style.normalBorderWidth * 2
-              + Style.spacing.controlPaddingX + labelWidth + Style.spacing.md
-              + filterOptionMetrics.advanceWidth("󰅀") + Style.spacing.controlGap
-              + Style.space(16))
-          }
-
           width: parent.width
-          height: root.browsing
-            ? browseFilterHeight + Style.space(8) + controlHeight
-            : controlHeight
+          height: filterRowHeight + Style.space(8) + controlHeight
 
           Item {
-            id: kindFilterControl
+            id: installedFilters
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.top: parent.top
             visible: !root.browsing
-            width: visible
-              ? kindFilterLabel.implicitWidth + Style.space(6) + kindDropdown.width
-              : 0
-            height: filterControls.controlHeight
+            height: visible ? filterControls.filterRowHeight : 0
 
-            Text {
-              id: kindFilterLabel
+            readonly property real gap: Style.space(6)
+            readonly property real optionWidth: Math.floor((width - gap * 2) / 3)
+
+            Item {
+              id: groupFilterControl
               anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Kind"
-              color: root.secondaryForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
+              width: installedFilters.optionWidth
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Source"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: groupDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.groupOptions
+                value: root.groupFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setGroupFilter(value) }
+              }
             }
 
-            Dropdown {
-              id: kindDropdown
-              anchors.left: kindFilterLabel.right
-              anchors.leftMargin: Style.space(6)
-              anchors.verticalCenter: parent.verticalCenter
-              width: filterControls.dropdownWidth(root.kindOptions)
-              height: filterControls.controlHeight
-              showLabel: false
-              options: root.kindOptions
-              value: root.kindFilter
-              foreground: root.contentForeground
-              fontFamily: root.contentFontFamily
-              onChanged: function(value) { root.setKindFilter(value) }
-            }
-          }
+            Item {
+              id: kindFilterControl
+              anchors.left: groupFilterControl.right
+              anchors.leftMargin: installedFilters.gap
+              width: installedFilters.optionWidth
+              height: parent.height
 
-          Item {
-            id: statusFilterControl
-            anchors.left: kindFilterControl.right
-            anchors.leftMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            visible: !root.browsing
-            width: visible
-              ? statusFilterLabel.implicitWidth + Style.space(6) + statusDropdown.width
-              : 0
-            height: filterControls.controlHeight
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Kind"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
 
-            Text {
-              id: statusFilterLabel
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Status"
-              color: root.secondaryForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
+              Dropdown {
+                id: kindDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.kindOptions
+                value: root.kindFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setKindFilter(value) }
+              }
             }
 
-            Dropdown {
-              id: statusDropdown
-              anchors.left: statusFilterLabel.right
-              anchors.leftMargin: Style.space(6)
-              anchors.verticalCenter: parent.verticalCenter
-              width: filterControls.dropdownWidth(root.statusOptions)
-              height: filterControls.controlHeight
-              showLabel: false
-              options: root.statusOptions
-              value: root.statusFilter
-              foreground: root.contentForeground
-              fontFamily: root.contentFontFamily
-              onChanged: function(value) { root.setStatusFilter(value) }
+            Item {
+              id: statusFilterControl
+              anchors.left: kindFilterControl.right
+              anchors.leftMargin: installedFilters.gap
+              anchors.right: parent.right
+              height: parent.height
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: "Status"
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Dropdown {
+                id: statusDropdown
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: filterControls.controlHeight
+                showLabel: false
+                options: root.statusOptions
+                value: root.statusFilter
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                onChanged: function(value) { root.setStatusFilter(value) }
+              }
             }
           }
 
@@ -1415,7 +1420,7 @@ Panel {
             anchors.right: parent.right
             anchors.top: parent.top
             visible: root.browsing
-            height: visible ? filterControls.browseFilterHeight : 0
+            height: visible ? filterControls.filterRowHeight : 0
 
             readonly property real gap: Style.space(6)
             readonly property real optionWidth: Math.floor((width - gap * 3) / 4)
@@ -1550,15 +1555,13 @@ Panel {
 
           TextField {
             id: searchField
-            anchors.left: root.browsing ? parent.left : statusFilterControl.right
-            anchors.leftMargin: root.browsing ? 0 : Style.space(10)
+            anchors.left: parent.left
             anchors.right: clearFiltersButton.visible ? clearFiltersButton.left : parent.right
             anchors.rightMargin: clearFiltersButton.visible ? Style.space(4) : 0
-            y: root.browsing ? browseFilters.height + Style.space(8) : 0
+            y: filterControls.filterRowHeight + Style.space(8)
             height: filterControls.controlHeight
             // The glyph rides in the placeholder rather than sitting in its
-            // own column, because every pixel on this row belongs to the two
-            // controls sharing it.
+            // own column: the row is the search box and nothing else.
             placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
             foreground: root.contentForeground
             placeholderTextColor: root.secondaryForeground
@@ -1582,7 +1585,7 @@ Panel {
           PanelActionButton {
             id: clearFiltersButton
             anchors.right: parent.right
-            y: root.browsing ? browseFilters.height + Style.space(8) : 0
+            y: filterControls.filterRowHeight + Style.space(8)
             visible: root.browsing ? root.catalogFiltered : root.searchQuery !== ""
             iconText: "󰅙"
             tooltipText: root.browsing ? "Clear Browse filters" : "Clear the search"
@@ -1617,21 +1620,74 @@ Panel {
       }
 
       // ---- Key hints, pinned to the bottom so the list above can never push
-      //      them off the card.
-      Text {
-        id: hints
-        // Never rich text: AutoText would fetch what a crafted string points at.
-        textFormat: Text.PlainText
+      //      them off the card. One bar: the filters of the active tab on
+      //      the left, each "[key] value", and the row actions on the right.
+      Column {
+        id: hintBar
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        text: root.browsing
-          ? "←↑↓→ select   ⏎ details   / search   1 installed   r refresh"
-          : "↑↓ select   ⏎ update   ⌦ remove   / search   a add   f filter   2 browse"
-        color: root.secondaryForeground
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-        horizontalAlignment: Text.AlignHCenter
+        spacing: Style.space(8)
+
+        PanelSeparator { foreground: root.contentForeground }
+
+        Item {
+          width: parent.width
+          height: Math.max(filterHints.implicitHeight, actionHints.implicitHeight)
+
+          Row {
+            id: filterHints
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(10)
+
+            Repeater {
+              model: root.browsing ? root.browseFilterHints : root.installedFilterHints
+              delegate: hintDelegate
+            }
+          }
+
+          Row {
+            id: actionHints
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(10)
+
+            Repeater {
+              model: Model.actionHints(root.browsing)
+              delegate: hintDelegate
+            }
+          }
+        }
+
+        Component {
+          id: hintDelegate
+
+          Row {
+            id: hint
+            required property var modelData
+            spacing: Style.space(4)
+
+            Text {
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              text: "[" + hint.modelData.key.toUpperCase() + "]"
+              color: Color.accent
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Text {
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              text: hint.modelData.text
+              color: hint.modelData.active ? root.contentForeground : root.secondaryForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
       }
 
       // ---- The two lists, in one scroll region so the sections read as
@@ -1645,7 +1701,7 @@ Panel {
         anchors.right: parent.right
         anchors.top: header.bottom
         anchors.topMargin: Style.space(10)
-        anchors.bottom: hints.top
+        anchors.bottom: hintBar.top
         anchors.bottomMargin: Style.space(10)
         contentWidth: width
         contentHeight: listColumn.implicitHeight
@@ -1663,7 +1719,7 @@ Panel {
             textFormat: Text.PlainText
             width: parent.width
             visible: root.visibleRows.length === 0 && root.rows.length > 0
-            text: Model.emptyMessage(root.kindFilter, root.statusFilter, root.searchQuery)
+            text: Model.emptyMessage(root.kindFilter, root.statusFilter, root.searchQuery, root.groupFilter)
             color: root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -1782,7 +1838,7 @@ Panel {
         anchors.right: parent.right
         anchors.top: header.bottom
         anchors.topMargin: Style.space(10)
-        anchors.bottom: hints.top
+        anchors.bottom: hintBar.top
         anchors.bottomMargin: Style.space(10)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
