@@ -16,7 +16,7 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     statusOptions, filterByStatus,
-    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified,
+    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified, upToDate,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     restampCatalogInstallState, plainText,
     catalogAssetUrl, catalogCount,
@@ -2255,10 +2255,69 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - \(verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0\)\)/)
 })
 
-test("the header refresh button uses the large icon size", () => {
+test("the header refresh button is display-sized and spins instead of greying while refreshing", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
-  const button = panel.slice(panel.indexOf("id: refreshButton"), panel.indexOf("id: refreshButton") + 700)
+  assert.match(panel, /readonly property bool refreshing: browsing \? catalogLoading : \(loading \|\| checkingUpdates\)/)
+
+  const button = panel.slice(panel.indexOf("id: refreshButton"), panel.indexOf("PanelSeparator {", panel.indexOf("id: refreshButton")))
   assert.match(button, /fontSize: Style\.font\.display/)
+  // The button's own glyph steps aside while refreshing; the spinner takes its place.
+  assert.match(button, /iconText: root\.refreshing \? "" : "󰑐"/)
+  assert.doesNotMatch(button, /opacity: enabled \? 1 : 0\.4/)
+  assert.match(button, /opacity: root\.busy \? 0\.4 : 1/)
+
+  const spinner = button.slice(button.indexOf("id: refreshSpinner"))
+  assert.match(spinner, /visible: root\.refreshing/)
+  assert.match(spinner, /text: "󰑐"/)
+  assert.match(spinner, /textFormat: Text\.PlainText/)
+  assert.match(spinner, /RotationAnimation on rotation \{[\s\S]*?running: root\.refreshing[\s\S]*?from: 0[\s\S]*?to: 360[\s\S]*?direction: RotationAnimation\.Clockwise[\s\S]*?loops: Animation\.Infinite/)
+})
+
+test("the row state bar is a 5px rule", () => {
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const bar = row.slice(row.indexOf("id: stateBar"), row.indexOf("id: stateBar") + 500)
+  assert.match(bar, /width: Style\.space\(5\)/)
+})
+
+test("a row's update button spins while that row is being updated", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+
+  // The panel tracks the updating row by id, not by the (non-unique) label.
+  assert.match(panel, /property string busyRowId: ""/)
+  assert.match(panel, /function startUpdate\(row\) \{[\s\S]*?busyRowId = row\.id[\s\S]*?runAction\("update"/)
+  assert.match(panel, /root\.busyId = ""\s+root\.busyRowId = ""/)
+  assert.equal(panel.split('updating: root.busyKind === "update" && root.busyRowId === modelData.id').length - 1, 1)
+
+  assert.match(row, /property bool updating: false/)
+  const button = row.slice(row.indexOf("id: updateButton"), row.indexOf("PanelActionButton {", row.indexOf("id: updateButton")))
+  assert.match(button, /iconText: root\.updating \? "" : "󰑐"/)
+  assert.match(button, /opacity: root\.updating \? 1 : \(enabled \? 1 : 0\.4\)/)
+  const spinner = button.slice(button.indexOf("id: updateSpinner"))
+  assert.match(spinner, /visible: root\.updating/)
+  assert.match(spinner, /text: "󰑐"/)
+  assert.match(spinner, /color: updateButton\.foreground/)
+  assert.match(spinner, /textFormat: Text\.PlainText/)
+  assert.match(spinner, /RotationAnimation on rotation \{[\s\S]*?running: root\.updating[\s\S]*?from: 0[\s\S]*?to: 360[\s\S]*?direction: RotationAnimation\.Clockwise[\s\S]*?loops: Animation\.Infinite/)
+})
+
+test("upToDate is true only for a checked checkout that is not behind", () => {
+  assert.equal(Model.upToDate({ updatable: true, updateChecked: true, behind: false }), true)
+  assert.equal(Model.upToDate({ updatable: true, updateChecked: true, behind: true }), false)
+  assert.equal(Model.upToDate({ updatable: true, updateChecked: false, behind: false }), false)
+  assert.equal(Model.upToDate({ updatable: true }), false)
+  assert.equal(Model.upToDate(null), false)
+})
+
+test("an up-to-date row's update button is disabled and never spins", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+
+  assert.match(row, /readonly property bool upToDate: Model\.upToDate\(row\)/)
+  const button = row.slice(row.indexOf("id: updateButton"), row.indexOf("PanelActionButton {", row.indexOf("id: updateButton")))
+  assert.match(button, /enabled: root\.actionsEnabled && root\.updateEnabled && !root\.upToDate/)
+  // Enter on a selected row goes through the same gate.
+  assert.match(panel, /function startUpdate\(row\) \{\s+if \(!row \|\| !row\.updatable \|\| Model\.upToDate\(row\) \|\| busy/)
 })
 
 test("nextOption cycles any option list and nextKind is that same walk", () => {

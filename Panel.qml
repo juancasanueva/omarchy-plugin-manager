@@ -87,6 +87,9 @@ Panel {
   // Checked in the background after the rows are already on screen, so the
   // panel never waits on the network to show you what you have installed.
   property bool checkingUpdates: false
+  // What the header's refresh button is waiting on for the tab you can see:
+  // the Installed re-read includes its update check, Browse the catalog fetch.
+  readonly property bool refreshing: browsing ? catalogLoading : (loading || checkingUpdates)
   readonly property int behindCount: Model.countBehind(rows)
 
   // A Process is reusable only after both its exit and collector callbacks
@@ -205,6 +208,9 @@ Panel {
   // ---- In-flight action ---------------------------------------------------
 
   property string busyKind: ""   // "add" | "update" | "remove"
+  // Which row an update is running on, by id: busyId carries the label for
+  // messages, and labels are not unique.
+  property string busyRowId: ""
   property string busyId: ""
   readonly property bool busy: busyKind !== ""
 
@@ -717,9 +723,10 @@ Panel {
   // Update needs no confirmation: it is a fast-forward of a checkout the user
   // already chose to trust, and it destroys nothing.
   function startUpdate(row) {
-    if (!row || !row.updatable || busy
+    if (!row || !row.updatable || Model.upToDate(row) || busy
         || !root.loadProcessSettled() || !root.updateProcessSettled()) return
     revokeReleaseNavigation()
+    busyRowId = row.id
     runAction("update", row.name, ["omarchy", "plugin", "update", row.id, "--yes"])
   }
 
@@ -1083,6 +1090,7 @@ Panel {
       root.lastExitCode = exitCode
       root.busyKind = ""
       root.busyId = ""
+      root.busyRowId = ""
 
       if (exitCode === 0) {
         root.setStatus(Model.successMessage(kind, label), false)
@@ -1272,7 +1280,10 @@ Panel {
             id: refreshButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: "󰑐"
+            // The button's own glyph steps aside while a refresh runs and the
+            // spinner below takes its place: a turning arrow says "working"
+            // where a greyed one only said "not now".
+            iconText: root.refreshing ? "" : "󰑐"
             // The one icon in the header, next to two text buttons: at the
             // default size it read as an afterthought beside them. Display
             // size puts it on the same scale as the title at the other end.
@@ -1281,13 +1292,36 @@ Panel {
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
             enabled: !root.loading && !root.catalogLoading && !root.busy
-            opacity: enabled ? 1 : 0.4
+            // Dimmed only while an action owns the panel; a refresh in flight
+            // is shown by the spin, not by fading.
+            opacity: root.busy ? 0.4 : 1
             // Forced past the cache: the refresh button exists precisely for
             // when you believe what is on screen is out of date.
             onClicked: {
               if (root.browsing) { root.loadCatalog(true); return }
               root.reload()
               root.checkUpdates()
+            }
+
+            Text {
+              id: refreshSpinner
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              anchors.centerIn: parent
+              visible: root.refreshing
+              text: "󰑐"
+              color: refreshButton.foreground
+              font.family: refreshButton.fontFamily
+              font.pixelSize: refreshButton.fontSize
+
+              RotationAnimation on rotation {
+                running: root.refreshing
+                from: 0
+                to: 360
+                direction: RotationAnimation.Clockwise
+                duration: 900
+                loops: Animation.Infinite
+              }
             }
           }
         }
@@ -1756,6 +1790,7 @@ Panel {
               selected: root.selectedIndex === index
               actionsEnabled: !root.busy
               updateEnabled: root.updateActionsEnabled
+              updating: root.busyKind === "update" && root.busyRowId === modelData.id
               showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
               foreground: root.contentForeground
               secondaryForeground: root.secondaryForeground

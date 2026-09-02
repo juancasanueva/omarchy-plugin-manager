@@ -1778,6 +1778,13 @@ function versionLabel(row) {
   return releaseVersionLabel(row.localVersion)
 }
 
+// A checkout the background check has actually compared and found level
+// with its remote. Unchecked is not up to date — it is unknown, and the
+// button stays offered until the check says otherwise.
+function upToDate(row) {
+  return !!row && row.updateChecked === true && row.behind !== true
+}
+
 function countBehind(rows) {
   var total = 0
   for (var i = 0; i < (rows || []).length; i++)

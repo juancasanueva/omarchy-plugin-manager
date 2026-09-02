@@ -24,6 +24,9 @@ Rectangle {
   property bool selected: false
   property bool actionsEnabled: true
   property bool updateEnabled: true
+  // This row's own update is running: its button spins instead of dimming
+  // with the rest of the list.
+  property bool updating: false
   property bool showSeparator: false
   // Stamped by the panel from the marketplace catalog; the row itself has no
   // way to know, and a missing catalog simply means no pill.
@@ -42,6 +45,7 @@ Rectangle {
 
   readonly property string badge: Model.sourceBadge(row)
   readonly property bool hasUpdate: row ? row.behind === true : false
+  readonly property bool upToDate: Model.upToDate(row)
 
   // Installed but switched off. For a bar widget that means it has no place
   // in the bar yet, which is the state the grey dot is reporting.
@@ -106,7 +110,7 @@ Rectangle {
     anchors.bottom: parent.bottom
     anchors.topMargin: Style.space(6)
     anchors.bottomMargin: Style.space(6)
-    width: Style.space(3)
+    width: Style.space(5)
     radius: width / 2
     color: root.row && root.row.enabled ? Color.accent : Color.muted
     opacity: root.row && root.row.enabled ? 1 : 0.5
@@ -115,7 +119,7 @@ Rectangle {
   Column {
     id: details
     anchors.left: stateBar.right
-    // Wider than the gap the dot needed: a 3px rule sitting flush against the
+    // Wider than the gap the dot needed: a 5px rule sitting flush against the
     // text would read as a border on the row rather than as a state marker.
     anchors.leftMargin: Style.space(12)
     anchors.right: actions.left
@@ -420,9 +424,12 @@ Rectangle {
     }
 
     PanelActionButton {
+      id: updateButton
       anchors.verticalCenter: parent.verticalCenter
       visible: root.row ? root.row.updatable === true : false
-      iconText: "󰑐"
+      // Same trick as the header's refresh: the glyph steps aside while the
+      // pull runs and a spinning copy takes its place.
+      iconText: root.updating ? "" : "󰑐"
       tooltipText: {
         if (!root.row) return "Update this checkout"
         if (root.hasUpdate) return "Update available — pull from " + root.row.remote
@@ -431,9 +438,32 @@ Rectangle {
       }
       foreground: root.hasUpdate ? Color.accent : root.foreground
       fontFamily: root.fontFamily
-      enabled: root.actionsEnabled && root.updateEnabled
-      opacity: enabled ? 1 : 0.4
+      // Nothing to pull is nothing to click: a confirmed up-to-date checkout
+      // gets no button to press and therefore no spin to watch.
+      enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate
+      opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
       onClicked: root.updateRequested()
+
+      Text {
+        id: updateSpinner
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        anchors.centerIn: parent
+        visible: root.updating
+        text: "󰑐"
+        color: updateButton.foreground
+        font.family: updateButton.fontFamily
+        font.pixelSize: updateButton.fontSize
+
+        RotationAnimation on rotation {
+          running: root.updating
+          from: 0
+          to: 360
+          direction: RotationAnimation.Clockwise
+          duration: 900
+          loops: Animation.Infinite
+        }
+      }
     }
 
     PanelActionButton {
