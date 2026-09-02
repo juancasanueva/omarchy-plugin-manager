@@ -74,9 +74,22 @@ Panel {
       if (kindOptions[i].value === kindFilter) return
     setKindFilter("all")
   }
-  // Dropdown selection assigns its own value, so replay later model changes.
+  // Dropdown selection assigns its own value, which breaks the binding, so
+  // every filter a key can cycle replays later changes into its dropdown.
   onKindFilterChanged: if (kindDropdown && kindDropdown.value !== kindFilter)
     kindDropdown.value = kindFilter
+  onGroupFilterChanged: if (groupDropdown && groupDropdown.value !== groupFilter)
+    groupDropdown.value = groupFilter
+  onStatusFilterChanged: if (statusDropdown && statusDropdown.value !== statusFilter)
+    statusDropdown.value = statusFilter
+  onCategoryFilterChanged: if (categoryDropdown && categoryDropdown.value !== categoryFilter)
+    categoryDropdown.value = categoryFilter
+  onCatalogKindFilterChanged: if (catalogKindDropdown && catalogKindDropdown.value !== catalogKindFilter)
+    catalogKindDropdown.value = catalogKindFilter
+  onAvailabilityFilterChanged: if (availabilityDropdown && availabilityDropdown.value !== availabilityFilter)
+    availabilityDropdown.value = availabilityFilter
+  onCatalogSortChanged: if (sortDropdown && sortDropdown.value !== catalogSort)
+    sortDropdown.value = catalogSort
 
   // One flat filtered list drives selection; the two section slices below are
   // views onto it, in the same order, so a single index addresses both.

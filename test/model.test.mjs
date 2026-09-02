@@ -2320,6 +2320,20 @@ test("an up-to-date row's update button is disabled and never spins", () => {
   assert.match(panel, /function startUpdate\(row\) \{\s+if \(!row \|\| !row\.updatable \|\| Model\.upToDate\(row\) \|\| busy/)
 })
 
+test("every keyboard-cycled filter replays its value into its dropdown", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  // A mouse pick assigns Dropdown.value and breaks the binding; a later key
+  // cycle must push the filter back in or the dropdown shows a stale choice.
+  for (const [filter, dropdown] of [
+    ["kindFilter", "kindDropdown"], ["groupFilter", "groupDropdown"], ["statusFilter", "statusDropdown"],
+    ["categoryFilter", "categoryDropdown"], ["catalogKindFilter", "catalogKindDropdown"],
+    ["availabilityFilter", "availabilityDropdown"], ["catalogSort", "sortDropdown"]
+  ]) {
+    const handler = "on" + filter[0].toUpperCase() + filter.slice(1) + "Changed"
+    assert.match(panel, new RegExp(`${handler}: if \\(${dropdown} && ${dropdown}\\.value !== ${filter}\\)\\s+${dropdown}\\.value = ${filter}`), handler)
+  }
+})
+
 test("nextOption cycles any option list and nextKind is that same walk", () => {
   const options = Model.catalogSortOptions()
   assert.equal(Model.nextOption(options, "recently-added"), "stars")
