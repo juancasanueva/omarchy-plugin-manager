@@ -16,7 +16,7 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     statusOptions, filterByStatus,
-    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption,
+    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     restampCatalogInstallState, plainText,
     catalogAssetUrl, catalogCount,
@@ -2213,6 +2213,52 @@ test("actionHints lists the row actions of each tab in the same hint shape", () 
     { key: "⌦", text: "REMOVE", active: false },
     { key: "/", text: "SEARCH", active: false }
   ])
+})
+
+test("verifiedIdSet joins installed rows to the marketplace's verified listings by id", () => {
+  const catalog = [
+    { id: "acme.weather", verified: true },
+    { id: "acme.dev", verified: false },
+    { id: "constructor", verified: true },
+    { id: "", verified: true }
+  ]
+  const ids = Model.verifiedIdSet(catalog)
+  assert.equal(Model.isVerified({ id: "acme.weather" }, ids), true)
+  assert.equal(Model.isVerified({ id: "acme.dev" }, ids), false)
+  assert.equal(Model.isVerified({ id: "omarchy.clock" }, ids), false)
+  // Untrusted ids never reach prototype machinery.
+  assert.equal(Model.isVerified({ id: "constructor" }, ids), true)
+  assert.equal(Model.isVerified({ id: "toString" }, ids), false)
+  assert.equal(Model.isVerified(null, ids), false)
+  assert.equal(Model.isVerified({ id: "acme.weather" }, Model.verifiedIdSet([])), false)
+  assert.equal(Model.isVerified({ id: "acme.weather" }, null), false)
+})
+
+test("Installed rows wear the marketplace's verified pill beside the name", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+
+  assert.match(panel, /readonly property var verifiedIds: Model\.verifiedIdSet\(catalog\)/)
+  assert.equal(panel.split("verified: Model.isVerified(modelData, root.verifiedIds)").length - 1, 2)
+  // The catalog is what knows who is verified, so opening the panel reads it
+  // (cache first) even when Browse has never been visited.
+  const opened = panel.slice(panel.indexOf("onOpenedChanged: {"), panel.indexOf("// ---- Processes"))
+  assert.match(opened, /if \(!catalogLoaded && !catalogLoading\) loadCatalog\(false\)/)
+
+  assert.match(row, /property bool verified: false/)
+  const pill = row.slice(row.indexOf("id: verifiedPill"), row.indexOf("id: verifiedPill") + 900)
+  assert.match(pill, /visible: root\.verified/)
+  assert.match(pill, /text: "󰄬 verified"/)
+  assert.match(pill, /color: Color\.accent/)
+  assert.match(pill, /textFormat: Text\.PlainText/)
+  // The name yields to the pill instead of eliding it off the row.
+  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - \(verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0\)\)/)
+})
+
+test("the header refresh button uses the large icon size", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const button = panel.slice(panel.indexOf("id: refreshButton"), panel.indexOf("id: refreshButton") + 700)
+  assert.match(button, /fontSize: Style\.font\.display/)
 })
 
 test("nextOption cycles any option list and nextKind is that same walk", () => {

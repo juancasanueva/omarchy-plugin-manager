@@ -114,9 +114,9 @@ Panel {
 
   // ---- Browse tab ---------------------------------------------------------
   //
-  // The marketplace catalog omarchyplugins.com publishes. Fetched on first
-  // visit and cached on disk, so opening the panel costs nothing until you
-  // actually go looking for something new.
+  // The marketplace catalog omarchyplugins.com publishes. Read from the disk
+  // cache when the panel opens — it is also what tells the Installed rows who
+  // is verified — and fetched afresh on the Browse tab's refresh.
 
   property string activeTab: "installed"   // "installed" | "browse"
   readonly property bool browsing: activeTab === "browse"
@@ -126,6 +126,7 @@ Panel {
   ]
 
   property var catalog: []
+  readonly property var verifiedIds: Model.verifiedIdSet(catalog)
   property bool catalogLoading: false
   property bool catalogLoaded: false
   property string catalogError: ""
@@ -776,6 +777,7 @@ Panel {
     setStatus("", false)
     reload()
     checkUpdates()
+    if (!catalogLoaded && !catalogLoading) loadCatalog(false)
   }
 
   // ---- Processes ----------------------------------------------------------
@@ -1271,6 +1273,10 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰑐"
+            // The one icon in the header, next to two text buttons: at the
+            // default size it read as an afterthought beside them. Display
+            // size puts it on the same scale as the title at the other end.
+            fontSize: Style.font.display
             tooltipText: root.browsing ? "Re-fetch the catalog" : "Re-read the plugin list"
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
@@ -1746,6 +1752,7 @@ Panel {
 
               width: listColumn.width
               row: modelData
+              verified: Model.isVerified(modelData, root.verifiedIds)
               selected: root.selectedIndex === index
               actionsEnabled: !root.busy
               updateEnabled: root.updateActionsEnabled
@@ -1802,6 +1809,7 @@ Panel {
 
               width: listColumn.width
               row: modelData
+              verified: Model.isVerified(modelData, root.verifiedIds)
               selected: root.selectedIndex === globalIndex
               actionsEnabled: !root.busy
               showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified

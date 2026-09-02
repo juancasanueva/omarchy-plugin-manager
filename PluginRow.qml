@@ -25,6 +25,9 @@ Rectangle {
   property bool actionsEnabled: true
   property bool updateEnabled: true
   property bool showSeparator: false
+  // Stamped by the panel from the marketplace catalog; the row itself has no
+  // way to know, and a missing catalog simply means no pill.
+  property bool verified: false
   property color foreground: Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
@@ -122,19 +125,51 @@ Rectangle {
 
     // The name gets the line to itself, so a long one elides against the row's
     // full width rather than against whatever the metadata beside it left over.
-    Text {
-      id: name
-      // Never rich text: AutoText would fetch what a crafted string points at.
-      textFormat: Text.PlainText
+    // The one thing allowed beside it is the verified pill, and the name
+    // yields to that rather than pushing it off the row.
+    Row {
+      id: nameLine
       width: parent.width
-      text: root.row ? root.row.name : ""
-      color: root.foreground
-      font.family: root.fontFamily
-      // A step above the metadata and the blurb under it, so the name reads as
-      // the row's heading rather than one more line of text.
-      font.pixelSize: Style.font.subtitle
-      font.bold: true
-      elide: Text.ElideRight
+      spacing: Style.space(8)
+
+      Text {
+        id: name
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        width: Math.min(implicitWidth, nameLine.width - (verifiedPill.visible ? verifiedPill.width + nameLine.spacing : 0))
+        text: root.row ? root.row.name : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        // A step above the metadata and the blurb under it, so the name reads as
+        // the row's heading rather than one more line of text.
+        font.pixelSize: Style.font.subtitle
+        font.bold: true
+        elide: Text.ElideRight
+      }
+
+      // The same pill the Browse card wears, for the same reason: the
+      // registry's security-baseline review is worth one glyph, and it is a
+      // signal, not a guarantee.
+      Rectangle {
+        id: verifiedPill
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.verified
+        width: verifiedLabel.implicitWidth + Style.space(10)
+        height: verifiedLabel.implicitHeight + Style.space(4)
+        radius: height / 2
+        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+
+        Text {
+          id: verifiedLabel
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.centerIn: parent
+          text: "󰄬 verified"
+          color: Color.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
     }
 
     // As many lines as the description actually needs — no reserve underneath

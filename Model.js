@@ -731,6 +731,22 @@ function installedIdSet(rows) {
   return set
 }
 
+// The marketplace is the only party that says who passed its security
+// baseline, so the Installed rows learn it by id from the same catalog the
+// Browse cards draw. Null prototype for the same reason as installedIdSet.
+function verifiedIdSet(entries) {
+  var set = Object.create(null)
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    if (entry && entry.id && entry.verified === true) set[String(entry.id)] = true
+  }
+  return set
+}
+
+function isVerified(row, verifiedIds) {
+  return !!(row && row.id) && hasOwnKey(verifiedIds, row.id)
+}
+
 function hasOwnKey(object, key) {
   return object !== null && object !== undefined
     && Object.prototype.hasOwnProperty.call(object, String(key))
