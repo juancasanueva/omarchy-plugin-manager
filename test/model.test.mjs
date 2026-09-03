@@ -880,6 +880,25 @@ test("catalog re-stamping refreshes an open details entry atomically", () => {
   assert.equal(state.detailsEntry, state.entries.find(entry => entry.id === "acme.weather"))
 })
 
+test("catalog re-stamping is a no-op when no install state changed", () => {
+  const installed = Model.installedIdSet([{ id: "acme.weather" }])
+  const entries = Model.catalogEntries(catalogDoc, installed)
+  const detailsEntry = entries.find(entry => entry.id === "acme.weather")
+
+  // Same installed set: the very same array and details object come back, so
+  // the panel can skip the assignment and the grid never resets its model
+  // (which tears down and rebuilds every visible card mid-animation).
+  const same = Model.restampCatalogInstallState(entries, installed, detailsEntry)
+  assert.equal(same.changed, false)
+  assert.equal(same.entries, entries)
+  assert.equal(same.detailsEntry, detailsEntry)
+
+  const changed = Model.restampCatalogInstallState(entries, Model.installedIdSet([]), detailsEntry)
+  assert.equal(changed.changed, true)
+  assert.notEqual(changed.entries, entries)
+  assert.equal(changed.detailsEntry.installed, false)
+})
+
 test("installedIdSet indexes the installed rows by id", () => {
   const set = Model.installedIdSet([{ id: "a.b" }, { id: "c.d" }, null])
   assert.ok(Object.prototype.hasOwnProperty.call(set, "a.b"))
@@ -2277,22 +2296,30 @@ test("the title puzzle piece snaps into place when the panel opens", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const icon = panel.slice(panel.indexOf("id: titleIcon"), panel.indexOf("id: title\n"))
   assert.match(icon, /transformOrigin: Item\.Center/)
-  const intro = icon.slice(icon.indexOf("id: titleIconIntro"))
   assert.match(icon, /SequentialAnimation \{\s*id: titleIconIntro/)
-  // Oversized, tilted and invisible on the way in; scale and rotation overshoot
-  // so the piece "clicks" home rather than gliding.
-  // A beat of stillness first: the popup's own fade-in would otherwise
-  // swallow the opening frames. Then a slow, readable snap.
-  assert.match(intro, /^\s*PauseAnimation \{ duration: 180 \}/m)
-  assert.match(intro, /property: "scale"[\s\S]*?from: 3[\s\S]*?to: 1[\s\S]*?duration: 1000[\s\S]*?easing\.type: Easing\.OutBack/)
-  assert.match(intro, /property: "rotation"[\s\S]*?from: -150[\s\S]*?to: 0[\s\S]*?duration: 1000[\s\S]*?easing\.type: Easing\.OutBack/)
-  assert.match(intro, /property: "opacity"[\s\S]*?from: 0[\s\S]*?to: 1[\s\S]*?duration: 400/)
-  // The settle wiggle always ends upright.
-  const wiggle = intro.slice(intro.indexOf("id: titleIconSettle"))
-  assert.match(wiggle, /property: "rotation"[\s\S]*?to: 8[\s\S]*?property: "rotation"[\s\S]*?to: -5[\s\S]*?property: "rotation"[\s\S]*?to: 0/)
-  // Replayed on every open, and restart (not start) so a quick close/open
-  // never leaves the piece mid-flight.
-  assert.match(panel, /onOpenedChanged: \{\s*if \(!opened\) \{[^\n]*return \}\s*titleIconIntro\.restart\(\)/)
+  const intro = icon.slice(icon.indexOf("id: titleIconIntro"))
+
+  // Hidden before the first frame, and started from that frame rather than
+  // from the `opened` flag: Browse's first frame lands later than Installed's
+  // and an animation clocked from `opened` was over before it was drawn.
+  assert.match(panel, /property bool titleIconIntroArmed: false/)
+  assert.match(panel, /onOpenedChanged: \{\s*if \(!opened\) \{[^\n]*return \}\s*titleIconIntro\.stop\(\)\s*titleIcon\.opacity = 0\s*titleIconIntroArmed = true/)
+  assert.doesNotMatch(panel, /onOpenedChanged: \{[\s\S]{0,200}titleIconIntro\.restart\(\)/)
+  const arm = panel.slice(panel.indexOf("id: titleIconIntroTrigger"), panel.indexOf("id: titleIconIntroTrigger") + 500)
+  assert.match(arm, /target: titleIcon\.Window\.window/)
+  assert.match(arm, /enabled: root\.titleIconIntroArmed/)
+  assert.match(arm, /function onFrameSwapped\(\) \{\s*root\.titleIconIntroArmed = false\s*titleIconIntro\.restart\(\)\s*\}/)
+
+  // Travel is a smooth in-out over most of a second, so it reads the whole
+  // way; the "click" is a separate impact at the end, not a back-easing tail.
+  assert.match(intro, /^\s*PauseAnimation \{ duration: 120 \}/m)
+  assert.match(intro, /property: "scale"[\s\S]*?from: 3[\s\S]*?to: 1[\s\S]*?duration: 700[\s\S]*?easing\.type: Easing\.InOutCubic/)
+  assert.match(intro, /property: "rotation"[\s\S]*?from: -150[\s\S]*?to: 0[\s\S]*?duration: 700[\s\S]*?easing\.type: Easing\.InOutCubic/)
+  assert.match(intro, /property: "opacity"[\s\S]*?from: 0[\s\S]*?to: 1[\s\S]*?duration: 250/)
+  assert.doesNotMatch(intro, /Easing\.OutBack/)
+  const settle = intro.slice(intro.indexOf("id: titleIconSettle"))
+  assert.match(settle, /property: "scale"[\s\S]*?to: 0\.88[\s\S]*?property: "scale"[\s\S]*?to: 1\.08[\s\S]*?property: "scale"[\s\S]*?to: 1\b/)
+  assert.match(settle, /property: "rotation"[\s\S]*?to: 8[\s\S]*?property: "rotation"[\s\S]*?to: -5[\s\S]*?property: "rotation"[\s\S]*?to: 0/)
 })
 
 test("switching tabs flips the content area like a card", () => {
@@ -2607,7 +2634,7 @@ test("Panel keeps open details synchronized with catalog install state", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.match(panel,
     /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), detailsEntry\)/)
-  assert.match(panel, /catalog = stampedState\.entries/)
+  assert.match(panel, /if \(!stampedState\.changed\) return\s*catalog = stampedState\.entries/)
   assert.match(panel, /if \(detailsEntry\) detailsEntry = stampedState\.detailsEntry/)
   assert.match(panel, /var loadedCatalog = Model\.catalogEntries\(doc, Model\.installedIdSet\(rows\)\)/)
   assert.match(panel, /if \(detailsEntry\) detailsEntry = Model\.findRow\(loadedCatalog, detailsEntry\.id\)/)

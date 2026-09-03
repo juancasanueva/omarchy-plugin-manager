@@ -1128,12 +1128,32 @@ function markInstalled(entries, installedIds) {
   return out
 }
 
+// A reload that changed nothing hands back the very same array and details
+// object, flagged `changed: false`, so the panel can leave its bindings alone.
+// Assigning a fresh array resets the grid's model, and a reset tears down and
+// rebuilds every visible card — a stall the eye notices when it lands during
+// an animation, which is exactly when every open triggers a reload.
 function restampCatalogInstallState(entries, installedIds, detailsEntry) {
+  if (!installStateDiffers(entries, installedIds)) {
+    return { entries: entries, detailsEntry: detailsEntry || null, changed: false }
+  }
   var stamped = markInstalled(entries, installedIds)
   return {
     entries: stamped,
-    detailsEntry: detailsEntry ? findRow(stamped, detailsEntry.id) : null
+    detailsEntry: detailsEntry ? findRow(stamped, detailsEntry.id) : null,
+    changed: true
   }
+}
+
+function installStateDiffers(entries, installedIds) {
+  var installed = installedIds || Object.create(null)
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    var isInstalled = hasOwnKey(installed, entry.id)
+    var installable = entry.installAvailable && entry.installUrl !== "" && !isInstalled
+    if (entry.installed !== isInstalled || entry.installable !== installable) return true
+  }
+  return false
 }
 
 // Modal visibility can overlap for one synchronous handoff. The successor has

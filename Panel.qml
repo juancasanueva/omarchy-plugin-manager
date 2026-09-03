@@ -258,6 +258,9 @@ Panel {
     if (catalog.length === 0) return
     var stampedState = Model.restampCatalogInstallState(
       catalog, Model.installedIdSet(rows), detailsEntry)
+    // Nothing changed, nothing assigned: a fresh array would reset the grid
+    // and rebuild every visible card, right in the middle of the open intro.
+    if (!stampedState.changed) return
     catalog = stampedState.entries
     if (detailsEntry) detailsEntry = stampedState.detailsEntry
   }
@@ -846,9 +849,13 @@ Panel {
     })
   }
 
+  property bool titleIconIntroArmed: false
+
   onOpenedChanged: {
     if (!opened) { detailsEntry = null; revokeReleaseNavigation(); return }
-    titleIconIntro.restart()
+    titleIconIntro.stop()
+    titleIcon.opacity = 0
+    titleIconIntroArmed = true
     setStatus("", false)
     reload()
     checkUpdates()
@@ -1260,15 +1267,18 @@ Panel {
             transformOrigin: Item.Center
 
             // A puzzle piece should arrive like one: oversized and tilted, it
-            // snaps into its slot with a small overshoot and then settles with
-            // a tiny wiggle. Anchors are untouched by scale and rotation, so
-            // the title beside it never moves. Restarted on every open.
+            // travels into its slot and lands with a small "click" — a dip, a
+            // bounce and a wiggle. Anchors are untouched by scale and rotation,
+            // so the title beside it never moves.
+            //
+            // The travel is a smooth in-out rather than a back easing: a back
+            // easing does nearly all its motion in the first quarter and spends
+            // the rest on an invisible overshoot, which is how a one-second
+            // animation came to look like a 200ms flash.
             SequentialAnimation {
               id: titleIconIntro
 
-              // Hold still for a beat: the popup's own fade-in would otherwise
-              // swallow the opening frames of the drop.
-              PauseAnimation { duration: 180 }
+              PauseAnimation { duration: 120 }
 
               ParallelAnimation {
                 NumberAnimation {
@@ -1276,33 +1286,55 @@ Panel {
                   property: "scale"
                   from: 3
                   to: 1
-                  duration: 1000
-                  easing.type: Easing.OutBack
-                  easing.overshoot: 1.8
+                  duration: 700
+                  easing.type: Easing.InOutCubic
                 }
                 NumberAnimation {
                   target: titleIcon
                   property: "rotation"
                   from: -150
                   to: 0
-                  duration: 1000
-                  easing.type: Easing.OutBack
-                  easing.overshoot: 1.2
+                  duration: 700
+                  easing.type: Easing.InOutCubic
                 }
                 NumberAnimation {
                   target: titleIcon
                   property: "opacity"
                   from: 0
                   to: 1
-                  duration: 400
+                  duration: 250
                 }
               }
 
-              SequentialAnimation {
+              // The click: the piece compresses into the slot, springs back a
+              // touch past size, and settles; a wiggle rides along with it.
+              ParallelAnimation {
                 id: titleIconSettle
-                NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 140; easing.type: Easing.InOutQuad }
-                NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 140; easing.type: Easing.InOutQuad }
-                NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 120; easing.type: Easing.OutQuad }
+                SequentialAnimation {
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 0.88; duration: 90; easing.type: Easing.OutQuad }
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 1.08; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 1; duration: 120; easing.type: Easing.OutQuad }
+                }
+                SequentialAnimation {
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 100; easing.type: Easing.OutQuad }
+                }
+              }
+            }
+
+            // The intro is clocked from the window's first rendered frame, not
+            // from `opened`: Browse's first frame is drawn noticeably later
+            // than Installed's, and an animation started at `opened` had
+            // finished before that frame ever reached the screen. The piece is
+            // hidden at open so that first frame shows an empty slot.
+            Connections {
+              id: titleIconIntroTrigger
+              target: titleIcon.Window.window
+              enabled: root.titleIconIntroArmed
+              function onFrameSwapped() {
+                root.titleIconIntroArmed = false
+                titleIconIntro.restart()
               }
             }
           }
