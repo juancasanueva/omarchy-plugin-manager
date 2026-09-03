@@ -1115,6 +1115,8 @@ Item {
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             row: root.selectedRow
+            catalogEntry: Model.findRow(root.catalog, root.selectedRow ? root.selectedRow.id : "")
+            previewsEnabled: root.previewsSupported
             verified: Model.isVerified(root.selectedRow, root.verifiedIds)
             actionsEnabled: !root.busy
             updateEnabled: root.updateActionsEnabled
@@ -1129,6 +1131,7 @@ Item {
             onDisableRequested: store.askDisable(root.selectedRow)
             onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
             onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+            onPreviewUndecodable: root.previewsSupported = false
           }
         }
 

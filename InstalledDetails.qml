@@ -32,6 +32,20 @@ Item {
   readonly property bool upToDate: Model.upToDate(row)
   readonly property bool canEnable: Model.canEnable(row)
   readonly property bool canDisable: Model.canDisable(row)
+  // The marketplace listing for this row, when the catalog has one: it lends
+  // the pane its picture and its initials. Null is fine; the checkout's own
+  // preview.png and the repository guess still apply.
+  property var catalogEntry: null
+  property bool previewsEnabled: true
+  property color background: Color.menu.background
+  signal previewUndecodable()
+  property int previewIndex: 0
+  onRowChanged: previewIndex = 0
+  readonly property var previewSources: Model.installedPreviewCandidates(row, catalogEntry, previewsEnabled)
+  readonly property string previewSource: previewIndex < previewSources.length
+    ? previewSources[previewIndex] : ""
+  readonly property color accent: catalogEntry ? Model.accentColor(catalogEntry.accent) : Color.accent
+
   readonly property string repoUrl: Model.rowRepoUrl(row)
   // The version is a link to its Release, resolved at click time like the
   // popup's row does; the tag page is the fallback when no Release exists.
@@ -137,6 +151,58 @@ Item {
         }
       }
 
+
+      // ---- Screenshot. The same frame the Browse details use: it takes the
+      // picture's own shape once known so nothing is cropped, capped at
+      // square so a tall image cannot push the facts off screen. The accent
+      // tile with initials is only the placeholder while nothing has loaded.
+      Rectangle {
+        id: detailsPreview
+        width: parent.width
+        height: detailsThumbnail.status === Image.Ready && detailsThumbnail.implicitWidth > 0
+          ? Math.min(width, Math.round(width * detailsThumbnail.implicitHeight / detailsThumbnail.implicitWidth))
+          : Math.round(width * 9 / 16)
+        radius: Style.cornerRadius
+        clip: true
+        color: root.background
+        gradient: detailsThumbnail.status === Image.Ready ? null : previewTileGradient
+
+        Gradient {
+          id: previewTileGradient
+          GradientStop { position: 0.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.38) }
+          GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.14) }
+        }
+
+        Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.centerIn: parent
+          visible: detailsThumbnail.status !== Image.Ready
+          text: root.catalogEntry && root.catalogEntry.initials !== "" ? root.catalogEntry.initials : Model.rowInitials(root.row)
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.displayLarge
+          font.bold: true
+        }
+
+        Image {
+          id: detailsThumbnail
+          anchors.fill: parent
+          source: root.previewSource
+          onStatusChanged: {
+            if (status !== Image.Error) return
+            // A WebP failure is a fact about this Qt build, not about this
+            // plugin: report it once so the whole panel stops asking.
+            if (root.previewSource === (root.catalogEntry ? root.catalogEntry.thumbnail : "")) root.previewUndecodable()
+            root.previewIndex++
+          }
+          asynchronous: true
+          cache: true
+          fillMode: Image.PreserveAspectFit
+          sourceSize.width: 720
+          visible: status === Image.Ready
+        }
+      }
       Text {
         // Never rich text: AutoText would fetch what a crafted string points at.
         textFormat: Text.PlainText

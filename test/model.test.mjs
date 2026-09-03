@@ -28,7 +28,7 @@ const Model = new Function(
     normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
-    repoPreviewUrl, previewCandidates,
+    repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -959,6 +959,33 @@ test("catalogStarsById joins GitHub stars onto installed rows by id", () => {
   assert.equal(Model.rowStarLabel({ id: "acme.weather" }, null), "")
   assert.equal(Model.rowStarLabel({ id: "x" }, Model.catalogStarsById([{ id: "x", stars: null }])), "")
   assert.equal(Model.rowStarLabel({ id: "y" }, Model.catalogStarsById([{ id: "y", stars: 1966 }])), "2k")
+})
+
+test("installedPreviewCandidates prefers the checkout's own preview, then the listing's", () => {
+  const row = { id: "acme.weather", name: "Weather", sourceDir: "/home/u/.config/omarchy/plugins/acme.weather", remote: "https://github.com/acme/omarchy-weather.git" }
+  const entry = { repoPreview: "https://raw.githubusercontent.com/acme/omarchy-weather/main/preview.png", thumbnail: "https://cdn.example/acme.webp" }
+  assert.deepEqual(Model.installedPreviewCandidates(row, entry, true), [
+    "file:///home/u/.config/omarchy/plugins/acme.weather/preview.png",
+    "https://raw.githubusercontent.com/acme/omarchy-weather/main/preview.png",
+    "https://cdn.example/acme.webp"
+  ])
+  // No WebP when the build cannot decode it; no listing means the repository
+  // guess from the remote; no checkout means no local file.
+  assert.deepEqual(Model.installedPreviewCandidates(row, entry, false).slice(-1), ["https://raw.githubusercontent.com/acme/omarchy-weather/main/preview.png"])
+  assert.deepEqual(Model.installedPreviewCandidates(row, null, true), [
+    "file:///home/u/.config/omarchy/plugins/acme.weather/preview.png",
+    "https://raw.githubusercontent.com/acme/omarchy-weather/main/preview.png"
+  ])
+  assert.deepEqual(Model.installedPreviewCandidates({ id: "x", name: "X", sourceDir: "", remote: "" }, null, true), [])
+  assert.deepEqual(Model.installedPreviewCandidates(null, entry, true), [])
+  // A hostile source directory cannot smuggle a query or a scheme in.
+  assert.deepEqual(Model.installedPreviewCandidates({ id: "y", name: "Y", sourceDir: "https://evil/x", remote: "" }, null, true), [])
+
+  assert.equal(Model.rowInitials({ name: "Alt+Tab" }), "AT")
+  assert.equal(Model.rowInitials({ name: "hyprmoncfg: Multi-Monitor Manager" }), "HM")
+  assert.equal(Model.rowInitials({ name: "Herdr" }), "H")
+  assert.equal(Model.rowInitials({ name: "" }), "")
+  assert.equal(Model.rowInitials(null), "")
 })
 
 test("installedIdSet indexes the installed rows by id", () => {
@@ -3443,6 +3470,31 @@ test("release navigation is one shared component and the details version is a re
   assert.match(details, /readonly property string versionFallbackUrl: Model\.versionFallbackUrl\(row\)/)
   assert.match(details, /rows\.push\(\{ label: "Version", value: versionText, link: versionFallbackUrl, release: true \}\)/)
   assert.match(details, /onClicked: field\.modelData\.release === true\s*\? root\.githubNavigationRequested\(root\.versionReleaseCandidates, root\.versionFallbackUrl\)\s*: root\.repositoryNavigationRequested\(field\.modelData\.link\)/)
+})
+
+test("the Installed details pane shows the plugin's screenshot above its description", () => {
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.match(details, /property var catalogEntry: null/)
+  assert.match(details, /property bool previewsEnabled: true/)
+  assert.match(details, /signal previewUndecodable\(\)/)
+  assert.match(details, /property int previewIndex: 0/)
+  assert.match(details, /onRowChanged: previewIndex = 0/)
+  assert.match(details, /readonly property var previewSources: Model\.installedPreviewCandidates\(row, catalogEntry, previewsEnabled\)/)
+  assert.match(details, /readonly property string previewSource: previewIndex < previewSources\.length\s*\? previewSources\[previewIndex\] : ""/)
+  // The frame leads the body, like the Browse details: fitted, never
+  // cropped, capped at square, accent tile with initials while nothing loads.
+  assert.ok(details.indexOf("id: detailsPreview") < details.indexOf("text: Model.descriptionLine(root.row)"), "preview before description")
+  const preview = details.slice(details.indexOf("id: detailsPreview"), details.indexOf("id: detailsPreview") + 2600)
+  assert.match(preview, /fillMode: Image\.PreserveAspectFit/)
+  assert.match(preview, /text: root\.catalogEntry && root\.catalogEntry\.initials !== "" \? root\.catalogEntry\.initials : Model\.rowInitials\(root\.row\)/)
+  assert.match(preview, /if \(root\.previewSource === \(root\.catalogEntry \? root\.catalogEntry\.thumbnail : ""\)\) root\.previewUndecodable\(\)\s*root\.previewIndex\+\+/)
+  assert.match(preview, /textFormat: Text\.PlainText/)
+  // The expanded panel hands it the listing and the WebP verdict.
+  const wiring = expanded.slice(expanded.indexOf("InstalledDetails {"), expanded.indexOf("InstalledDetails {") + 1800)
+  assert.match(wiring, /catalogEntry: Model\.findRow\(root\.catalog, root\.selectedRow \? root\.selectedRow\.id : ""\)/)
+  assert.match(wiring, /previewsEnabled: root\.previewsSupported/)
+  assert.match(wiring, /onPreviewUndecodable: root\.previewsSupported = false/)
 })
 
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {

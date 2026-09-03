@@ -1422,6 +1422,33 @@ function previewCandidates(entry, allowWebp) {
   return out
 }
 
+// An installed plugin's picture, best first: the checkout's own preview.png
+// (on disk, no network, and exactly what is installed), then whatever the
+// marketplace listing offers, then the repository guess from the remote. A
+// source directory is a filesystem path or nothing; anything that already
+// looks like a URL is refused rather than turned into one.
+function installedPreviewCandidates(row, entry, allowWebp) {
+  if (!row) return []
+  var out = []
+  var dir = String(row.sourceDir || "")
+  if (dir.charAt(0) === "/" && dir.indexOf("?") === -1 && dir.indexOf("#") === -1)
+    out.push("file://" + dir.replace(/\/+$/, "") + "/preview.png")
+  var listed = previewCandidates(entry, allowWebp)
+  for (var i = 0; i < listed.length; i++) if (out.indexOf(listed[i]) === -1) out.push(listed[i])
+  var guessed = repoPreviewUrl(row.remote, "")
+  if (guessed !== "" && out.indexOf(guessed) === -1) out.push(guessed)
+  return out
+}
+
+// Initials for the placeholder tile when a row has no listing to borrow
+// them from: the first letter of the first two words, "Alt+Tab" -> "AT".
+function rowInitials(row) {
+  var words = String(row && row.name || "").split(/[^A-Za-z0-9]+/).filter(function(word) { return word !== "" })
+  var out = ""
+  for (var i = 0; i < words.length && i < 2; i++) out += words[i].charAt(0).toUpperCase()
+  return out
+}
+
 // ---- Update checks ---------------------------------------------------------
 //
 // Whether a plugin has an update is decided by commits, not by version
