@@ -151,6 +151,106 @@ Item {
         }
       }
 
+      // The row's four actions, written out, directly under the title:
+      // what you can do comes before what you are looking at. Each keeps
+      // the row's own gate:
+      // disable is a direct action, enable may first ask where, update is
+      // dead on an up-to-date checkout, and remove exists only for what is
+      // ours to delete. Side by side, wrapping when the pane runs out of
+      // width: a toolbar reads faster than a stack.
+      Flow {
+        id: actionRow
+        width: parent.width
+        spacing: Style.space(6)
+
+        // On or off is a switch, the same control the popup row uses, with
+        // the same tooltip. It sits in an Item as tall as the buttons beside
+        // it so the row keeps one baseline; `interactive` is the structural
+        // gate (a bar has no off), `busy` the passing one (a command in
+        // flight), kept apart because the kit keeps them apart.
+        Item {
+          visible: root.row !== null
+          width: enabledSwitch.width
+          height: updateButton.height
+
+          ToggleSwitch {
+            id: enabledSwitch
+            anchors.verticalCenter: parent.verticalCenter
+            checked: root.row ? root.row.enabled === true : false
+            interactive: root.canEnable || root.canDisable
+            busy: !root.actionsEnabled
+            opacity: root.canEnable || root.canDisable ? 1 : 0.4
+            foreground: root.foreground
+            onToggled: root.canDisable ? root.disableRequested() : root.enableRequested()
+
+            PanelToolTip {
+              visible: enabledSwitch.containsMouse
+              text: {
+                if (root.canDisable) {
+                  return Model.needsPlacement(root.row)
+                    ? "Disable — take it out of the bar, keep it installed"
+                    : "Disable this plugin, keep it installed"
+                }
+                return Model.needsPlacement(root.row)
+                  ? "Enable — choose where in the bar it goes"
+                  : "Enable this plugin"
+              }
+              fontFamily: root.fontFamily
+            }
+          }
+        }
+
+        Button {
+          id: updateButton
+          visible: root.row ? root.row.updatable === true : false
+          text: root.updating ? "Updating…" : (root.hasUpdate ? "Update" : "Update")
+          iconText: root.updating ? "" : "󰑐"
+          iconSpinning: root.updating
+          tooltipText: {
+            if (!root.row) return "Update this checkout"
+            if (root.hasUpdate) return "Update available — pull from " + root.row.remote
+            if (root.row.updateChecked === true) return "Up to date with " + root.row.remote
+            return root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
+          }
+          bordered: true
+          foreground: root.hasUpdate ? Color.accent : root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate
+          opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
+          onClicked: root.updateRequested()
+        }
+
+        Button {
+          visible: root.row ? root.row.removable === true : false
+          text: "Remove"
+          iconText: "󰩹"
+          tooltipText: "Remove this plugin"
+          bordered: true
+          foreground: root.foreground
+          // The kit's Button paints its hover state from `accent`; urgent is
+          // the same warning the row's trash icon gives on hover.
+          accent: Color.urgent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          enabled: root.actionsEnabled
+          opacity: enabled ? 1 : 0.4
+          onClicked: root.removeRequested()
+        }
+
+        Button {
+          visible: root.repoUrl !== ""
+          text: "Open repository"
+          iconText: "󰊤"
+          tooltipText: root.repoUrl
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.repositoryNavigationRequested(root.repoUrl)
+        }
+      }
+
 
       // ---- Screenshot. The same frame the Browse details use: it takes the
       // picture's own shape once known so nothing is cropped, capped at
@@ -276,88 +376,6 @@ Item {
         }
       }
 
-      PanelSeparator { foreground: root.foreground }
-
-      // The row's four actions, written out. Each keeps the row's own gate:
-      // disable is a direct action, enable may first ask where, update is
-      // dead on an up-to-date checkout, and remove exists only for what is
-      // ours to delete. Side by side, wrapping when the pane runs out of
-      // width: a toolbar reads faster than a stack.
-      Flow {
-        id: actionRow
-        width: parent.width
-        spacing: Style.space(6)
-
-        Button {
-          visible: root.canEnable || root.canDisable
-          text: root.canDisable ? "Disable" : "Enable"
-          iconText: root.canDisable ? "󰔡" : "󰔢"
-          tooltipText: root.canDisable
-            ? (Model.needsPlacement(root.row)
-              ? "Disable — take it out of the bar, keep it installed"
-              : "Disable this plugin, keep it installed")
-            : (Model.needsPlacement(root.row)
-              ? "Enable — choose where in the bar it goes"
-              : "Enable this plugin")
-          bordered: true
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          enabled: root.actionsEnabled
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.canDisable ? root.disableRequested() : root.enableRequested()
-        }
-
-        Button {
-          id: updateButton
-          visible: root.row ? root.row.updatable === true : false
-          text: root.updating ? "Updating…" : (root.hasUpdate ? "Update" : "Update")
-          iconText: root.updating ? "" : "󰑐"
-          iconSpinning: root.updating
-          tooltipText: {
-            if (!root.row) return "Update this checkout"
-            if (root.hasUpdate) return "Update available — pull from " + root.row.remote
-            if (root.row.updateChecked === true) return "Up to date with " + root.row.remote
-            return root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
-          }
-          bordered: true
-          foreground: root.hasUpdate ? Color.accent : root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate
-          opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
-          onClicked: root.updateRequested()
-        }
-
-        Button {
-          visible: root.row ? root.row.removable === true : false
-          text: "Remove"
-          iconText: "󰩹"
-          tooltipText: "Remove this plugin"
-          bordered: true
-          foreground: root.foreground
-          // The kit's Button paints its hover state from `accent`; urgent is
-          // the same warning the row's trash icon gives on hover.
-          accent: Color.urgent
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          enabled: root.actionsEnabled
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.removeRequested()
-        }
-
-        Button {
-          visible: root.repoUrl !== ""
-          text: "Open repository"
-          iconText: "󰊤"
-          tooltipText: root.repoUrl
-          bordered: true
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: root.repositoryNavigationRequested(root.repoUrl)
-        }
-      }
     }
   }
 }

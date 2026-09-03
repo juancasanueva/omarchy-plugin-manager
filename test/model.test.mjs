@@ -3279,7 +3279,9 @@ test("the expanded panel carries the Installed filters, their keys, and the hint
   // Hint bar: filter keys on the left, row actions and close on the right.
   const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
   assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing \? root\.browseFilterHints : root\.installedFilterHints/)
-  assert.match(hints, /id: actionHints[\s\S]*?model: Model\.actionHints\(root\.browsing\)\.concat\(\[\{ key: "esc", text: "CLOSE", active: false \}\]\)/)
+  // The tab keys lead the right-hand group, with the current tab lit, so
+  // the bar also says where you are.
+  assert.match(hints, /id: actionHints[\s\S]*?model: \[\s*\{ key: "1", text: "INSTALLED", active: !root\.browsing \},\s*\{ key: "2", text: "BROWSE", active: root\.browsing \}\s*\]\.concat\(Model\.actionHints\(root\.browsing\), \[\{ key: "esc", text: "CLOSE", active: false \}\]\)/)
   assert.match(hints, /color: hint\.modelData\.active \? root\.foreground : root\.secondaryForeground/)
 })
 
@@ -3644,6 +3646,24 @@ test("InstalledDetails lays its actions out horizontally", () => {
   const actions = details.slice(details.indexOf("id: actionRow") - 20, details.indexOf("id: actionRow") + 200)
   assert.match(actions, /Flow \{\s*id: actionRow\s*width: parent\.width\s*spacing: Style\.space\(6\)/)
   assert.doesNotMatch(details, /\/\/ ours to delete\.\s*Column \{/)
+  // Directly under the title, before the screenshot and the facts: what you
+  // can do comes first, what you are looking at follows.
+  assert.ok(details.indexOf("id: nameLine") < details.indexOf("id: actionRow"), "actions after the name")
+  assert.ok(details.indexOf("id: actionRow") < details.indexOf("id: detailsPreview"), "actions before the screenshot")
+  // On/off is a switch, not a button: the popup row's control, with the same
+  // placement-aware tooltip, vertically centred against the buttons.
+  const toggle = actions.length ? details.slice(details.indexOf("id: enabledSwitch") - 200, details.indexOf("id: enabledSwitch") + 1300) : ""
+  assert.match(toggle, /height: updateButton\.height/)
+  assert.match(toggle, /ToggleSwitch \{\s*id: enabledSwitch\s*anchors\.verticalCenter: parent\.verticalCenter/)
+  assert.match(toggle, /checked: root\.row \? root\.row\.enabled === true : false/)
+  assert.match(toggle, /interactive: root\.canEnable \|\| root\.canDisable/)
+  assert.match(toggle, /busy: !root\.actionsEnabled/)
+  assert.match(toggle, /onToggled: root\.canDisable \? root\.disableRequested\(\) : root\.enableRequested\(\)/)
+  assert.match(toggle, /PanelToolTip \{\s*visible: enabledSwitch\.containsMouse/)
+  assert.match(toggle, /"Disable — take it out of the bar, keep it installed"/)
+  assert.match(toggle, /"Enable — choose where in the bar it goes"/)
+  assert.doesNotMatch(details, /text: root\.canDisable \? "Disable" : "Enable"/)
+  assert.match(details, /Button \{\s*id: updateButton/)
 })
 
 test("InstalledDetails shows a row's facts and the same four actions as its row", () => {

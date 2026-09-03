@@ -942,7 +942,12 @@ Item {
               spacing: Style.space(10)
 
               Repeater {
-                model: Model.actionHints(root.browsing).concat([{ key: "esc", text: "CLOSE", active: false }])
+                // The tab keys lead, with the current tab lit: the bar then
+                // also says where you are, not only where you can go.
+                model: [
+                  { key: "1", text: "INSTALLED", active: !root.browsing },
+                  { key: "2", text: "BROWSE", active: root.browsing }
+                ].concat(Model.actionHints(root.browsing), [{ key: "esc", text: "CLOSE", active: false }])
                 delegate: hintDelegate
               }
             }
