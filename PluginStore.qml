@@ -550,6 +550,30 @@ Item {
   // The catalog is fetched once and reused: it is also the only list of every
   // manifest path on the system, built-ins included, and running the command
   // twice would double the slowest step of the load.
+  // Enable and disable are detached commands that rewrite shell.json. The
+  // bar rebuilds the popup with its new state, so the popup never needed to
+  // notice; the expanded panel is not a bar widget and would keep showing the
+  // old rows, so its store watches the file the way the shell itself does and
+  // reloads once the write has settled and the shell has read it too.
+  // Opt-in, because the popup exists once per monitor and three copies
+  // reloading at once for a change the bar already handles is pure waste.
+  property bool watchConfig: false
+
+  FileView {
+    id: shellConfig
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: root.watchConfig
+    printErrors: false
+    onFileChanged: if (root.watchConfig) configReload.restart()
+  }
+
+  Timer {
+    id: configReload
+    interval: 1000
+    repeat: false
+    onTriggered: root.reload()
+  }
+
   Timer {
     id: loadRetry
     interval: 1500

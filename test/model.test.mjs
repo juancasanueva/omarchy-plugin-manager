@@ -3513,6 +3513,23 @@ test("the expanded panel restores the Installed selection when you come back to 
   assert.match(apply, /if \(activeTab === "installed"\) rememberedInstalledIndex = Math\.max\(0, selectedIndex\)\s*activeTab = tab/)
 })
 
+test("the store reloads when shell.json changes under it", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  // Enable and disable are detached commands that rewrite shell.json. The bar
+  // rebuilds the popup with its new state; the expanded panel is not a bar
+  // widget and would keep showing the old rows, so the store watches the
+  // file and reloads once the write has settled.
+  // Opt-in: the popup is rebuilt by the bar on a real layout change, and
+  // three per-monitor popups reloading at once would be pure waste.
+  assert.match(store, /property bool watchConfig: false/)
+  assert.match(store, /FileView \{\s*id: shellConfig\s*path: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json"\s*watchChanges: root\.watchConfig\s*printErrors: false\s*onFileChanged: if \(root\.watchConfig\) configReload\.restart\(\)/)
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.match(expanded, /PluginStore \{[\s\S]{0,120}?watchConfig: true/)
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.doesNotMatch(panel, /watchConfig: true/)
+  assert.match(store, /Timer \{\s*id: configReload\s*interval: 1000\s*repeat: false\s*onTriggered: root\.reload\(\)/)
+})
+
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)
@@ -3602,7 +3619,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /property var shell: null/)
   assert.match(expanded, /property var manifest: null/)
   assert.match(expanded, /property bool opened: false/)
-  assert.match(expanded, /PluginStore \{\s*id: store\s*selfId: root\.pluginId\s*\}/)
+  assert.match(expanded, /PluginStore \{\s*id: store\s*watchConfig: true\s*selfId: root\.pluginId\s*\}/)
 
   const window = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("PanelWindow {") + 700)
   assert.match(window, /visible: root\.opened/)

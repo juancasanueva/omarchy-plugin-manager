@@ -44,6 +44,7 @@ Item {
 
   PluginStore {
     id: store
+    watchConfig: true
     selfId: root.pluginId
   }
 
