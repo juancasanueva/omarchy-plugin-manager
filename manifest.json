@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.juancasanueva.plugin-manager",
   "name": "Plugin Manager",
-  "version": "1.5.11",
+  "version": "1.5.12",
   "author": "Juan Casanueva",
   "license": "MIT",
   "description": "Browse, install, place, enable, update, and remove Omarchy shell plugins from the bar",
