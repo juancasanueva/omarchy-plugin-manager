@@ -3721,6 +3721,26 @@ test("card previews fit inside the frame instead of cropping", () => {
   assert.doesNotMatch(preview, /PreserveAspectCrop/)
 })
 
+test("the search and filter row collapses while the Browse details page is up", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const controls = expanded.slice(expanded.indexOf("id: controls\n"), expanded.indexOf("id: controls\n") + 900)
+  // They filter the grid; on the page there is no grid to filter, and the
+  // page is better off with the height.
+  assert.match(controls, /readonly property bool shown: !\(root\.browsing && root\.detailsOpen\)/)
+  assert.match(controls, /visible: shown/)
+  assert.match(controls, /anchors\.topMargin: shown \? Style\.space\(10\) : 0/)
+  assert.match(controls, /height: !shown \? 0 : \(root\.browsing \? browseFilters\.implicitHeight : installedFilters\.implicitHeight\)/)
+})
+
+test("installing from the details page keeps the page open", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // The popup closed its details dialog before confirming because the dialog
+  // was modal and in the way. The page is not in the way: the confirmation
+  // sits on top of it, and once the install lands the page itself shows the
+  // installed pill and drops the Install button.
+  assert.match(expanded, /function askInstall\(entry\) \{\s*store\.askInstall\(entry\)\s*\}/)
+})
+
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)

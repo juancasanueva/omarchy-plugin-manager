@@ -384,9 +384,10 @@ Item {
   //
   // Every ask is the store's; this surface only closes what it had open.
 
+  // The page stays: the confirmation sits on top of it, and once the install
+  // lands the page shows the installed pill and drops its Install button.
   function askInstall(entry) {
-    if (!store.askInstall(entry)) return
-    closeDetails()
+    store.askInstall(entry)
   }
 
   function startUpdate(row) {
@@ -767,10 +768,14 @@ Item {
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: headerRule.bottom
-          anchors.topMargin: Style.space(10)
+          anchors.topMargin: shown ? Style.space(10) : 0
+          // These filter the grid. On the details page there is no grid to
+          // filter, and the page is better off with the height.
+          readonly property bool shown: !(root.browsing && root.detailsOpen)
+          visible: shown
           // Every control carries its caption above it; the row is as tall
           // as a captioned dropdown and everything sits on its bottom edge.
-          height: root.browsing ? browseFilters.implicitHeight : installedFilters.implicitHeight
+          height: !shown ? 0 : (root.browsing ? browseFilters.implicitHeight : installedFilters.implicitHeight)
 
           readonly property real gap: Style.space(6)
           readonly property real filterWidth: Style.space(150)
