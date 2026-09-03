@@ -198,6 +198,7 @@ Item {
     var tab = pendingTab
     if (tab === "") return
     pendingTab = ""
+    if (activeTab === "installed") rememberedInstalledIndex = Math.max(0, selectedIndex)
     activeTab = tab
   }
 
@@ -207,11 +208,24 @@ Item {
   ]
   readonly property bool refreshing: browsing ? catalogLoading : (loading || checkingUpdates)
 
+  // Where the cursor was on Installed the last time you left it. Restored on
+  // the way back, so a tab trip does not cost you your place.
+  property int rememberedInstalledIndex: 0
+
   onActiveTabChanged: {
     detailsEntry = null
-    // Browse starts with nothing under the cursor; Installed starts on the
-    // first row so the details pane is never empty for no reason.
-    selectedIndex = !browsing && visibleRows.length > 0 ? 0 : -1
+    // Decided from the tab's own new value: `browsing` is a binding on it and
+    // may not have re-evaluated by the time this handler runs, which is how
+    // coming back to Installed once landed on nothing at all. Browse starts
+    // with nothing under the cursor; Installed picks up where you left it,
+    // or the first row, so the details pane is never empty for no reason.
+    if (activeTab === "installed") {
+      selectedIndex = visibleRows.length > 0
+        ? Math.max(0, Math.min(rememberedInstalledIndex, visibleRows.length - 1))
+        : -1
+    } else {
+      selectedIndex = -1
+    }
   }
 
   // ---- Installed --------------------------------------------------------------

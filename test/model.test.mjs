@@ -3499,6 +3499,20 @@ test("the Installed details pane shows the plugin's screenshot above its descrip
   assert.match(wiring, /onPreviewUndecodable: root\.previewsSupported = false/)
 })
 
+test("the expanded panel restores the Installed selection when you come back to the tab", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // Decide from the tab's own new value, never from the `browsing` binding,
+  // which may not have re-evaluated when this handler runs; remember the
+  // Installed selection on the way out and restore it (clamped) on the way
+  // back, falling back to the first row.
+  assert.match(expanded, /property int rememberedInstalledIndex: 0/)
+  const handler = expanded.slice(expanded.indexOf("onActiveTabChanged: {"), expanded.indexOf("onActiveTabChanged: {") + 700)
+  assert.match(handler, /if \(activeTab === "installed"\) \{\s*selectedIndex = visibleRows\.length > 0\s*\? Math\.max\(0, Math\.min\(rememberedInstalledIndex, visibleRows\.length - 1\)\)\s*: -1\s*\} else \{\s*selectedIndex = -1\s*\}/)
+  assert.doesNotMatch(handler, /!browsing/)
+  const apply = expanded.slice(expanded.indexOf("function applyPendingTab() {"), expanded.indexOf("function applyPendingTab() {") + 400)
+  assert.match(apply, /if \(activeTab === "installed"\) rememberedInstalledIndex = Math\.max\(0, selectedIndex\)\s*activeTab = tab/)
+})
+
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)
