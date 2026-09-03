@@ -18,7 +18,7 @@ const Model = new Function(
     statusOptions, filterByStatus,
     matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified, upToDate,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
-    restampCatalogInstallState, plainText,
+    restampCatalogInstallState, plainText, buildCatalog, idSetFromList,
     catalogAssetUrl, catalogCount,
     catalogCategories, catalogKindKey, catalogKindOptions, catalogAvailabilityOptions, catalogSortOptions,
     filterCatalog, sortCatalog, matchesCatalogQuery, catalogIsFiltering,
@@ -897,6 +897,52 @@ test("catalog re-stamping is a no-op when no install state changed", () => {
   assert.equal(changed.changed, true)
   assert.notEqual(changed.entries, entries)
   assert.equal(changed.detailsEntry.installed, false)
+})
+
+test("buildCatalog turns raw catalog text into stamped entries, or an error, in one pure call", () => {
+  // This is what the worker thread runs: everything the catalog needs from
+  // raw text to entries, with no QML object in reach.
+  const raw = JSON.stringify(catalogDoc)
+  const built = Model.buildCatalog(raw, ["acme.weather"])
+  assert.equal(built.error, "")
+  assert.equal(built.entries.length, Model.catalogEntries(catalogDoc, Model.installedIdSet([{ id: "acme.weather" }])).length)
+  assert.equal(built.entries.find(entry => entry.id === "acme.weather").installed, true)
+  assert.equal(built.entries.find(entry => entry.id !== "acme.weather").installed, false)
+
+  for (const bad of ["not json", "", "[]", '{"plugins": 3}', undefined]) {
+    const failed = Model.buildCatalog(bad, [])
+    assert.equal(failed.entries, null, String(bad))
+    assert.equal(failed.error, "Could not read the plugin catalog")
+  }
+
+  // Ids cross the worker boundary as a plain list; hostile names stay data.
+  const set = Model.idSetFromList(["a.b", "__proto__", "constructor", 7, null])
+  assert.ok(Object.prototype.hasOwnProperty.call(set, "a.b"))
+  assert.ok(Object.prototype.hasOwnProperty.call(set, "__proto__"))
+  assert.ok(Object.prototype.hasOwnProperty.call(set, "constructor"))
+  assert.equal(Object.keys(set).length, 3)
+})
+
+test("the catalog is built on a worker thread so the shell keeps answering", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const worker = readFileSync(new URL("../CatalogWorker.js", import.meta.url), "utf8")
+  assert.match(store, /^import QtQml\.WorkerScript$/m)
+  assert.match(store, /WorkerScript \{\s*id: catalogWorker\s*source: "CatalogWorker\.js"\s*onMessage: function\(message\) \{ root\.applyCatalogResult\(message\) \}/)
+  // Each request is numbered; a result from an older request is dropped, so
+  // a refresh that overtakes a slow build never paints stale entries.
+  assert.match(store, /property int catalogGeneration: 0/)
+  const apply = store.slice(store.indexOf("function applyCatalog(raw) {"), store.indexOf("function applyCatalogResult(message) {"))
+  assert.match(apply, /catalogGeneration \+= 1/)
+  assert.match(apply, /catalogWorker\.sendMessage\(\{\s*generation: catalogGeneration,\s*raw: raw,\s*installedIds: Object\.keys\(Model\.installedIdSet\(rows\)\)\s*\}\)/)
+  assert.doesNotMatch(apply, /Model\.catalogEntries|Model\.parseCatalog/)
+  const result = store.slice(store.indexOf("function applyCatalogResult(message) {"), store.indexOf("function applyCatalogResult(message) {") + 700)
+  assert.match(result, /if \(!message \|\| message\.generation !== catalogGeneration\) return/)
+  assert.match(result, /catalogLoading = false/)
+  assert.match(result, /if \(!message\.entries\) \{[\s\S]*?catalogError = [\s\S]*?return\s*\}/)
+  assert.match(result, /catalog = message\.entries\s*catalogLoaded = true\s*catalogError = ""/)
+  // The worker is a shim over the same Model.js the main thread uses.
+  assert.match(worker, /Qt\.include\("Model\.js"\)/)
+  assert.match(worker, /WorkerScript\.onMessage = function\(message\) \{[\s\S]*?var built = buildCatalog\(message\.raw, message\.installedIds\)[\s\S]*?WorkerScript\.sendMessage\(\{ generation: message\.generation, entries: built\.entries, error: built\.error \}\)/)
 })
 
 test("installedIdSet indexes the installed rows by id", () => {
@@ -2650,7 +2696,8 @@ test("Panel keeps open details synchronized with catalog install state", () => {
   assert.match(store,
     /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), null\)/)
   assert.match(store, /if \(!stampedState\.changed\) return\s*catalog = stampedState\.entries/)
-  assert.match(store, /catalog = Model\.catalogEntries\(doc, Model\.installedIdSet\(rows\)\)/)
+  // A fresh fetch is built on the worker thread and published from its reply.
+  assert.match(store, /catalog = message\.entries/)
   // Every published catalog — re-stamp or fresh fetch — refreshes the open
   // details entry from the same list the cards are drawn from.
   assert.match(panel, /onCatalogChanged: if \(detailsEntry\) detailsEntry = Model\.findRow\(catalog, detailsEntry\.id\)/)

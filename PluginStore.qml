@@ -1,4 +1,5 @@
 import QtQuick
+import QtQml.WorkerScript
 import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
@@ -285,18 +286,38 @@ Item {
     catalogProc.running = true
   }
 
-  function applyCatalog(raw) {
-    catalogLoading = false
+  // Parsing 2MB of catalog JSON and sanitising every field of 2150 entries
+  // takes seconds in QML's engine, and on the main thread those seconds are
+  // ones in which the shell answers no IPC at all — including the call that
+  // reads the plugin list. The build runs on a worker thread instead; each
+  // request is numbered so a reply overtaken by a newer request is dropped.
+  property int catalogGeneration: 0
 
-    var doc = Model.parseCatalog(raw)
-    if (!doc) {
+  WorkerScript {
+    id: catalogWorker
+    source: "CatalogWorker.js"
+    onMessage: function(message) { root.applyCatalogResult(message) }
+  }
+
+  function applyCatalog(raw) {
+    catalogGeneration += 1
+    catalogWorker.sendMessage({
+      generation: catalogGeneration,
+      raw: raw,
+      installedIds: Object.keys(Model.installedIdSet(rows))
+    })
+  }
+
+  function applyCatalogResult(message) {
+    if (!message || message.generation !== catalogGeneration) return
+    catalogLoading = false
+    if (!message.entries) {
       // Keep whatever was already on screen. An empty grid would claim the
       // marketplace has nothing in it.
-      catalogError = "Could not read the plugin catalog"
+      catalogError = message.error || "Could not read the plugin catalog"
       return
     }
-
-    catalog = Model.catalogEntries(doc, Model.installedIdSet(rows))
+    catalog = message.entries
     catalogLoaded = true
     catalogError = ""
   }
@@ -786,6 +807,9 @@ Item {
     }
     onExited: function(exitCode) {
       if (exitCode === 0) return
+      // Whatever the stream handed the worker was the output of a failed
+      // fetch; a newer generation makes the worker's reply fall on the floor.
+      root.catalogGeneration += 1
       root.catalogLoading = false
       root.catalogError = "Could not reach omarchyplugins.com"
     }

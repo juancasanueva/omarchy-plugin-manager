@@ -721,6 +721,26 @@ function parseCatalog(raw) {
   }
 }
 
+// Ids arrive at the worker as a plain list (a message crosses threads by
+// copy, and a null-prototype set would not survive the trip); rebuild the
+// same null-prototype set on the other side so hostile names stay data.
+function idSetFromList(ids) {
+  var set = Object.create(null)
+  for (var i = 0; i < (ids || []).length; i++) {
+    if (typeof ids[i] === "string" && ids[i] !== "") set[ids[i]] = true
+  }
+  return set
+}
+
+// Raw catalog text in, stamped entries out — everything the worker thread
+// needs in one pure call, so the main thread never parses 2MB of JSON or
+// sanitises thirty thousand fields while the shell should be answering IPC.
+function buildCatalog(raw, installedIdList) {
+  var doc = parseCatalog(raw)
+  if (!doc) return { entries: null, error: "Could not read the plugin catalog" }
+  return { entries: catalogEntries(doc, idSetFromList(installedIdList)), error: "" }
+}
+
 function installedIdSet(rows) {
   // Plugin ids are untrusted property names. A null prototype keeps valid ids
   // such as `constructor` and `__proto__` from becoming object machinery.
