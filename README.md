@@ -191,9 +191,11 @@ land in whichever browser `omarchy default browser` selected, and only trusted
 `https://` URLs are passed to it. Use `Tab`, arrow keys, or `Shift+Tab` to move
 between details actions, `Enter` to activate one, and `Esc` to close.
 
-The creator gets one line and the catalog version shares the next with `★`
-GitHub stars and `♥` anonymous Marketplace hearts. The
-metrics stay separate: stars come from each `catalog.json` listing, while hearts
+The creator gets one line and the catalog version shares the next with a
+yellow star for GitHub stars and a red heart for anonymous Marketplace hearts,
+each count sitting on its icon's baseline beside the details and install
+buttons. The metrics stay separate: stars come from each `catalog.json`
+listing, while hearts
 come from `https://api.omarchyplugins.com/v1/stats` at
 `plugins[pluginId].hearts`. Missing or malformed counts are omitted rather than
 shown as zero.
