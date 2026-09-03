@@ -3539,6 +3539,15 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   }
 })
 
+test("InstalledDetails lays its actions out horizontally", () => {
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+  // Side by side, wrapping when the pane is narrow, rather than one tall
+  // column of buttons.
+  const actions = details.slice(details.indexOf("id: actionRow") - 20, details.indexOf("id: actionRow") + 200)
+  assert.match(actions, /Flow \{\s*id: actionRow\s*width: parent\.width\s*spacing: Style\.space\(6\)/)
+  assert.doesNotMatch(details, /\/\/ ours to delete\.\s*Column \{/)
+})
+
 test("InstalledDetails shows a row's facts and the same four actions as its row", () => {
   const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
   assert.match(details, /property var row: null/)

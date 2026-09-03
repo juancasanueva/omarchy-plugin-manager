@@ -208,8 +208,10 @@ Item {
       // The row's four actions, written out. Each keeps the row's own gate:
       // disable is a direct action, enable may first ask where, update is
       // dead on an up-to-date checkout, and remove exists only for what is
-      // ours to delete.
-      Column {
+      // ours to delete. Side by side, wrapping when the pane runs out of
+      // width: a toolbar reads faster than a stack.
+      Flow {
+        id: actionRow
         width: parent.width
         spacing: Style.space(6)
 
