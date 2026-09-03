@@ -52,18 +52,20 @@ Rectangle {
 
   readonly property string creatorText: entry ? entry.author : ""
   readonly property string versionText: Model.catalogVersionLabel(entry)
-  readonly property string starText: entry && Model.starLabel(entry.stars) !== ""
-    ? "★ " + Model.starLabel(entry.stars) : ""
-  readonly property string heartText: entry && Model.starLabel(entry.marketplaceHearts) !== ""
-    ? "♥ " + Model.starLabel(entry.marketplaceHearts) : ""
-  readonly property string metricsText: {
-    var parts = []
-    if (starText !== "") parts.push(starText)
-    if (heartText !== "") parts.push(heartText)
-    return parts.join("  ")
-  }
+  // Distinct glyphs keep GitHub stars separate from anonymous Marketplace
+  // hearts, and each carries its own colour so the two read apart at a glance:
+  // a yellow star and a red heart. Fixed colours rather than theme tokens
+  // because the shell has no yellow, and a heart drawn in the theme's urgent
+  // tint would look like a warning. The glyphs are the Nerd Font's filled
+  // Material icons rather than ★ and ♥: the mono font has no ★, so that one
+  // fell through to a colour emoji, and its ♥ is drawn hollow.
+  readonly property string starCountText: entry ? Model.starLabel(entry.stars) : ""
+  readonly property string heartCountText: entry ? Model.starLabel(entry.marketplaceHearts) : ""
+  readonly property color starColor: "#f5c518"
+  readonly property color heartColor: "#e5484d"
+  readonly property bool hasMetrics: starCountText !== "" || heartCountText !== ""
   readonly property bool hasCreator: creatorText !== ""
-  readonly property bool hasVersionOrMetrics: versionText !== "" || metricsText !== ""
+  readonly property bool hasVersionOrMetrics: versionText !== "" || hasMetrics
   readonly property string blockedText: state_ === "unavailable"
     ? Model.installBlockedReason(entry) : ""
   readonly property real contentPadding: Style.space(8)
@@ -314,19 +316,63 @@ Rectangle {
         visible: root.hasVersionOrMetrics
         height: visible ? Math.max(versionLabel.implicitHeight, metricsLabel.implicitHeight) : 0
 
-        Text {
+        // A long version yields space before either available metric is
+        // elided or displaced. Every Text here is plain: AutoText would fetch
+        // what a crafted string points at.
+        Row {
           id: metricsLabel
-          // Distinct Unicode symbols keep GitHub stars separate from anonymous
-          // Marketplace hearts. A long version yields space before either
-          // available metric is elided or displaced.
-          textFormat: Text.PlainText
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          visible: root.metricsText !== ""
-          text: root.metricsText
-          color: root.secondaryForeground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          visible: root.hasMetrics
+          spacing: Style.space(6)
+
+          Row {
+            visible: root.starCountText !== ""
+            spacing: Style.space(2)
+
+            Text {
+              id: starIcon
+              textFormat: Text.PlainText
+              text: "󰓎"
+              color: root.starColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+
+            Text {
+              id: starCount
+              anchors.baseline: starIcon.baseline
+              textFormat: Text.PlainText
+              text: root.starCountText
+              color: root.secondaryForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Row {
+            visible: root.heartCountText !== ""
+            spacing: Style.space(2)
+
+            Text {
+              id: heartIcon
+              textFormat: Text.PlainText
+              text: "󰋑"
+              color: root.heartColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+
+            Text {
+              id: heartCount
+              anchors.baseline: heartIcon.baseline
+              textFormat: Text.PlainText
+              text: root.heartCountText
+              color: root.secondaryForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
         }
 
         Text {
@@ -352,7 +398,13 @@ Rectangle {
     Row {
       id: actionRow
       anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
+      // Centred on the version/metrics line rather than on the whole two-line
+      // block, so the buttons sit beside the numbers instead of floating
+      // between the author and the version. A card with no metadata at all
+      // still centres them in the footer.
+      y: metadata.visible
+        ? metadata.y + versionAndMetrics.y + (versionAndMetrics.height - height) / 2
+        : (parent.height - height) / 2
       spacing: Style.space(4)
 
       PanelActionButton {

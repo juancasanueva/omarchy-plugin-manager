@@ -2440,10 +2440,31 @@ test("catalog cards stay compact while details own complete metadata and actions
   assert.match(card, /Model\.installBlockedReason\(entry\)/)
   assert.match(card, /id: creator[\s\S]*visible: root\.hasCreator[\s\S]*elide: Text\.ElideRight/)
   assert.match(card, /id: versionAndMetrics[\s\S]*visible: root\.hasVersionOrMetrics/)
-  assert.match(card, /\? "★ " \+ Model\.starLabel\(entry\.stars\) : ""/)
-  assert.match(card, /\? "♥ " \+ Model\.starLabel\(entry\.marketplaceHearts\) : ""/)
+  assert.match(card, /readonly property string starCountText: entry \? Model\.starLabel\(entry\.stars\) : ""/)
+  assert.match(card, /readonly property string heartCountText: entry \? Model\.starLabel\(entry\.marketplaceHearts\) : ""/)
   assert.doesNotMatch(card, /GH ★|MP ♥/)
-  assert.match(card, /id: metricsLabel[\s\S]*anchors\.right: parent\.right[\s\S]*text: root\.metricsText/)
+  assert.match(card, /id: metricsLabel[\s\S]*anchors\.right: parent\.right/)
+  // The glyphs are their own Text so each can carry its own colour and size:
+  // a yellow star and a red heart, larger than the caption counts beside them.
+  const starIcon = card.slice(card.indexOf("id: starIcon"), card.indexOf("id: starCount"))
+  // Nerd Font glyphs, not ★/♥: the mono font lacks ★ (so it fell back to a
+  // colour emoji) and its ♥ is hollow. These are filled and stay in-family.
+  assert.match(starIcon, /text: "󰓎"/)
+  assert.doesNotMatch(starIcon, /anchors\.verticalCenter/)
+  assert.match(starIcon, /color: root\.starColor/)
+  assert.match(starIcon, /font\.pixelSize: Style\.font\.title/)
+  assert.match(starIcon, /textFormat: Text\.PlainText/)
+  const heartIcon = card.slice(card.indexOf("id: heartIcon"), card.indexOf("id: heartCount"))
+  assert.match(heartIcon, /text: "󰋑"/)
+  assert.doesNotMatch(heartIcon, /anchors\.verticalCenter/)
+  assert.match(heartIcon, /color: root\.heartColor/)
+  assert.match(heartIcon, /font\.pixelSize: Style\.font\.title/)
+  assert.match(heartIcon, /textFormat: Text\.PlainText/)
+  assert.match(card, /readonly property color starColor: "#f5c518"/)
+  assert.match(card, /readonly property color heartColor: "#e5484d"/)
+  // Counts sit on the glyph baseline so a 14px icon and a 10px number line up.
+  assert.match(card, /id: starCount[\s\S]*?anchors\.baseline: starIcon\.baseline[\s\S]*?text: root\.starCountText[\s\S]*?font\.pixelSize: Style\.font\.caption/)
+  assert.match(card, /id: heartCount[\s\S]*?anchors\.baseline: heartIcon\.baseline[\s\S]*?text: root\.heartCountText[\s\S]*?font\.pixelSize: Style\.font\.caption/)
   assert.match(card, /id: versionLabel[\s\S]*width: Math\.max\(0, Math\.min\(implicitWidth, availableWidth\)\)[\s\S]*elide: Text\.ElideRight/)
   assert.match(card, /creator\.height \+ versionAndMetrics\.height[\s\S]*creator\.visible && versionAndMetrics\.visible \? spacing : 0/)
   for (const label of [
@@ -2460,6 +2481,11 @@ test("catalog cards stay compact while details own complete metadata and actions
   assert.match(panel, /readonly property real compactContentWidth: cellWidth\s+- compactDelegateMargin \* 2 - compactCardPadding \* 2/)
   assert.match(panel, /readonly property real compactActionHeight: Math\.max\(\s+Style\.space\(22\), Style\.font\.icon \+ Style\.spacing\.sm \* 2\)/)
   assert.match(card, /readonly property real footerHeight: Math\.max\(footerMetadataHeight, actionRow\.implicitHeight\)/)
+  // The action buttons line up with the version/metrics line, not the middle
+  // of the two-line metadata block, so they no longer float between the lines.
+  const actionRow = card.slice(card.indexOf("id: actionRow"), card.indexOf("PanelActionButton {", card.indexOf("id: actionRow")))
+  assert.doesNotMatch(actionRow, /anchors\.verticalCenter/)
+  assert.match(actionRow, /y: metadata\.visible\s*\? metadata\.y \+ versionAndMetrics\.y \+ \(versionAndMetrics\.height - height\) \/ 2\s*: \(parent\.height - height\) \/ 2/)
   assert.match(card, /readonly property real requiredHeight: topContent\.implicitHeight \+ contentFooterGap\s+\+ footerHeight \+ contentPadding \* 2/)
   assert.match(panel, /readonly property real compactFooterHeight: Math\.max\(/)
   assert.match(panel, /Math\.ceil\(cardTextMetrics\.lineSpacing \* 4\)/)
