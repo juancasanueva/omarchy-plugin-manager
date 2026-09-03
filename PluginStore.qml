@@ -47,6 +47,13 @@ Item {
   // Model.applyUpdateReport binds every replay to the freshly loaded checkout
   // HEAD, so an old generation can remain pending without regaining authority.
   property string pendingUpdateReport: ""
+  // One retry per load attempt; cleared by the next successful read.
+  property bool loadRetried: false
+  // Set by loadOnOpen(): the catalog and the update check wait until the
+  // list has landed. The catalog parse holds the main thread for seconds in
+  // QML, and the list read needs the shell to answer an IPC call in that
+  // same window; run together, the list came back empty.
+  property bool openLoadPending: false
 
   // ---- Marketplace catalog ------------------------------------------------
   //
@@ -84,6 +91,64 @@ Item {
   property string status: ""
   property bool statusIsError: false
 
+  // ---- Pending confirmation -----------------------------------------------
+  //
+  // What is being asked, and about which plugin. Shared here rather than in
+  // each surface because the popup and the expanded window ask the very same
+  // questions with the very same answers; only the dialogs that put the
+  // question on screen belong to the surface.
+
+  // The plugin id of the surface using this store. Disabling that one plugin
+  // takes the surface down with it, which is the single disable that needs a
+  // warning before it runs.
+  property string selfId: ""
+
+  property string pendingKind: ""
+  property string pendingId: ""
+  property string pendingLabel: ""
+  property string pendingUrl: ""
+  property bool pendingVerified: false
+  readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
+
+  // Enabling a bar widget is a different question from the yes/no ones above:
+  // not "are you sure" but "where". It gets its own dialog rather than a
+  // default section, because a widget dropped into a section the user did not
+  // choose is a widget they have to go hunting for.
+  readonly property bool placing: pendingKind === "place"
+
+  // Whether the plugin being added takes a place in the bar. Read off the
+  // registry listing, since the manifest that would say so is not on disk yet.
+  property bool pendingPlacementNeeded: false
+
+  // The section chosen for a plugin that is not installed yet. Held from the
+  // moment the question is answered until the install command is built, since
+  // by the time the clone lands the surface no longer exists to be asked.
+  property string pendingPlacement: ""
+
+  readonly property var placementChoices: Model.placementOptions()
+  readonly property string placementMessage:
+    "Where in the bar should " + pendingLabel + " go?"
+
+  readonly property string confirmMessage: {
+    if (pendingKind === "add")
+      return "Clone " + pendingLabel + "?\n\n"
+        + pendingUrl + "\n\n"
+        // Stated as a review rather than a guarantee. A badge that reads as a
+        // safety promise is worse than no badge, because it retires the
+        // judgement the next sentence is asking for.
+        + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
+        + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
+        + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
+    if (pendingKind === "remove")
+      return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
+    if (pendingKind === "disable")
+      return "Disable " + pendingLabel + "?\n\n"
+        + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
+        + "nothing is uninstalled, but you will need a terminal to put it back:\n\n"
+        + "omarchy plugin enable " + selfId + " right"
+    return ""
+  }
+
   // ---- What a surface may want to know ------------------------------------
 
   // A load is starting, whoever asked for it — a surface that has something
@@ -116,6 +181,18 @@ Item {
     return !updateProc.running && root.updateProcessExited && root.updateOutputFinished
   }
 
+  function loadOnOpen() {
+    openLoadPending = true
+    reload()
+  }
+
+  function finishOpenLoad() {
+    if (!openLoadPending) return
+    openLoadPending = false
+    checkUpdates()
+    if (!catalogLoaded && !catalogLoading) loadCatalog(false)
+  }
+
   function reload() {
     if (!root.loadProcessSettled()) return false
     root.loadProcessExited = false
@@ -132,20 +209,33 @@ Item {
     var sections = Model.splitSections(raw)
     var listEntries = sections ? Model.parseArray(sections.list) : null
     if (!sections || !listEntries) {
+      // `omarchy plugin list` asks the shell itself over IPC, and a shell that
+      // is busy — starting up, or building the expanded overlay — answers
+      // with nothing. One bounded retry turns that into a slightly later
+      // success instead of a spurious error.
+      if (!loadRetried) {
+        loadRetried = true
+        loading = true
+        loadRetry.start()
+        return
+      }
       // Deliberately keep the rows we already have. An empty list would read
       // as "no plugins installed", which is a different and much scarier
       // claim than "could not read".
       loadError = "Could not read the plugin list"
+      finishOpenLoad()
       return
     }
 
     loadError = ""
+    loadRetried = false
     rows = Model.mergePlugins(
       listEntries,
       Model.parseArray(sections.catalog) || [],
       Model.parseGitMap(sections.git),
       Model.parseManifestMeta(sections.manifest))
     rowsLoaded()
+    finishOpenLoad()
     if (pendingUpdateReport !== "") applyUpdateReport(pendingUpdateReport)
   }
 
@@ -264,11 +354,140 @@ Item {
   // What is given up is the status line, which nobody was going to read on a
   // popup that no longer exists. The script reports through a desktop
   // notification instead, which outlives all of this.
-  function startAdd(url, id, section, label) {
+  function launchAdd(url, id, section, label) {
     // Positional arguments, never text spliced into the script, so no url can
     // become a command.
     Quickshell.execDetached(["bash", "-c", installScript, "install", url, id, section, label])
     setStatus(Model.actionGerund("add") + " " + label + "…", false)
+  }
+
+  // ---- Asking -------------------------------------------------------------
+  //
+  // Each ask returns whether the request was taken. A surface uses that to do
+  // only its own bookkeeping — close a details view, retire a link probe —
+  // and only for a request that was real, so a click on a greyed button never
+  // costs anything.
+
+  // Installing from the catalog runs the same argv array everywhere — the
+  // registry's own install command is read for its url and never executed.
+  function askInstall(entry) {
+    if (!entry || !entry.installable || busy) return false
+    pendingUrl = entry.installUrl
+    pendingLabel = entry.name
+    pendingId = entry.id
+    pendingVerified = entry.verified === true
+    pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
+    pendingKind = "add"
+    return true
+  }
+
+  function askRemove(row) {
+    if (!row || !row.removable || busy) return false
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingKind = "remove"
+    return true
+  }
+
+  // Enabling is not destructive and needs no "are you sure" — but a bar widget
+  // has to be told where it goes, and only the user knows that.
+  function askEnable(row) {
+    if (!Model.canEnable(row) || busy) return false
+
+    if (!Model.needsPlacement(row)) {
+      // A service, an overlay, or a whole-bar plugin: nothing to place, so the
+      // question would have exactly one answer.
+      startEnable(row, "")
+      return true
+    }
+
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingKind = "place"
+    return true
+  }
+
+  // Disabling takes a widget out of the bar and leaves it on disk, so it is
+  // reversible from the row it just greyed out — no confirmation needed. With
+  // one exception: the surface's own row, whose Enable button leaves with it.
+  function askDisable(row) {
+    if (!Model.canDisable(row) || busy) return false
+
+    if (row.id === selfId) {
+      pendingId = row.id
+      pendingLabel = row.name
+      pendingUrl = ""
+      pendingKind = "disable"
+      return true
+    }
+
+    startDisable(row)
+    return true
+  }
+
+  function confirmPlacement(section) {
+    // Two questions share this dialog: where to put a plugin being installed,
+    // and where to put one already sitting in the list switched off.
+    if (pendingPlacementNeeded) {
+      startAdd(section)
+      return
+    }
+
+    var row = Model.findRow(rows, pendingId)
+    var label = pendingLabel
+    cancelPending()
+    if (!row) {
+      // The list was reloaded out from under the question — enabling a row
+      // that is no longer there would either fail or, worse, hit whatever now
+      // carries that id.
+      setStatus("Could not enable " + label + ": it is no longer in the list", true)
+      return
+    }
+    startEnable(row, section)
+  }
+
+  function cancelPending() {
+    pendingKind = ""
+    pendingId = ""
+    pendingLabel = ""
+    pendingUrl = ""
+    pendingPlacementNeeded = false
+  }
+
+  // Confirmation answered. A bar widget still owes us one more answer, and it
+  // has to be collected now: cloning a plugin makes the shell rebuild every
+  // plugin widget, the surfaces included, so there is no "after the install"
+  // in which to ask anything.
+  function confirmPending() {
+    if (pendingKind === "disable") {
+      var row = Model.findRow(rows, pendingId)
+      cancelPending()
+      if (row) startDisable(row)
+      return
+    }
+    if (pendingKind === "add") {
+      if (pendingId !== "" && pendingPlacementNeeded) {
+        pendingKind = "place"
+        return
+      }
+      startAdd("")
+    } else if (pendingKind === "remove") {
+      runAction("remove", pendingLabel, ["omarchy", "plugin", "remove", pendingId, "--yes"])
+      cancelPending()
+    }
+  }
+
+  // Clone, then place — as one detached command built from the answers
+  // collected above. The pending state is cleared first: by the time the
+  // clone lands the surface no longer exists to clear anything.
+  function startAdd(section) {
+    var url = pendingUrl
+    var label = pendingLabel
+    var id = pendingId
+    cancelPending()
+    launchAdd(url, id, section, label)
   }
 
   // Update needs no confirmation: it is a fast-forward of a checkout the user
@@ -309,6 +528,13 @@ Item {
   // The catalog is fetched once and reused: it is also the only list of every
   // manifest path on the system, built-ins included, and running the command
   // twice would double the slowest step of the load.
+  Timer {
+    id: loadRetry
+    interval: 1500
+    repeat: false
+    onTriggered: root.reload()
+  }
+
   Process {
     id: loadProc
     command: ["bash", "-c",

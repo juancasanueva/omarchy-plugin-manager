@@ -1156,6 +1156,28 @@ function installStateDiffers(entries, installedIds) {
   return false
 }
 
+// The tab the expanded window opens on, read from the summon payload. The
+// payload crosses an IPC boundary anyone can write to, so it is parsed as
+// data and reduced to one of two known values — never echoed anywhere.
+function expandedTabFromPayload(json) {
+  var parsed = null
+  try { parsed = JSON.parse(String(json || "")) } catch (e) { return "installed" }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "installed"
+  return parsed.tab === "browse" ? "browse" : "installed"
+}
+
+// The output the expanded window should appear on, read from the same payload.
+// A Wayland output name is short and made of letters, digits and dashes; any
+// other shape is dropped so the window falls back to the shell's default
+// screen rather than trusting a string it never chose.
+function expandedScreenFromPayload(json) {
+  var parsed = null
+  try { parsed = JSON.parse(String(json || "")) } catch (e) { return "" }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
+  if (typeof parsed.screen !== "string") return ""
+  return /^[A-Za-z0-9-]{1,64}$/.test(parsed.screen) ? parsed.screen : ""
+}
+
 // Modal visibility can overlap for one synchronous handoff. The successor has
 // ownership, and a deferred list-focus restore may run only when none remains.
 function browseModalFocusOwner(detailsOpen, confirming, placing) {

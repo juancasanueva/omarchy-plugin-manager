@@ -24,7 +24,7 @@ const Model = new Function(
     filterCatalog, sortCatalog, matchesCatalogQuery, catalogIsFiltering,
     clearedCatalogFilters, catalogEmptyMessage,
     installState, installBlockedReason, starLabel, accentColor, installedTint,
-    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl,
+    repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, expandedTabFromPayload, expandedScreenFromPayload,
     normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
@@ -2113,9 +2113,9 @@ test("the Installed tab has no url field: plugins are added from Browse only", (
   assert.doesNotMatch(panel, /\ba add\b/)
   // The clone-and-place path survives: Browse still installs through it,
   // the panel handing its pending answer to the store's argv builder.
-  assert.match(panel, /function startAdd\(section\) \{[\s\S]*?store\.startAdd\(url, id, section, label\)/)
+  assert.match(panel, /function startAdd\(section\) \{\s*store\.startAdd\(section\)\s*\}/)
   const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(storeSource, /function startAdd\(url, id, section, label\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", installScript, "install", url, id, section, label\]\)/)
+  assert.match(storeSource, /function launchAdd\(url, id, section, label\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", installScript, "install", url, id, section, label\]\)/)
 })
 
 test("Installed filters share the Browse shape: labels on top, Search on its own row", () => {
@@ -2155,7 +2155,7 @@ test("the tab buttons sit in the same place on both tabs; Marketplace goes to th
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 
   const tabs = panel.slice(panel.indexOf("id: tabs"), panel.indexOf("id: marketplaceLink"))
-  assert.match(tabs, /anchors\.right: refreshButton\.left/)
+  assert.match(tabs, /anchors\.right: expandButton\.left/)
   assert.doesNotMatch(tabs, /root\.browsing/)
 
   const marketplace = panel.slice(panel.indexOf("id: marketplaceLink"), panel.indexOf("id: refreshButton"))
@@ -2267,7 +2267,8 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   // The catalog is what knows who is verified, so opening the panel reads it
   // (cache first) even when Browse has never been visited.
   const opened = panel.slice(panel.indexOf("onOpenedChanged: {"), panel.indexOf("// ---- Processes"))
-  assert.match(opened, /if \(!catalogLoaded && !catalogLoading\) loadCatalog\(false\)/)
+  assert.match(opened, /revokeReleaseNavigation\(\)\s*store\.loadOnOpen\(\)/)
+  assert.doesNotMatch(opened, /loadCatalog\(false\)/)
 
   assert.match(row, /property bool verified: false/)
   const pill = row.slice(row.indexOf("id: verifiedPill"), row.indexOf("id: verifiedPill") + 900)
@@ -2660,7 +2661,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 
-  assert.match(panel, /PluginStore \{\s*id: store\s*\}/)
+  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName\s*\}/)
   // Every process and script lives in the store; the panel keeps only the
   // release probe, which is about navigation rather than data.
   for (const id of ["loadProc", "updateProc", "catalogProc", "actionProc"]) {
@@ -2694,13 +2695,15 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   assert.match(panel, /function onReloadStarted\(\) \{ root\.revokeReleaseNavigation\(\) \}/)
   assert.match(panel, /function onRowsLoaded\(\) \{ root\.clampSelection\(\) \}/)
   // The store never touches the browser or the dialogs.
-  assert.doesNotMatch(store, /omarchy-launch-browser|pendingKind|detailsEntry|releaseNavigation/)
+  assert.doesNotMatch(store, /omarchy-launch-browser|detailsEntry|releaseNavigation/)
   assert.doesNotMatch(panel, /Quickshell\.execDetached\(\["bash"/)
 })
 
 test("add confirmation never promises placement after cloning", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
-  assert.match(panel, /Model\.catalogPlacementConfirmationNote\(pendingPlacementNeeded\)/)
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(store, /Model\.catalogPlacementConfirmationNote\(pendingPlacementNeeded\)/)
+  assert.doesNotMatch(store, /asked where to put it once it is cloned|where to put it once it is cloned/)
   assert.doesNotMatch(panel, /asked where to put it once it is cloned|where to put it once it is cloned/)
 })
 
@@ -3096,3 +3099,296 @@ test("bar update dot projects the panel's confirmed count without changing butto
   assert.match(barWidget,
     /if \(b === Qt\.MiddleButton\) root\.refresh\(\)\s+else root\.togglePanel\(\)/)
 })
+
+// ---- Expanded panel --------------------------------------------------------
+
+test("expandedTabFromPayload never trusts the summon payload", () => {
+  assert.equal(Model.expandedTabFromPayload('{"tab":"browse"}'), "browse")
+  assert.equal(Model.expandedTabFromPayload('{"tab":"installed"}'), "installed")
+  assert.equal(Model.expandedTabFromPayload('{"tab":"<script>"}'), "installed")
+  assert.equal(Model.expandedTabFromPayload("not json"), "installed")
+  assert.equal(Model.expandedTabFromPayload('"browse"'), "installed")
+  assert.equal(Model.expandedTabFromPayload("[]"), "installed")
+  assert.equal(Model.expandedTabFromPayload(""), "installed")
+  assert.equal(Model.expandedTabFromPayload(undefined), "installed")
+})
+
+test("expandedScreenFromPayload keeps only a plausible output name", () => {
+  assert.equal(Model.expandedScreenFromPayload('{"screen":"eDP-1"}'), "eDP-1")
+  assert.equal(Model.expandedScreenFromPayload('{"screen":"HDMI-A-2"}'), "HDMI-A-2")
+  assert.equal(Model.expandedScreenFromPayload('{"screen":"../x"}'), "")
+  assert.equal(Model.expandedScreenFromPayload('{"screen":" eDP-1"}'), "")
+  assert.equal(Model.expandedScreenFromPayload('{"screen":"' + "a".repeat(65) + '"}'), "")
+  assert.equal(Model.expandedScreenFromPayload('{"screen":7}'), "")
+  assert.equal(Model.expandedScreenFromPayload("not json"), "")
+  assert.equal(Model.expandedScreenFromPayload(""), "")
+})
+
+test("the expanded panel opens on the monitor the popup was on", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // The popup names its own output in the payload; the overlay resolves that
+  // name against the live screens and falls back to the shell's default.
+  assert.match(panel, /bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName \}\)\)/)
+  assert.match(panel, /var screenName = panel\.screen \? String\(panel\.screen\.name \|\| ""\) : ""/)
+  assert.match(expanded, /property string targetScreenName: ""/)
+  assert.match(expanded, /targetScreenName = Model\.expandedScreenFromPayload\(payloadJson\)/)
+  assert.match(expanded, /readonly property var targetScreen: \{[\s\S]*?Quickshell\.screens[\s\S]*?\.name === targetScreenName[\s\S]*?return null/)
+  const window = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("PanelWindow {") + 400)
+  assert.match(window, /screen: root\.targetScreen/)
+})
+
+test("the expanded panel carries the Installed filters, their keys, and the hint bar", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+
+  // Same filter state and the same Dropdown replay handlers as the popup:
+  // Ui/Dropdown assigns its own value on a pick, which breaks the binding.
+  assert.match(expanded, /property string groupFilter: "all"/)
+  assert.match(expanded, /property string kindFilter: "all"/)
+  assert.match(expanded, /property string statusFilter: "all"/)
+  assert.match(expanded, /readonly property var groupOptions: Model\.groupOptions\(\)/)
+  assert.match(expanded, /readonly property var kindOptions: Model\.kindOptions\(rows\)/)
+  assert.match(expanded, /readonly property var statusOptions: Model\.statusOptions\(\)/)
+  assert.match(expanded, /readonly property var visibleRows: Model\.filterRows\(rows, kindFilter, statusFilter, searchQuery, groupFilter\)/)
+  assert.match(expanded, /readonly property bool filtered: Model\.isFiltering\(kindFilter, statusFilter, searchQuery, groupFilter\)/)
+  for (const [prop, dropdown] of [["groupFilter", "groupDropdown"], ["kindFilter", "kindDropdown"], ["statusFilter", "statusDropdown"]])
+    assert.match(expanded, new RegExp(`on${prop[0].toUpperCase()}${prop.slice(1)}Changed: if \\(${dropdown} && ${dropdown}\\.value !== ${prop}\\)\\s*${dropdown}\\.value = ${prop}`), prop)
+  for (const fn of ["cycleGroupFilter", "cycleKindFilter", "cycleStatusFilter", "cycleCategoryFilter", "cycleCatalogKindFilter", "cycleAvailabilityFilter", "cycleCatalogSort"])
+    assert.match(expanded, new RegExp(`function ${fn}\\(\\)`), fn)
+  assert.match(expanded, /readonly property var installedFilterHints: Model\.installedFilterHints\(/)
+  assert.match(expanded, /readonly property var browseFilterHints: Model\.browseFilterHints\(/)
+
+  // The three dropdowns sit in the controls row, Installed only.
+  const filters = expanded.slice(expanded.indexOf("id: installedFilters"), expanded.indexOf("id: browseFilters"))
+  assert.match(filters, /visible: !root\.browsing/)
+  assert.match(filters, /id: groupDropdown[\s\S]*?label: "Source"[\s\S]*?options: root\.groupOptions/)
+  assert.match(filters, /id: kindDropdown[\s\S]*?label: "Kind"[\s\S]*?options: root\.kindOptions/)
+  assert.match(filters, /id: statusDropdown[\s\S]*?label: "Status"[\s\S]*?options: root\.statusOptions/)
+  assert.match(expanded, /anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
+
+  // Same key map as the popup: f kind, s source/sort, t status, c category,
+  // a availability; Enter and Delete act on the selected Installed row.
+  const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
+  assert.match(keys, /\(text === "f" \|\| text === "F"\)\) root\.browsing \? root\.cycleCatalogKindFilter\(\) : root\.cycleKindFilter\(\)/)
+  assert.match(keys, /\(text === "s" \|\| text === "S"\)\) root\.browsing \? root\.cycleCatalogSort\(\) : root\.cycleGroupFilter\(\)/)
+  assert.match(keys, /\(text === "t" \|\| text === "T"\) && !root\.browsing\) root\.cycleStatusFilter\(\)/)
+  assert.match(keys, /\(text === "c" \|\| text === "C"\) && root\.browsing\) root\.cycleCategoryFilter\(\)/)
+  assert.match(keys, /\(text === "a" \|\| text === "A"\) && root\.browsing\) root\.cycleAvailabilityFilter\(\)/)
+  assert.match(keys, /if \(root\.browsing\) root\.openDetails\(root\.selectedEntry\)\s*else if \(root\.selectedRow\) root\.startUpdate\(root\.selectedRow\)/)
+  assert.match(keys, /event\.key === Qt\.Key_Delete[\s\S]*?store\.askRemove\(root\.selectedRow\)/)
+
+  // Hint bar: filter keys on the left, row actions and close on the right.
+  const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
+  assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing \? root\.browseFilterHints : root\.installedFilterHints/)
+  assert.match(hints, /id: actionHints[\s\S]*?model: Model\.actionHints\(root\.browsing\)\.concat\(\[\{ key: "esc", text: "CLOSE", active: false \}\]\)/)
+  assert.match(hints, /color: hint\.modelData\.active \? root\.foreground : root\.secondaryForeground/)
+})
+
+test("a plugin-list read that comes back empty is retried once before it is an error", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  // `omarchy plugin list` asks the shell over IPC; while the shell is busy
+  // (right after a restart, or while it builds the expanded overlay) that
+  // answer is empty. One bounded retry turns a spurious "could not read" into
+  // a slightly later success; a second failure is reported as before.
+  assert.match(store, /property bool loadRetried: false/)
+  assert.match(store, /Timer \{\s*id: loadRetry\s*interval: 1500[\s\S]*?onTriggered: root\.reload\(\)/)
+  const apply = store.slice(store.indexOf("function applyLoad(raw) {"), store.indexOf("function checkUpdates()"))
+  assert.match(apply, /if \(!sections \|\| !listEntries\) \{[\s\S]*?if \(!loadRetried\) \{\s*loadRetried = true\s*loading = true\s*loadRetry\.start\(\)\s*return\s*\}[\s\S]*?loadError = "Could not read the plugin list"/)
+  assert.match(apply, /loadError = ""\s*loadRetried = false/)
+})
+
+test("opening loads the list first and only then the catalog and update check", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  // The catalog parse blocks the shell's main thread for seconds in QML, and
+  // the list read needs the shell to answer an IPC call. Running them
+  // together made the list read come back empty; run them in order instead.
+  assert.match(store, /property bool openLoadPending: false/)
+  assert.match(store, /function loadOnOpen\(\) \{\s*openLoadPending = true\s*reload\(\)\s*\}/)
+  assert.match(store, /function finishOpenLoad\(\) \{\s*if \(!openLoadPending\) return\s*openLoadPending = false\s*checkUpdates\(\)\s*if \(!catalogLoaded && !catalogLoading\) loadCatalog\(false\)\s*\}/)
+  const apply = store.slice(store.indexOf("function applyLoad(raw) {"), store.indexOf("function checkUpdates()"))
+  // Both the success path and the final failure path release the follow-ups,
+  // so a broken list never strands the catalog.
+  assert.equal(apply.split("finishOpenLoad()").length - 1, 2)
+})
+
+test("the expanded panel starts its loads a beat after it opens", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // Spawning the list read while the overlay is still being built stalls the
+  // shell's IPC reply to that very read; a short deferral lets the window
+  // settle first.
+  assert.match(expanded, /Timer \{\s*id: initialLoad\s*interval: 250[\s\S]*?onTriggered: root\.loadEverything\(\)/)
+  assert.match(expanded, /function loadEverything\(\) \{\s*store\.loadOnOpen\(\)\s*\}/)
+  const open = expanded.slice(expanded.indexOf("function open(payloadJson) {"), expanded.indexOf("function loadEverything() {"))
+  assert.match(open, /initialLoad\.restart\(\)/)
+  assert.doesNotMatch(open, /store\.reload\(\)/)
+  const close = expanded.slice(expanded.indexOf("function close() {"), expanded.indexOf("function close() {") + 300)
+  assert.match(close, /initialLoad\.stop\(\)/)
+})
+
+test("the expanded search box is captioned and sized like the filter dropdowns", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const control = expanded.slice(expanded.indexOf("id: searchControl"), expanded.indexOf("id: installedFilters"))
+  // Same caption above, same control height below, same body text size —
+  // so the search reads as the first control in the row, not an odd one out.
+  assert.match(control, /id: searchLabel[\s\S]*?text: "Search"[\s\S]*?font\.pixelSize: Style\.font\.caption[\s\S]*?font\.bold: true/)
+  assert.match(control, /id: searchField[\s\S]*?anchors\.bottom: parent\.bottom[\s\S]*?height: Style\.spacing\.controlHeight/)
+  assert.match(control, /id: searchField[\s\S]*?font\.pixelSize: Style\.font\.body/)
+  assert.doesNotMatch(control, /verticalPadding: Style\.spacing\.xs/)
+  assert.match(expanded, /id: searchControl\s*anchors\.left: parent\.left\s*anchors\.top: parent\.top\s*anchors\.bottom: parent\.bottom\s*anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
+})
+
+test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)
+  assert.match(panel, /return summary \+ " · " \+ root\.behindCount \+ " to update"/)
+  assert.doesNotMatch(panel, /"  ·  "/)
+})
+
+test("the manifest registers the expanded window as a panel kind", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"))
+  assert.deepEqual(manifest.kinds, ["bar-widget", "panel"])
+  assert.equal(manifest.entryPoints.barWidget, "BarWidget.qml")
+  assert.equal(manifest.entryPoints.panel, "Expanded.qml")
+})
+
+test("the store owns the pending confirmation flow for both windows", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  // The surface tells the store who it is: disabling the surface's own plugin
+  // is the one disable that needs a warning.
+  assert.match(store, /property string selfId: ""/)
+  assert.match(store, /if \(row\.id === selfId\) \{/)
+  assert.match(store, /"omarchy plugin enable " \+ selfId \+ " right"/)
+  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingPlacement"])
+    assert.match(store, new RegExp(`property string ${name}: ""`), name)
+  assert.match(store, /property bool pendingVerified: false/)
+  assert.match(store, /property bool pendingPlacementNeeded: false/)
+  assert.match(store, /readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"/)
+  assert.match(store, /readonly property bool placing: pendingKind === "place"/)
+  assert.match(store, /readonly property var placementChoices: Model\.placementOptions\(\)/)
+  assert.match(store, /readonly property string placementMessage:/)
+  assert.match(store, /readonly property string confirmMessage: \{/)
+  for (const fn of [
+    "askInstall(entry)", "askRemove(row)", "askEnable(row)", "askDisable(row)",
+    "confirmPlacement(section)", "cancelPending()", "confirmPending()", "startAdd(section)"
+  ]) assert.match(store, new RegExp(`function ${fn.replace(/[()]/g, "\\$&")} \\{`), fn)
+  // Asking returns whether the request was taken, so a surface can do its
+  // own bookkeeping (close details, retire a probe) only for real requests.
+  assert.match(store, /function askInstall\(entry\) \{\s*if \(!entry \|\| !entry\.installable \|\| busy\) return false/)
+  assert.match(store, /function askRemove\(row\) \{\s*if \(!row \|\| !row\.removable \|\| busy\) return false/)
+  // Enable without a placement question and disable of anything but the
+  // surface itself are direct actions, exactly as before.
+  assert.match(store, /function askEnable\(row\) \{[\s\S]*?if \(!Model\.needsPlacement\(row\)\) \{[\s\S]*?startEnable\(row, ""\)\s*return true/)
+  assert.match(store, /function askDisable\(row\) \{[\s\S]*?startDisable\(row\)\s*return true/)
+  assert.match(store, /function confirmPending\(\) \{[\s\S]*?if \(pendingId !== "" && pendingPlacementNeeded\) \{\s*pendingKind = "place"/)
+  assert.match(store, /runAction\("remove", pendingLabel, \["omarchy", "plugin", "remove", pendingId, "--yes"\]\)/)
+
+  // The popup keeps its bindings through aliases and thin wrappers.
+  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName\s*\}/)
+  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingVerified", "pendingPlacementNeeded", "pendingPlacement"])
+    assert.match(panel, new RegExp(`property alias ${name}: store\\.${name}\\b`), name)
+  for (const name of ["confirming", "placing", "placementChoices", "placementMessage", "confirmMessage"])
+    assert.match(panel, new RegExp(`readonly property alias ${name}: store\\.${name}\\b`), name)
+  assert.match(panel, /function askInstall\(entry\) \{\s*if \(!store\.askInstall\(entry\)\) return\s*revokeReleaseNavigation\(\)[\s\S]*?detailsEntry = null\s*\}/)
+  assert.match(panel, /function askRemove\(row\) \{\s*if \(!store\.askRemove\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
+  assert.match(panel, /function askEnable\(row\) \{\s*if \(!store\.askEnable\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
+  assert.match(panel, /function askDisable\(row\) \{\s*if \(!store\.askDisable\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
+  assert.match(panel, /function confirmPlacement\(section\) \{\s*store\.confirmPlacement\(section\)\s*\}/)
+  assert.match(panel, /function cancelPending\(\) \{\s*store\.cancelPending\(\)\s*\}/)
+  assert.match(panel, /function confirmPending\(\) \{\s*store\.confirmPending\(\)\s*\}/)
+  assert.doesNotMatch(panel, /property string pendingKind: ""/)
+})
+
+test("the popup's expand button hands the current tab to the shell panel", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel, /readonly property string pluginId: "io\.github\.juancasanueva\.plugin-manager"/)
+  const button = panel.slice(panel.indexOf("id: expandButton"), panel.indexOf("id: refreshButton"))
+  assert.match(button, /anchors\.right: refreshButton\.left/)
+  assert.match(button, /anchors\.rightMargin: Style\.space\(6\)/)
+  assert.match(button, /iconText: "󰊓"/)
+  assert.match(button, /fontSize: Style\.font\.display/)
+  assert.match(button, /tooltipText: "Expand into a full panel"/)
+  assert.match(button, /onClicked: root\.expand\(\)/)
+  // The tabs now sit left of two icons.
+  assert.match(panel, /id: tabs\s*anchors\.right: expandButton\.left/)
+  // The count line yields to the tabs instead of running under them.
+  assert.match(panel, /id: subtitle[\s\S]*?anchors\.right: marketplaceLink\.visible \? marketplaceLink\.left : tabs\.left[\s\S]*?elide: Text\.ElideRight/)
+  // Close first, then summon: the popup and the panel are never up together,
+  // and a bar without a shell reference (tests, odd hosts) is a no-op.
+  assert.match(panel, /function expand\(\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName \}\)\)\s*\}/)
+})
+
+test("the expanded window is a layer-shell overlay that the shell summons and hides", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  for (const line of ["import Quickshell.Wayland", "import qs.Commons", "import qs.Ui", 'import "Model.js" as Model'])
+    assert.ok(expanded.includes(line), line)
+  assert.match(expanded, /property var shell: null/)
+  assert.match(expanded, /property var manifest: null/)
+  assert.match(expanded, /property bool opened: false/)
+  assert.match(expanded, /PluginStore \{\s*id: store\s*selfId: root\.pluginId\s*\}/)
+
+  const window = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("PanelWindow {") + 700)
+  assert.match(window, /visible: root\.opened/)
+  assert.match(window, /anchors \{ top: true; bottom: true; left: true; right: true \}/)
+  assert.match(window, /color: "transparent"/)
+  assert.match(window, /exclusionMode: ExclusionMode\.Ignore/)
+  assert.match(window, /WlrLayershell\.layer: WlrLayer\.Overlay/)
+  assert.match(window, /WlrLayershell\.keyboardFocus: WlrKeyboardFocus\.Exclusive/)
+  // Card size follows the screen, never exceeds it.
+  assert.match(expanded, /width: Math\.min\(Style\.space\(1180\), window\.width - Style\.gapsOut \* 4\)/)
+  assert.match(expanded, /height: Math\.min\(Style\.space\(820\), window\.height - Style\.gapsOut \* 4\)/)
+
+  // Lifecycle: the shell calls open(payload)/close(); we never flip our own
+  // open state behind its back, so dismissing goes through shell.hide.
+  assert.match(expanded, /function open\(payloadJson\) \{[\s\S]*?activeTab = Model\.expandedTabFromPayload\(payloadJson\)[\s\S]*?opened = true[\s\S]*?initialLoad\.restart\(\)/)
+  assert.match(expanded, /function close\(\) \{[\s\S]*?opened = false/)
+  assert.match(expanded, /function dismiss\(\) \{\s*if \(shell && typeof shell\.hide === "function"\) shell\.hide\(pluginId\)\s*else close\(\)\s*\}/)
+  assert.match(expanded, /function collapse\(\) \{\s*dismiss\(\)\s*if \(shell && shell\.bar && typeof shell\.bar\.summonBarWidget === "function"\) shell\.bar\.summonBarWidget\(pluginId\)\s*\}/)
+
+  // Chrome: title, tabs, refresh, and the way back to the popup.
+  assert.match(expanded, /iconText: "󰊔"/)
+  assert.match(expanded, /tooltipText: "Back to the popup"/)
+  assert.match(expanded, /onClicked: root\.collapse\(\)/)
+  assert.match(expanded, /id: tabs[\s\S]*?onChanged: function\(value\) \{ root\.activeTab = value \}/)
+
+  // Installed is master/detail; Browse is the popup's card grid.
+  assert.match(expanded, /InstalledDetails \{/)
+  assert.equal((expanded.match(/PluginRow \{/g) || []).length, 2)
+  assert.match(expanded, /GridView \{[\s\S]*?readonly property int columns: 4/)
+  assert.match(expanded, /CatalogCard \{/)
+  assert.match(expanded, /PluginDetails \{/)
+  assert.match(expanded, /ConfirmDialog \{[\s\S]*?opened: root\.confirming/)
+  assert.match(expanded, /ChoiceDialog \{[\s\S]*?opened: root\.placing/)
+
+  // Keys: Esc backs out of details before it closes the window.
+  assert.match(expanded, /Keys\.onPressed: function\(event\) \{[\s\S]*?event\.key === Qt\.Key_Escape[\s\S]*?root\.detailsOpen[\s\S]*?root\.dismiss\(\)/)
+
+  // Never rich text, anywhere on this surface either.
+  for (const file of ["Expanded.qml", "InstalledDetails.qml"]) {
+    const qml = readFileSync(new URL("../" + file, import.meta.url), "utf8")
+    const texts = (qml.match(/\n\s*Text \{/g) || []).length
+    const plain = (qml.match(/textFormat: Text\.PlainText/g) || []).length
+    assert.equal(plain, texts, file + " Text blocks vs PlainText")
+    assert.ok(texts > 0, file)
+  }
+})
+
+test("InstalledDetails shows a row's facts and the same four actions as its row", () => {
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+  assert.match(details, /property var row: null/)
+  assert.match(details, /property bool verified: false/)
+  assert.match(details, /required property color secondaryForeground/)
+  for (const sig of ["updateRequested", "removeRequested", "enableRequested", "disableRequested"])
+    assert.match(details, new RegExp(`signal ${sig}\\(\\)`), sig)
+  assert.match(details, /signal repositoryNavigationRequested\(string url\)/)
+  for (const label of ["Author", "Version", "Kinds", "Source", "Repository", "Update", "Status"])
+    assert.match(details, new RegExp(`label: "${label}"`), label)
+  assert.match(details, /"Select a plugin to see its details\."/)
+  // Same gates as the row: an up-to-date checkout has no update to click.
+  assert.match(details, /readonly property bool upToDate: Model\.upToDate\(row\)/)
+  assert.match(details, /readonly property bool canEnable: Model\.canEnable\(row\)/)
+  assert.match(details, /readonly property bool canDisable: Model\.canDisable\(row\)/)
+  assert.match(details, /text: "Remove"[\s\S]*?accent: Color\.urgent/)
+})
+

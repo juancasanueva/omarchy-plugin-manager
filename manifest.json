@@ -6,8 +6,8 @@
   "author": "Juan Casanueva",
   "license": "MIT",
   "description": "Browse, install, place, enable, update, and remove Omarchy shell plugins from the bar",
-  "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "kinds": ["bar-widget", "panel"],
+  "entryPoints": { "barWidget": "BarWidget.qml", "panel": "Expanded.qml" },
   "barWidget": {
     "displayName": "Plugin Manager",
     "description": "Browse, install, place, and manage Omarchy shell plugins",

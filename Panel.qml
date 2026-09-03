@@ -59,7 +59,10 @@ Panel {
   // identical one. The aliases let this surface keep reading `root.rows` and
   // friends as it always has; only what it binds to or writes is aliased.
 
-  PluginStore { id: store }
+  PluginStore {
+    id: store
+    selfId: root.moduleName
+  }
 
   Connections {
     target: store
@@ -220,6 +223,24 @@ Panel {
     }
   }
 
+  // The id the shell knows this plugin by — the same literal the bar widget
+  // answers IPC on — so the popup can ask for its own expanded window.
+  readonly property string pluginId: "io.github.juancasanueva.plugin-manager"
+
+  // Hand over to the expanded window on the tab you were looking at. Close
+  // first: the popup and the panel are never up together. A bar without a
+  // shell reference (tests, odd hosts) makes this a no-op rather than a throw.
+  function expand() {
+    if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
+    var tab = activeTab
+    // Name the output this popup sits on so the expanded window opens on the
+    // same monitor instead of wherever the shell's default screen happens to be.
+    var screenName = panel.screen ? String(panel.screen.name || "") : ""
+    revokeReleaseNavigation()
+    close()
+    bar.shell.summon(pluginId, JSON.stringify({ tab: tab, screen: screenName }))
+  }
+
   function switchTab(tab) {
     // A click mid-turn lands the turn in progress first rather than being
     // swallowed, so no tap is ever lost to the animation.
@@ -276,54 +297,22 @@ Panel {
   property alias statusIsError: store.statusIsError
 
   // ---- Pending confirmation -----------------------------------------------
-
-  property string pendingKind: ""
-  property string pendingId: ""
-  property string pendingLabel: ""
-  property string pendingUrl: ""
-  property bool pendingVerified: false
-  readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
-
-  // ---- Pending placement --------------------------------------------------
   //
-  // Enabling a bar widget is a different question from the yes/no ones above:
-  // not "are you sure" but "where". It gets its own dialog rather than a
-  // default section, because a widget dropped into a section the user did not
-  // choose is a widget they have to go hunting for.
-  readonly property bool placing: pendingKind === "place"
+  // The questions live in the store, shared with the expanded window; this
+  // popup only owns the dialogs that put them on screen.
 
-  // Whether the plugin being added takes a place in the bar. Read off the
-  // registry listing, since the manifest that would say so is not on disk yet.
-  property bool pendingPlacementNeeded: false
-
-  // The section chosen for a plugin that is not installed yet. Held from the
-  // moment the question is answered until the install command is built, since
-  // by the time the clone lands this panel no longer exists to be asked.
-  property string pendingPlacement: ""
-
-  readonly property var placementChoices: Model.placementOptions()
-  readonly property string placementMessage:
-    "Where in the bar should " + pendingLabel + " go?"
-
-  readonly property string confirmMessage: {
-    if (pendingKind === "add")
-      return "Clone " + pendingLabel + "?\n\n"
-        + pendingUrl + "\n\n"
-        // Stated as a review rather than a guarantee. A badge that reads as a
-        // safety promise is worse than no badge, because it retires the
-        // judgement the next sentence is asking for.
-        + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
-        + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
-        + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
-    if (pendingKind === "remove")
-      return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
-    if (pendingKind === "disable")
-      return "Disable " + pendingLabel + "?\n\n"
-        + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
-        + "nothing is uninstalled, but you will need a terminal to put it back:\n\n"
-        + "omarchy plugin enable " + moduleName + " right"
-    return ""
-  }
+  property alias pendingKind: store.pendingKind
+  property alias pendingId: store.pendingId
+  property alias pendingLabel: store.pendingLabel
+  property alias pendingUrl: store.pendingUrl
+  property alias pendingVerified: store.pendingVerified
+  property alias pendingPlacementNeeded: store.pendingPlacementNeeded
+  property alias pendingPlacement: store.pendingPlacement
+  readonly property alias confirming: store.confirming
+  readonly property alias placing: store.placing
+  readonly property alias placementChoices: store.placementChoices
+  readonly property alias placementMessage: store.placementMessage
+  readonly property alias confirmMessage: store.confirmMessage
 
   // ---- Loading ------------------------------------------------------------
   //
@@ -489,14 +478,8 @@ Panel {
   // Installing from the catalog runs the same argv array as the url field —
   // the registry's own install command is read for its url and never executed.
   function askInstall(entry) {
-    if (!entry || !entry.installable || busy) return
+    if (!store.askInstall(entry)) return
     revokeReleaseNavigation()
-    pendingUrl = entry.installUrl
-    pendingLabel = entry.name
-    pendingId = entry.id
-    pendingVerified = entry.verified === true
-    pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
-    pendingKind = "add"
     // Open the successor before closing details. Modal focus ownership gives
     // confirmation priority during this intentional one-turn overlap.
     detailsEntry = null
@@ -524,113 +507,37 @@ Panel {
     store.setStatus(text, isError)
   }
 
+  // The asks belong to the store; the popup only retires its link probe when
+  // a request was actually taken.
   function askRemove(row) {
-    if (!row || !row.removable || busy) return
+    if (!store.askRemove(row)) return
     revokeReleaseNavigation()
-    pendingId = row.id
-    pendingLabel = row.name
-    pendingUrl = ""
-    pendingKind = "remove"
   }
 
-  // Enabling is not destructive and needs no "are you sure" — but a bar widget
-  // has to be told where it goes, and only the user knows that.
   function askEnable(row) {
-    if (!Model.canEnable(row) || busy) return
+    if (!store.askEnable(row)) return
     revokeReleaseNavigation()
-
-    if (!Model.needsPlacement(row)) {
-      // A service, an overlay, or a whole-bar plugin: nothing to place, so the
-      // question would have exactly one answer.
-      store.startEnable(row, "")
-      return
-    }
-
-    pendingId = row.id
-    pendingLabel = row.name
-    pendingUrl = ""
-    pendingKind = "place"
   }
 
-  // Disabling takes a widget out of the bar and leaves it on disk, so it is
-  // reversible from the row it just greyed out — no confirmation needed. With
-  // one exception: this panel's own row, whose Enable button leaves with it.
   function askDisable(row) {
-    if (!Model.canDisable(row) || busy) return
+    if (!store.askDisable(row)) return
     revokeReleaseNavigation()
-
-    if (row.id === moduleName) {
-      pendingId = row.id
-      pendingLabel = row.name
-      pendingUrl = ""
-      pendingKind = "disable"
-      return
-    }
-
-    store.startDisable(row)
   }
 
   function confirmPlacement(section) {
-    // Two questions share this dialog: where to put a plugin being installed,
-    // and where to put one already sitting in the list switched off.
-    if (pendingPlacementNeeded) {
-      startAdd(section)
-      return
-    }
-
-    var row = Model.findRow(rows, pendingId)
-    var label = pendingLabel
-    cancelPending()
-    if (!row) {
-      // The list was reloaded out from under the question — enabling a row
-      // that is no longer there would either fail or, worse, hit whatever now
-      // carries that id.
-      setStatus("Could not enable " + label + ": it is no longer in the list", true)
-      return
-    }
-    store.startEnable(row, section)
+    store.confirmPlacement(section)
   }
 
   function cancelPending() {
-    pendingKind = ""
-    pendingId = ""
-    pendingLabel = ""
-    pendingUrl = ""
-    pendingPlacementNeeded = false
+    store.cancelPending()
   }
 
-  // Confirmation answered. A bar widget still owes us one more answer, and it
-  // has to be collected now: cloning a plugin makes the shell rebuild every
-  // plugin widget, this panel included, so there is no "after the install" in
-  // which to ask anything.
   function confirmPending() {
-    if (pendingKind === "disable") {
-      var row = Model.findRow(rows, pendingId)
-      cancelPending()
-      if (row) store.startDisable(row)
-      return
-    }
-    if (pendingKind === "add") {
-      if (pendingId !== "" && pendingPlacementNeeded) {
-        pendingKind = "place"
-        return
-      }
-      startAdd("")
-    } else if (pendingKind === "remove") {
-      store.runAction("remove", pendingLabel, ["omarchy", "plugin", "remove", pendingId, "--yes"])
-      cancelPending()
-    }
+    store.confirmPending()
   }
 
-  // Clone, then place — as one detached command, built by the store from the
-  // answers this panel collected. The pending state is cleared first: by the
-  // time the clone lands this panel no longer exists to clear anything.
   function startAdd(section) {
-    var url = pendingUrl
-    var label = pendingLabel
-    var id = pendingId
-    cancelPending()
-    store.startAdd(url, id, section, label)
+    store.startAdd(section)
   }
 
   // The store owns the gate; asking it first keeps a click on a disabled
@@ -688,9 +595,8 @@ Panel {
     titleIcon.opacity = 0
     titleIconIntroArmed = true
     setStatus("", false)
-    reload()
-    checkUpdates()
-    if (!catalogLoaded && !catalogLoading) loadCatalog(false)
+    revokeReleaseNavigation()
+    store.loadOnOpen()
   }
 
   // ---- Processes ----------------------------------------------------------
@@ -879,11 +785,18 @@ Panel {
           }
 
           Text {
+            id: subtitle
             // Never rich text: AutoText would fetch what a crafted string points at.
             textFormat: Text.PlainText
             anchors.left: title.right
             anchors.leftMargin: Style.space(10)
+            // Bounded on the right by whatever sits there, and elided rather
+            // than allowed to run under the tabs: with two icons in the
+            // header now, "3 to update" was the part that lost.
+            anchors.right: marketplaceLink.visible ? marketplaceLink.left : tabs.left
+            anchors.rightMargin: Style.space(10)
             anchors.baseline: title.baseline
+            elide: Text.ElideRight
             text: {
               if (root.browsing) {
                 if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
@@ -892,8 +805,10 @@ Panel {
               }
               if (root.loading && root.rows.length === 0) return "reading…"
               if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
-              var summary = root.installedTotal + " installed  ·  " + root.rows.length + " total"
-              if (root.behindCount > 0) return summary + "  ·  " + root.behindCount + " to update"
+              // Tight separators: the expand icon took the slack this line
+              // used to have, and "to update" is the part that must survive.
+              var summary = root.installedTotal + " installed · " + root.rows.length + " total"
+              if (root.behindCount > 0) return summary + " · " + root.behindCount + " to update"
               return summary
             }
             color: root.secondaryForeground
@@ -906,7 +821,7 @@ Panel {
           // Browse's extra button goes on the far side of them.
           ButtonGroup {
             id: tabs
-            anchors.right: refreshButton.left
+            anchors.right: expandButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -949,6 +864,23 @@ Panel {
               text: "Open the official Marketplace"
               fontFamily: root.contentFontFamily
             }
+          }
+
+          // Icon only, like the refresh beside it: the popup's header has no
+          // room for a labelled button, and the tooltip says the rest.
+          PanelActionButton {
+            id: expandButton
+            anchors.right: refreshButton.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰊓"
+            fontSize: Style.font.display
+            tooltipText: "Expand into a full panel"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.expand()
           }
 
           PanelActionButton {
