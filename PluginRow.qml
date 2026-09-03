@@ -430,6 +430,7 @@ Rectangle {
       // Same trick as the header's refresh: the glyph steps aside while the
       // pull runs and a spinning copy takes its place.
       iconText: root.updating ? "" : "󰑐"
+      fontSize: Style.font.iconLarge
       tooltipText: {
         if (!root.row) return "Update this checkout"
         if (root.hasUpdate) return "Update available — pull from " + root.row.remote
@@ -470,6 +471,7 @@ Rectangle {
       anchors.verticalCenter: parent.verticalCenter
       visible: root.row ? root.row.removable === true : false
       iconText: "󰩹"
+      fontSize: Style.font.iconLarge
       tooltipText: "Remove this plugin"
       foreground: root.foreground
       hoverColor: Color.urgent

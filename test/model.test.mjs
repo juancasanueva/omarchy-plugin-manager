@@ -2279,6 +2279,15 @@ test("the row state bar is a 5px rule", () => {
   assert.match(bar, /width: Style\.space\(5\)/)
 })
 
+test("the row's update and remove buttons use the large icon size", () => {
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const update = row.slice(row.indexOf("id: updateButton"), row.indexOf("PanelActionButton {", row.indexOf("id: updateButton")))
+  assert.match(update, /fontSize: Style\.font\.iconLarge/)
+  const remove = row.slice(row.indexOf("PanelActionButton {", row.indexOf("id: updateButton")))
+  assert.match(remove, /iconText: "󰩹"/)
+  assert.match(remove, /fontSize: Style\.font\.iconLarge/)
+})
+
 test("a row's update button spins while that row is being updated", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
