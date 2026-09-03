@@ -184,10 +184,64 @@ Panel {
   property var detailsEntry: null
   readonly property bool detailsOpen: detailsEntry !== null
 
+  // ---- Tab flip -----------------------------------------------------------
+
+  // The content below the header turns over like a card when the tab changes:
+  // the current face rotates edge-on around its vertical axis, the other tab
+  // takes its place at the midpoint, and it turns the rest of the way in from
+  // the far side. Same rotational direction throughout, mirrored on the way
+  // back, so the flip also says which way you went. The header, tab bar and
+  // hint bar stay put — a frame that moves is a transition nobody can read.
+  property string pendingTab: ""
+  property real contentFlipAngle: 0
+  readonly property bool contentFlipping: contentFlip.running
+  // A slight shrink at the edge-on point sells the depth of the turn.
+  readonly property real contentFlipScale: 1 - 0.06 * Math.sin(Math.abs(contentFlipAngle) * Math.PI / 180)
+
+  SequentialAnimation {
+    id: contentFlip
+    property int direction: 1   // 1 turning toward Browse, -1 back to Installed
+
+    NumberAnimation {
+      target: root
+      property: "contentFlipAngle"
+      from: 0
+      to: -90 * contentFlip.direction
+      duration: 200
+      easing.type: Easing.InCubic
+    }
+    ScriptAction { script: root.applyPendingTab() }
+    NumberAnimation {
+      target: root
+      property: "contentFlipAngle"
+      from: 90 * contentFlip.direction
+      to: 0
+      duration: 200
+      easing.type: Easing.OutCubic
+    }
+  }
+
   function switchTab(tab) {
+    // A click mid-turn lands the turn in progress first rather than being
+    // swallowed, so no tap is ever lost to the animation.
+    if (contentFlip.running) {
+      contentFlip.stop()
+      if (pendingTab !== "") applyPendingTab()
+      contentFlipAngle = 0
+    }
     if (activeTab === tab) return
     revokeReleaseNavigation()
     closeDetails()
+    pendingTab = tab
+    contentFlip.direction = tab === "browse" ? 1 : -1
+    contentFlip.restart()
+  }
+
+  // The actual switch, run at the edge-on midpoint where nothing is visible.
+  function applyPendingTab() {
+    var tab = pendingTab
+    if (tab === "") return
+    pendingTab = ""
     activeTab = tab
     resetSelection()
     if (tab === "browse" && !catalogLoaded && !catalogLoading) loadCatalog(false)
@@ -1299,7 +1353,9 @@ Panel {
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
-            value: root.activeTab
+            // Highlights the destination the moment it is clicked, while the
+            // content is still turning toward it.
+            value: root.pendingTab !== "" ? root.pendingTab : root.activeTab
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
             fontSize: Style.font.caption
@@ -1805,6 +1861,15 @@ Panel {
         anchors.topMargin: Style.space(10)
         anchors.bottom: hintBar.top
         anchors.bottomMargin: Style.space(10)
+        // One face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: listScroll.width / 2
+          origin.y: listScroll.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
         contentWidth: width
         contentHeight: listColumn.implicitHeight
         clip: true
@@ -1945,6 +2010,15 @@ Panel {
         anchors.topMargin: Style.space(10)
         anchors.bottom: hintBar.top
         anchors.bottomMargin: Style.space(10)
+        // The other face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: catalogGrid.width / 2
+          origin.y: catalogGrid.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: Math.round(cellHeight * 2)

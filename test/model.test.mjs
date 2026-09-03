@@ -2295,6 +2295,46 @@ test("the title puzzle piece snaps into place when the panel opens", () => {
   assert.match(panel, /onOpenedChanged: \{\s*if \(!opened\) \{[^\n]*return \}\s*titleIconIntro\.restart\(\)/)
 })
 
+test("switching tabs flips the content area like a card", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  // The switch is deferred to the edge-on midpoint of the flip; the tab bar
+  // highlights the destination immediately so the click feels acknowledged.
+  assert.match(panel, /property string pendingTab: ""/)
+  assert.match(panel, /property real contentFlipAngle: 0/)
+  assert.match(panel, /readonly property bool contentFlipping: contentFlip\.running/)
+  assert.match(panel, /readonly property real contentFlipScale: 1 - 0\.06 \* Math\.sin\(Math\.abs\(contentFlipAngle\) \* Math\.PI \/ 180\)/)
+  assert.match(panel, /value: root\.pendingTab !== "" \? root\.pendingTab : root\.activeTab/)
+
+  const switchTab = panel.slice(panel.indexOf("function switchTab(tab) {"), panel.indexOf("function applyPendingTab() {"))
+  // A click during a flip finishes that flip first instead of being dropped.
+  assert.match(switchTab, /if \(contentFlip\.running\) \{\s*contentFlip\.stop\(\)\s*if \(pendingTab !== ""\) applyPendingTab\(\)\s*contentFlipAngle = 0\s*\}/)
+  assert.match(switchTab, /if \(activeTab === tab\) return/)
+  assert.match(switchTab, /pendingTab = tab\s*contentFlip\.direction = tab === "browse" \? 1 : -1\s*contentFlip\.restart\(\)/)
+  assert.doesNotMatch(switchTab, /activeTab = tab/)
+
+  const apply = panel.slice(panel.indexOf("function applyPendingTab() {"), panel.indexOf("onSearchQueryChanged"))
+  assert.match(apply, /pendingTab = ""\s*activeTab = tab\s*resetSelection\(\)/)
+  assert.match(apply, /if \(tab === "browse" && !catalogLoaded && !catalogLoading\) loadCatalog\(false\)/)
+
+  // Turn to edge-on, swap, turn back in from the other side — same rotational
+  // direction throughout, mirrored for the way back.
+  const flip = panel.slice(panel.indexOf("id: contentFlip\n"), panel.indexOf("id: contentFlip\n") + 1400)
+  assert.match(flip, /property int direction: 1/)
+  assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 0[\s\S]*?to: -90 \* contentFlip\.direction[\s\S]*?easing\.type: Easing\.InCubic/)
+  assert.match(flip, /ScriptAction \{ script: root\.applyPendingTab\(\) \}/)
+  assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 90 \* contentFlip\.direction[\s\S]*?to: 0[\s\S]*?easing\.type: Easing\.OutCubic/)
+
+  // Both faces of the card carry the same transform; the layer only exists
+  // while turning so the idle panel pays nothing.
+  for (const id of ["id: listScroll", "id: catalogGrid"]) {
+    const face = panel.slice(panel.indexOf(id), panel.indexOf(id) + 1200)
+    assert.match(face, /transform: Rotation \{[\s\S]*?axis \{ x: 0; y: 1; z: 0 \}[\s\S]*?angle: root\.contentFlipAngle/, id)
+    assert.match(face, /scale: root\.contentFlipScale/, id)
+    assert.match(face, /layer\.enabled: root\.contentFlipping/, id)
+  }
+})
+
 test("the row state bar is a 5px rule", () => {
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
   const bar = row.slice(row.indexOf("id: stateBar"), row.indexOf("id: stateBar") + 500)
