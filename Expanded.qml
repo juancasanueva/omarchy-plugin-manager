@@ -116,6 +116,7 @@ Item {
   readonly property alias installedTotal: store.installedTotal
   property alias catalog: store.catalog
   readonly property alias verifiedIds: store.verifiedIds
+  readonly property alias starsById: store.starsById
   property alias catalogLoading: store.catalogLoading
   property alias catalogLoaded: store.catalogLoaded
   property alias catalogError: store.catalogError
@@ -1040,6 +1041,7 @@ Item {
                   width: listColumn.width
                   row: modelData
                   verified: Model.isVerified(modelData, root.verifiedIds)
+                  stars: Model.rowStarLabel(modelData, root.starsById)
                   selected: root.selectedIndex === index
                   showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
                   foreground: root.foreground
@@ -1073,6 +1075,7 @@ Item {
                   width: listColumn.width
                   row: modelData
                   verified: Model.isVerified(modelData, root.verifiedIds)
+                  stars: Model.rowStarLabel(modelData, root.starsById)
                   selected: root.selectedIndex === globalIndex
                   showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
                   foreground: root.foreground

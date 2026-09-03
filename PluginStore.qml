@@ -64,6 +64,7 @@ Item {
 
   property var catalog: []
   readonly property var verifiedIds: Model.verifiedIdSet(catalog)
+  readonly property var starsById: Model.catalogStarsById(catalog)
   property bool catalogLoading: false
   property bool catalogLoaded: false
   property string catalogError: ""

@@ -16,7 +16,7 @@ const Model = new Function(
     rowsInGroup, groupLabel, sectionHeading,
     kindLabel, kindsLabel, kindOptions, filterByKind, nextKind, filterKind, filterKindLabel,
     statusOptions, filterByStatus,
-    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified, upToDate,
+    matchesQuery, filterRows, isFiltering, emptyMessage, groupOptions, browseFilterHints, installedFilterHints, actionHints, nextOption, verifiedIdSet, isVerified, upToDate, catalogStarsById, rowStarLabel,
     parseCatalog, catalogEntries, installedIdSet, installUrlFor, markInstalled,
     restampCatalogInstallState, plainText, buildCatalog, idSetFromList,
     catalogAssetUrl, catalogCount,
@@ -943,6 +943,22 @@ test("the catalog is built on a worker thread so the shell keeps answering", () 
   // The worker is a shim over the same Model.js the main thread uses.
   assert.match(worker, /Qt\.include\("Model\.js"\)/)
   assert.match(worker, /WorkerScript\.onMessage = function\(message\) \{[\s\S]*?var built = buildCatalog\(message\.raw, message\.installedIds\)[\s\S]*?WorkerScript\.sendMessage\(\{ generation: message\.generation, entries: built\.entries, error: built\.error \}\)/)
+})
+
+test("catalogStarsById joins GitHub stars onto installed rows by id", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const stars = Model.catalogStarsById(entries)
+  // Null prototype, like verifiedIdSet: an id named `constructor` is data.
+  assert.equal(Object.getPrototypeOf(stars), null)
+  assert.equal(stars["acme.weather"], 120)
+  // A row with a catalog listing shows its count; one without shows nothing,
+  // and an unknown count is omitted rather than shown as zero.
+  assert.equal(Model.rowStarLabel({ id: "acme.weather" }, stars), "120")
+  assert.equal(Model.rowStarLabel({ id: "nobody.home" }, stars), "")
+  assert.equal(Model.rowStarLabel(null, stars), "")
+  assert.equal(Model.rowStarLabel({ id: "acme.weather" }, null), "")
+  assert.equal(Model.rowStarLabel({ id: "x" }, Model.catalogStarsById([{ id: "x", stars: null }])), "")
+  assert.equal(Model.rowStarLabel({ id: "y" }, Model.catalogStarsById([{ id: "y", stars: 1966 }])), "2k")
 })
 
 test("installedIdSet indexes the installed rows by id", () => {
@@ -3287,7 +3303,7 @@ test("the expanded search box is captioned and sized like the filter dropdowns",
   assert.match(expanded, /id: searchControl\s*anchors\.left: parent\.left\s*anchors\.top: parent\.top\s*anchors\.bottom: parent\.bottom\s*anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
 })
 
-test("the expanded list row shows name, verified pill and description only", () => {
+test("the expanded list row carries no actions or metadata lines", () => {
   const row = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
   assert.match(row, /property var row: null/)
   assert.match(row, /property bool selected: false/)
@@ -3300,10 +3316,10 @@ test("the expanded list row shows name, verified pill and description only", () 
   assert.match(row, /id: verifiedPill[\s\S]*?visible: root\.verified[\s\S]*?text: "󰄬 verified"/)
   // The state bar already says on or off; a pill saying it again is noise.
   assert.doesNotMatch(row, /id: statePill|"On"|"Off"/)
-  assert.match(row, /readonly property real pillsWidth: verifiedPill\.visible \? verifiedPill\.width \+ spacing : 0/)
+  assert.match(row, /readonly property real pillsWidth: \(stateMark\.visible \? stateMark\.width \+ marks\.spacing : 0\)/)
   assert.match(row, /text: Model\.descriptionLine\(root\.row\)[\s\S]*?wrapMode: Text\.WordWrap[\s\S]*?maximumLineCount: 2[\s\S]*?elide: Text\.ElideRight/)
   // The name yields to both pills instead of pushing them off the row.
-  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - nameLine\.pillsWidth\)/)
+  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - nameLine\.pillsWidth - nameLine\.starsWidth\)/)
 })
 
 test("the expanded panel plays the same puzzle-piece intro as the popup", () => {
@@ -3347,6 +3363,40 @@ test("the expanded panel flips its content like a card when switching tabs", () 
     assert.match(face, /scale: root\.contentFlipScale/, id)
     assert.match(face, /layer\.enabled: root\.contentFlipping/, id)
   }
+})
+
+test("the expanded list row marks updatable plugins and shows their stars", () => {
+  const row = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.match(store, /readonly property var starsById: Model\.catalogStarsById\(catalog\)/)
+  assert.match(expanded, /readonly property alias starsById: store\.starsById/)
+  assert.equal(expanded.split("stars: Model.rowStarLabel(modelData, root.starsById)").length - 1, 2)
+
+  assert.match(row, /property string stars: ""/)
+  // A state mark leads the name, as in a package list: a bold orange arrow
+  // when an update is waiting, a green check when the checkout is confirmed
+  // current, nothing when unchecked or not updatable.
+  assert.ok(row.indexOf("id: stateMark") < row.indexOf("id: name\n"), "the mark comes before the name")
+  const mark = row.slice(row.indexOf("id: stateMark"), row.indexOf("id: stateMark") + 900)
+  assert.match(mark, /readonly property bool behind: root\.row \? root\.row\.behind === true : false/)
+  assert.match(mark, /readonly property bool current: Model\.upToDate\(root\.row\)/)
+  assert.match(mark, /visible: behind \|\| current/)
+  // The bold check from the same Material set as the arrow, so the two
+  // marks share a weight.
+  assert.match(mark, /text: behind \? "󰜷" : "󰸞"/)
+  assert.match(mark, /color: behind \? "#f28c28" : "#5fb865"/)
+  assert.match(mark, /font\.pixelSize: Style\.font\.title/)
+  assert.match(mark, /textFormat: Text\.PlainText/)
+  assert.doesNotMatch(row, /id: updateArrow/)
+  // Stars sit at the row's right edge, the same gold star the cards use.
+  const stars = row.slice(row.indexOf("id: starsRow"), row.indexOf("id: starsRow") + 900)
+  assert.match(stars, /anchors\.right: parent\.right/)
+  assert.match(stars, /visible: root\.stars !== ""/)
+  assert.match(stars, /text: "󰓎"[\s\S]*?color: "#f5c518"/)
+  assert.match(stars, /text: root\.stars/)
+  // The name yields to everything else on its line.
+  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - nameLine\.pillsWidth - nameLine\.starsWidth\)/)
 })
 
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {

@@ -14,6 +14,9 @@ Rectangle {
   property var row: null
   property bool selected: false
   property bool verified: false
+  // The GitHub star count from the marketplace listing, already formatted
+  // ("120", "2k"); empty when the listing has none.
+  property string stars: ""
   property bool showSeparator: false
   property color foreground: Color.foreground
   required property color secondaryForeground
@@ -57,50 +60,109 @@ Rectangle {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(3)
 
-    // Name first, then the pill; the name yields to the pill rather than
-    // pushing it off the row.
-    Row {
+    // The state mark, then the name and its pill; the star count keeps the
+    // right edge. The name yields to all of them rather than pushing them off the
+    // row.
+    Item {
       id: nameLine
       width: parent.width
-      spacing: Style.space(8)
+      height: Math.max(marks.implicitHeight, starsRow.implicitHeight)
 
-      readonly property real pillsWidth: verifiedPill.visible ? verifiedPill.width + spacing : 0
+      readonly property real pillsWidth: (stateMark.visible ? stateMark.width + marks.spacing : 0)
+        + (verifiedPill.visible ? verifiedPill.width + marks.spacing : 0)
+      readonly property real starsWidth: starsRow.visible ? starsRow.width + marks.spacing : 0
 
-      Text {
-        id: name
-        // Never rich text: AutoText would fetch what a crafted string points at.
-        textFormat: Text.PlainText
+      Row {
+        id: marks
+        anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        width: Math.min(implicitWidth, nameLine.width - nameLine.pillsWidth)
-        text: root.row ? root.row.name : ""
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.subtitle
-        font.bold: true
-        elide: Text.ElideRight
-      }
+        spacing: Style.space(8)
 
-      Rectangle {
-        id: verifiedPill
-        anchors.verticalCenter: parent.verticalCenter
-        visible: root.verified
-        width: verifiedLabel.implicitWidth + Style.space(10)
-        height: verifiedLabel.implicitHeight + Style.space(4)
-        radius: height / 2
-        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
-
+        // The state mark leads the name, as in a package list: a bold orange
+        // arrow when an update is waiting, a green check when the checkout is
+        // confirmed current. Fixed colours rather than the accent: the shell
+        // has no warm or green token, and these are verdicts, not decoration.
+        // Nothing when unchecked or not updatable — silence, not a guess.
         Text {
-          id: verifiedLabel
+          id: stateMark
           // Never rich text: AutoText would fetch what a crafted string points at.
           textFormat: Text.PlainText
-          anchors.centerIn: parent
-          text: "󰄬 verified"
-          color: Color.accent
+          anchors.verticalCenter: parent.verticalCenter
+          readonly property bool behind: root.row ? root.row.behind === true : false
+          readonly property bool current: Model.upToDate(root.row)
+          visible: behind || current
+          text: behind ? "󰜷" : "󰸞"
+          color: behind ? "#f28c28" : "#5fb865"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          font.bold: true
+        }
+
+        Text {
+          id: name
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          width: Math.min(implicitWidth, nameLine.width - nameLine.pillsWidth - nameLine.starsWidth)
+          text: root.row ? root.row.name : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        Rectangle {
+          id: verifiedPill
+          anchors.verticalCenter: parent.verticalCenter
+          visible: root.verified
+          width: verifiedLabel.implicitWidth + Style.space(10)
+          height: verifiedLabel.implicitHeight + Style.space(4)
+          radius: height / 2
+          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+
+          Text {
+            id: verifiedLabel
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            anchors.centerIn: parent
+            text: "󰄬 verified"
+            color: Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+      }
+
+      // The same gold star the Browse cards wear, with the listing's count.
+      Row {
+        id: starsRow
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.stars !== ""
+        spacing: Style.space(2)
+
+        Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          text: "󰓎"
+          color: "#f5c518"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+
+        Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.stars
+          color: root.secondaryForeground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
       }
-
     }
 
     // Two lines at most: the pane on the right shows the whole description,

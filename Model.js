@@ -763,6 +763,25 @@ function verifiedIdSet(entries) {
   return set
 }
 
+// GitHub stars per plugin id, from the marketplace catalog, so an installed
+// row can wear the count its listing has. Same null-prototype set discipline
+// as verifiedIdSet: ids are untrusted property names.
+function catalogStarsById(entries) {
+  var stars = Object.create(null)
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    if (!entry || !entry.id) continue
+    var count = catalogCount(entry.stars)
+    if (count !== null) stars[String(entry.id)] = count
+  }
+  return stars
+}
+
+function rowStarLabel(row, starsById) {
+  if (!row || !row.id || !hasOwnKey(starsById, row.id)) return ""
+  return starLabel(starsById[String(row.id)])
+}
+
 function isVerified(row, verifiedIds) {
   return !!(row && row.id) && hasOwnKey(verifiedIds, row.id)
 }
