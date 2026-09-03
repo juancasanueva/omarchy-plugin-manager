@@ -794,6 +794,7 @@ Panel {
 
   onOpenedChanged: {
     if (!opened) { detailsEntry = null; revokeReleaseNavigation(); return }
+    titleIconIntro.restart()
     setStatus("", false)
     reload()
     checkUpdates()
@@ -1202,6 +1203,54 @@ Panel {
             color: root.contentForeground
             font.family: root.contentFontFamily
             font.pixelSize: title.font.pixelSize
+            transformOrigin: Item.Center
+
+            // A puzzle piece should arrive like one: oversized and tilted, it
+            // snaps into its slot with a small overshoot and then settles with
+            // a tiny wiggle. Anchors are untouched by scale and rotation, so
+            // the title beside it never moves. Restarted on every open.
+            SequentialAnimation {
+              id: titleIconIntro
+
+              // Hold still for a beat: the popup's own fade-in would otherwise
+              // swallow the opening frames of the drop.
+              PauseAnimation { duration: 180 }
+
+              ParallelAnimation {
+                NumberAnimation {
+                  target: titleIcon
+                  property: "scale"
+                  from: 3
+                  to: 1
+                  duration: 1000
+                  easing.type: Easing.OutBack
+                  easing.overshoot: 1.8
+                }
+                NumberAnimation {
+                  target: titleIcon
+                  property: "rotation"
+                  from: -150
+                  to: 0
+                  duration: 1000
+                  easing.type: Easing.OutBack
+                  easing.overshoot: 1.2
+                }
+                NumberAnimation {
+                  target: titleIcon
+                  property: "opacity"
+                  from: 0
+                  to: 1
+                  duration: 400
+                }
+              }
+
+              SequentialAnimation {
+                id: titleIconSettle
+                NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 140; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 140; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 120; easing.type: Easing.OutQuad }
+              }
+            }
           }
 
           Text {

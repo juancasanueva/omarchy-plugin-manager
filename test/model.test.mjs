@@ -2273,6 +2273,28 @@ test("the header refresh button is display-sized and spins instead of greying wh
   assert.match(spinner, /RotationAnimation on rotation \{[\s\S]*?running: root\.refreshing[\s\S]*?from: 0[\s\S]*?to: 360[\s\S]*?direction: RotationAnimation\.Clockwise[\s\S]*?loops: Animation\.Infinite/)
 })
 
+test("the title puzzle piece snaps into place when the panel opens", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const icon = panel.slice(panel.indexOf("id: titleIcon"), panel.indexOf("id: title\n"))
+  assert.match(icon, /transformOrigin: Item\.Center/)
+  const intro = icon.slice(icon.indexOf("id: titleIconIntro"))
+  assert.match(icon, /SequentialAnimation \{\s*id: titleIconIntro/)
+  // Oversized, tilted and invisible on the way in; scale and rotation overshoot
+  // so the piece "clicks" home rather than gliding.
+  // A beat of stillness first: the popup's own fade-in would otherwise
+  // swallow the opening frames. Then a slow, readable snap.
+  assert.match(intro, /^\s*PauseAnimation \{ duration: 180 \}/m)
+  assert.match(intro, /property: "scale"[\s\S]*?from: 3[\s\S]*?to: 1[\s\S]*?duration: 1000[\s\S]*?easing\.type: Easing\.OutBack/)
+  assert.match(intro, /property: "rotation"[\s\S]*?from: -150[\s\S]*?to: 0[\s\S]*?duration: 1000[\s\S]*?easing\.type: Easing\.OutBack/)
+  assert.match(intro, /property: "opacity"[\s\S]*?from: 0[\s\S]*?to: 1[\s\S]*?duration: 400/)
+  // The settle wiggle always ends upright.
+  const wiggle = intro.slice(intro.indexOf("id: titleIconSettle"))
+  assert.match(wiggle, /property: "rotation"[\s\S]*?to: 8[\s\S]*?property: "rotation"[\s\S]*?to: -5[\s\S]*?property: "rotation"[\s\S]*?to: 0/)
+  // Replayed on every open, and restart (not start) so a quick close/open
+  // never leaves the piece mid-flight.
+  assert.match(panel, /onOpenedChanged: \{\s*if \(!opened\) \{[^\n]*return \}\s*titleIconIntro\.restart\(\)/)
+})
+
 test("the row state bar is a 5px rule", () => {
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
   const bar = row.slice(row.indexOf("id: stateBar"), row.indexOf("id: stateBar") + 500)
