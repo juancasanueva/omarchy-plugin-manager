@@ -84,6 +84,7 @@ Item {
 
   function close() {
     initialLoad.stop()
+    releaseNavigator.revoke()
     opened = false
     detailsEntry = null
     selectedIndex = -1
@@ -365,9 +366,16 @@ Item {
   // Links open through the same trusted-url gate as the popup's rows. The
   // popup's Release-probe dance is left out here: this surface offers the
   // repository link only, which needs no probing.
+  // Release navigation is the same component the popup uses: a version link
+  // asks GitHub which Release page exists before opening one.
+  ReleaseNavigator { id: releaseNavigator }
+
+  function requestGithubNavigation(candidates, fallbackUrl) {
+    releaseNavigator.request(candidates, fallbackUrl)
+  }
+
   function navigateExternalUrl(url) {
-    var trusted = Model.browsableUrl(url)
-    if (trusted !== "") Quickshell.execDetached(["omarchy-launch-browser", trusted])
+    releaseNavigator.navigate(url)
   }
 
   // ---- Keyboard -----------------------------------------------------------------
@@ -1120,6 +1128,7 @@ Item {
             onEnableRequested: store.askEnable(root.selectedRow)
             onDisableRequested: store.askDisable(root.selectedRow)
             onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+            onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
           }
         }
 
@@ -1281,7 +1290,7 @@ Item {
           onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
           // No Release probing on this surface: the fallback page is the
           // Releases list, which is always a fine place to land.
-          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.navigateExternalUrl(fallbackUrl) }
+          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
           onInstallRequested: root.askInstall(root.detailsEntry)
         }
 

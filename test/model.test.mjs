@@ -2144,7 +2144,13 @@ test("repository and Release actions route browser ownership through Panel", () 
     assert.match(delegate, /repositoryNavigationRequested\(repoUrl\)/)
   }
   assert.doesNotMatch(catalogCard, /Quickshell\.execDetached|repositoryNavigationRequested/)
-  assert.equal(panel.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
+  // The one browser-launching sink lives in the shared ReleaseNavigator;
+  // neither window launches a browser on its own.
+  const navigator = readFileSync(new URL("../ReleaseNavigator.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.equal(navigator.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
+  assert.doesNotMatch(panel, /omarchy-launch-browser/)
+  assert.doesNotMatch(expanded, /omarchy-launch-browser/)
   assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 3)
   assert.equal(panel.split("onGithubNavigationRequested:").length - 1, 2)
   assert.match(pluginDetails, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
@@ -2731,7 +2737,10 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
     assert.match(store, new RegExp(`Process \\{\\s*id: ${id}`), id)
     assert.doesNotMatch(panel, new RegExp(`id: ${id}\\b`), id)
   }
-  assert.match(panel, /Process \{\s*id: releaseProbe/)
+  // The probe and its state machine glue live in ReleaseNavigator.qml,
+  // shared by the popup and the expanded panel.
+  assert.doesNotMatch(panel, /Process \{\s*id: releaseProbe/)
+  assert.match(panel, /ReleaseNavigator \{ id: releaseNavigator \}/)
   for (const script of ["installScript", "catalogScript", "updateScript", "noticeScript"]) {
     assert.match(store, new RegExp(`readonly property string ${script}:`), script)
     assert.doesNotMatch(panel, new RegExp(`property string ${script}`), script)
@@ -3397,6 +3406,43 @@ test("the expanded list row marks updatable plugins and shows their stars", () =
   assert.match(stars, /text: root\.stars/)
   // The name yields to everything else on its line.
   assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - nameLine\.pillsWidth - nameLine\.starsWidth\)/)
+})
+
+test("release navigation is one shared component and the details version is a release link", () => {
+  const navigator = readFileSync(new URL("../ReleaseNavigator.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+
+  // The component owns the state, the probe process and the browser sink.
+  assert.match(navigator, /property var state: Model\.releaseNavigationInitialState\(\)/)
+  assert.match(navigator, /readonly property bool busy: state\.activeGeneration !== 0/)
+  for (const fn of ["function request(candidates, fallbackUrl)", "function navigate(url)", "function revoke()", "function apply(transition)", "function startProbe(entry)", "function openBrowserUrl(url)"])
+    assert.ok(navigator.includes(fn), fn)
+  assert.match(navigator, /Process \{\s*id: releaseProbe/)
+  assert.match(navigator, /Quickshell\.execDetached\(\["omarchy-launch-browser", trusted\]\)/)
+
+  // The popup keeps its wrapper names and delegates.
+  assert.match(panel, /function requestGithubNavigation\(candidates, fallbackUrl\) \{\s*releaseNavigator\.request\(candidates, fallbackUrl\)\s*\}/)
+  assert.match(panel, /function navigateExternalUrl\(url\) \{\s*releaseNavigator\.navigate\(url\)\s*\}/)
+  assert.match(panel, /function revokeReleaseNavigation\(\) \{\s*releaseNavigator\.revoke\(\)\s*\}/)
+  assert.match(panel, /readonly property alias releaseProbeBusy: releaseNavigator\.busy/)
+  assert.doesNotMatch(panel, /function startReleaseProbe|function applyReleaseNavigationTransition|property var releaseNavigationState/)
+
+  // The expanded panel now probes releases too, instead of opening fallbacks.
+  assert.match(expanded, /ReleaseNavigator \{ id: releaseNavigator \}/)
+  assert.match(expanded, /function requestGithubNavigation\(candidates, fallbackUrl\) \{\s*releaseNavigator\.request\(candidates, fallbackUrl\)\s*\}/)
+  assert.match(expanded, /function navigateExternalUrl\(url\) \{\s*releaseNavigator\.navigate\(url\)\s*\}/)
+  assert.doesNotMatch(expanded, /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{ root\.navigateExternalUrl\(fallbackUrl\) \}/)
+  assert.equal(expanded.split("onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }").length - 1, 2)
+  assert.match(expanded, /function close\(\) \{[\s\S]*?releaseNavigator\.revoke\(\)/)
+
+  // The Version field is a link that resolves the Release for that tag.
+  assert.match(details, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
+  assert.match(details, /readonly property var versionReleaseCandidates: Model\.versionReleaseCandidates\(row\)/)
+  assert.match(details, /readonly property string versionFallbackUrl: Model\.versionFallbackUrl\(row\)/)
+  assert.match(details, /rows\.push\(\{ label: "Version", value: versionText, link: versionFallbackUrl, release: true \}\)/)
+  assert.match(details, /onClicked: field\.modelData\.release === true\s*\? root\.githubNavigationRequested\(root\.versionReleaseCandidates, root\.versionFallbackUrl\)\s*: root\.repositoryNavigationRequested\(field\.modelData\.link\)/)
 })
 
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {

@@ -125,8 +125,8 @@ Panel {
   // One click-time release probe for the whole panel. Every explicit
   // navigation or action advances this generation state, so callbacks from an
   // older process can settle it but never recover superseded URLs.
-  property var releaseNavigationState: Model.releaseNavigationInitialState()
-  readonly property bool releaseProbeBusy: releaseNavigationState.activeGeneration !== 0
+  ReleaseNavigator { id: releaseNavigator }
+  readonly property alias releaseProbeBusy: releaseNavigator.busy
 
   readonly property alias installedTotal: store.installedTotal
   readonly property bool filtered: Model.isFiltering(kindFilter, statusFilter, searchQuery, groupFilter)
@@ -329,51 +329,18 @@ Panel {
     return store.checkUpdates()
   }
 
-  // The only browser-launching sink in the panel. Callers hand it URLs already
-  // accepted by a Model transition; the argv remains one isolated URL.
-  function openBrowserUrl(url) {
-    var trusted = Model.browsableUrl(url)
-    if (trusted !== "") Quickshell.execDetached(["omarchy-launch-browser", trusted])
-  }
-
-  function applyReleaseNavigationTransition(transition) {
-    if (!transition) return
-    releaseNavigationState = transition.state
-    if (transition.stopProbe && releaseProbe.running) releaseProbe.running = false
-    if (transition.startRequest) startReleaseProbe(transition.startRequest)
-    if (transition.openUrl !== "") openBrowserUrl(transition.openUrl)
-    if (transition.scheduleStart) Qt.callLater(function() {
-      applyReleaseNavigationTransition(
-        Model.releaseNavigationStartQueuedTransition(releaseNavigationState))
-    })
-  }
-
-  function startReleaseProbe(entry) {
-    if (!entry || entry.generation !== releaseNavigationState.activeGeneration) return
-    var command = Model.releaseProbeCommand(entry.probeUrl)
-    if (command.length === 0) {
-      applyReleaseNavigationTransition(
-        Model.releaseNavigationProbeStartFailedTransition(releaseNavigationState))
-      return
-    }
-    releaseProbe.command = command
-    releaseProbe.running = true
-  }
-
+  // Release navigation is shared with the expanded panel; these keep the
+  // names the rest of this file and its tests know.
   function requestGithubNavigation(candidates, fallbackUrl) {
-    var request = Model.githubNavigationRequest(candidates, fallbackUrl)
-    applyReleaseNavigationTransition(
-      Model.releaseNavigationRequestTransition(releaseNavigationState, request))
+    releaseNavigator.request(candidates, fallbackUrl)
   }
 
   function navigateExternalUrl(url) {
-    applyReleaseNavigationTransition(
-      Model.releaseNavigationDirectTransition(releaseNavigationState, url))
+    releaseNavigator.navigate(url)
   }
 
   function revokeReleaseNavigation() {
-    applyReleaseNavigationTransition(
-      Model.releaseNavigationRevokeTransition(releaseNavigationState))
+    releaseNavigator.revoke()
   }
 
   // ---- Filtering ----------------------------------------------------------
@@ -599,22 +566,6 @@ Panel {
     store.loadOnOpen()
   }
 
-  // ---- Processes ----------------------------------------------------------
-  //
-  // The data processes live in PluginStore. What stays is the one probe that
-  // is about navigation rather than data: a click-time HEAD request that
-  // decides which Release page to open.
-
-  Process {
-    id: releaseProbe
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyReleaseNavigationTransition(
-        Model.releaseNavigationProbeOutputTransition(root.releaseNavigationState, text))
-    }
-    onExited: function(exitCode) { root.applyReleaseNavigationTransition(
-      Model.releaseNavigationProbeExitedTransition(root.releaseNavigationState, exitCode)) }
-  }
 
   // ---- Surface ------------------------------------------------------------
 

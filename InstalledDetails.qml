@@ -26,12 +26,17 @@ Item {
   signal enableRequested()
   signal disableRequested()
   signal repositoryNavigationRequested(string url)
+  signal githubNavigationRequested(var candidates, string fallbackUrl)
 
   readonly property bool hasUpdate: row ? row.behind === true : false
   readonly property bool upToDate: Model.upToDate(row)
   readonly property bool canEnable: Model.canEnable(row)
   readonly property bool canDisable: Model.canDisable(row)
   readonly property string repoUrl: Model.rowRepoUrl(row)
+  // The version is a link to its Release, resolved at click time like the
+  // popup's row does; the tag page is the fallback when no Release exists.
+  readonly property var versionReleaseCandidates: Model.versionReleaseCandidates(row)
+  readonly property string versionFallbackUrl: Model.versionFallbackUrl(row)
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
   readonly property string versionText: Model.versionLabel(row)
 
@@ -49,7 +54,7 @@ Item {
     if (!row) return rows
     var author = Model.authorLabel(row)
     if (author !== "") rows.push({ label: "Author", value: author })
-    if (versionText !== "") rows.push({ label: "Version", value: versionText })
+    if (versionText !== "") rows.push({ label: "Version", value: versionText, link: versionFallbackUrl, release: true })
     var kinds = Model.kindsLabel(row.kinds)
     if (kinds !== "") rows.push({ label: "Kinds", value: kinds })
     rows.push({ label: "Source", value: row.group === "built-in" ? "Built-in" : "Installed" })
@@ -196,7 +201,9 @@ Item {
                 enabled: field.isLink
                 hoverEnabled: field.isLink
                 cursorShape: field.isLink ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: root.repositoryNavigationRequested(field.modelData.link)
+                onClicked: field.modelData.release === true
+                  ? root.githubNavigationRequested(root.versionReleaseCandidates, root.versionFallbackUrl)
+                  : root.repositoryNavigationRequested(field.modelData.link)
               }
             }
           }
