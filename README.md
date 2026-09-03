@@ -15,6 +15,23 @@ bar with filter keys on the left and row actions on the right](preview.png)
 
 Click the puzzle icon and you get two tabs.
 
+## The expanded panel
+
+The popup is built for a glance. When you want room, the icon left of the
+refresh button (`󰊓`) hands the same manager to a full-size overlay: the
+Installed tab becomes a list beside a details pane for the selected plugin,
+with its facts and its actions written out, and the Browse tab becomes a wider
+grid of the same clickable cards. The `󰊔` icon in the same corner brings the
+popup back.
+
+Under the hood the plugin registers a second kind, `panel`, whose entry point
+is `Expanded.qml`. Both surfaces share one data layer, `PluginStore.qml`, so
+an install, update, enable, disable or remove is the same code whichever
+window you started it from. One consequence of the extra kind: the shell now
+routes `omarchy-shell shell toggle io.github.juancasanueva.plugin-manager` to
+the expanded panel, which makes it the thing to bind a hotkey to, while the
+bar button still opens the popup.
+
 ## The Installed tab
 
 What the shell actually found, in two sections:
@@ -377,9 +394,12 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 
 | File | Role |
 |------|------|
-| `manifest.json` | Plugin contract — id, kind, entry point |
+| `manifest.json` | Plugin contract — id, kinds, entry points |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
-| `Panel.qml` | Both tabs, search, filters, actions, and confirmations |
+| `Panel.qml` | The popup: both tabs, search, filters, and the dialogs |
+| `Expanded.qml` | The full-size overlay: Installed as list plus details, Browse as a wider card grid |
+| `InstalledDetails.qml` | One installed plugin in full: facts, links, and its four actions as buttons |
+| `PluginStore.qml` | The shared data layer: plugin list, update check, catalog fetch, actions, and what is pending confirmation |
 | `PluginRow.qml` | One row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
 | `CatalogCard.qml` | One compact marketplace card: preview, summary, state, metrics, details, and install |
 | `PluginDetails.qml` | Full Marketplace metadata, trusted links, limitations, and keyboard actions |
