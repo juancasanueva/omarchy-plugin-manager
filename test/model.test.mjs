@@ -52,7 +52,7 @@ const CATALOG_PROJECTION_LIMIT = 8 * 1024 * 1024
 const CATALOG_PROJECTION_SCHEMA_VERSION = 1
 
 function catalogScript(catalogPath, statsPath) {
-  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const marker = "readonly property string catalogScript:"
   const start = panel.indexOf(marker)
   const end = panel.indexOf("\n\n  // No fetch", start)
@@ -2111,8 +2111,11 @@ test("the Installed tab has no url field: plugins are added from Browse only", (
   assert.doesNotMatch(panel, /function askAdd\(|function focusUrlField\(/)
   assert.doesNotMatch(panel, /https:\/\/github\.com\/user\/omarchy-plugin\.git/)
   assert.doesNotMatch(panel, /\ba add\b/)
-  // The clone-and-place path survives: Browse still installs through it.
-  assert.match(panel, /function startAdd\(section\)/)
+  // The clone-and-place path survives: Browse still installs through it,
+  // the panel handing its pending answer to the store's argv builder.
+  assert.match(panel, /function startAdd\(section\) \{[\s\S]*?store\.startAdd\(url, id, section, label\)/)
+  const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(storeSource, /function startAdd\(url, id, section, label\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", installScript, "install", url, id, section, label\]\)/)
 })
 
 test("Installed filters share the Browse shape: labels on top, Search on its own row", () => {
@@ -2257,7 +2260,9 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
 
-  assert.match(panel, /readonly property var verifiedIds: Model\.verifiedIdSet\(catalog\)/)
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(store, /readonly property var verifiedIds: Model\.verifiedIdSet\(catalog\)/)
+  assert.match(panel, /readonly property alias verifiedIds: store\.verifiedIds/)
   assert.equal(panel.split("verified: Model.isVerified(modelData, root.verifiedIds)").length - 1, 2)
   // The catalog is what knows who is verified, so opening the panel reads it
   // (cache first) even when Browse has never been visited.
@@ -2381,10 +2386,13 @@ test("a row's update button spins while that row is being updated", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
 
-  // The panel tracks the updating row by id, not by the (non-unique) label.
-  assert.match(panel, /property string busyRowId: ""/)
-  assert.match(panel, /function startUpdate\(row\) \{[\s\S]*?busyRowId = row\.id[\s\S]*?runAction\("update"/)
-  assert.match(panel, /root\.busyId = ""\s+root\.busyRowId = ""/)
+  // The store tracks the updating row by id, not by the (non-unique) label;
+  // the panel reads it through an alias.
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(store, /property string busyRowId: ""/)
+  assert.match(store, /function startUpdate\(row\) \{[\s\S]*?busyRowId = row\.id[\s\S]*?runAction\("update"/)
+  assert.match(store, /root\.busyId = ""\s+root\.busyRowId = ""/)
+  assert.match(panel, /property alias busyRowId: store\.busyRowId/)
   assert.equal(panel.split('updating: root.busyKind === "update" && root.busyRowId === modelData.id').length - 1, 1)
 
   assert.match(row, /property bool updating: false/)
@@ -2414,8 +2422,11 @@ test("an up-to-date row's update button is disabled and never spins", () => {
   assert.match(row, /readonly property bool upToDate: Model\.upToDate\(row\)/)
   const button = row.slice(row.indexOf("id: updateButton"), row.indexOf("PanelActionButton {", row.indexOf("id: updateButton")))
   assert.match(button, /enabled: root\.actionsEnabled && root\.updateEnabled && !root\.upToDate/)
-  // Enter on a selected row goes through the same gate.
-  assert.match(panel, /function startUpdate\(row\) \{\s+if \(!row \|\| !row\.updatable \|\| Model\.upToDate\(row\) \|\| busy/)
+  // Enter on a selected row goes through the same gate, which the store owns
+  // so both windows refuse the same rows.
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(store, /function canStartUpdate\(row\) \{\s+if \(!row \|\| !row\.updatable \|\| Model\.upToDate\(row\) \|\| busy/)
+  assert.match(panel, /function startUpdate\(row\) \{\s+if \(!store\.canStartUpdate\(row\)\) return\s+revokeReleaseNavigation\(\)\s+store\.startUpdate\(row\)/)
 })
 
 test("every keyboard-cycled filter replays its value into its dropdown", () => {
@@ -2632,12 +2643,59 @@ test("Browse details and filters wire keyboard interaction through guarded modal
 
 test("Panel keeps open details synchronized with catalog install state", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
-  assert.match(panel,
-    /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), detailsEntry\)/)
-  assert.match(panel, /if \(!stampedState\.changed\) return\s*catalog = stampedState\.entries/)
-  assert.match(panel, /if \(detailsEntry\) detailsEntry = stampedState\.detailsEntry/)
-  assert.match(panel, /var loadedCatalog = Model\.catalogEntries\(doc, Model\.installedIdSet\(rows\)\)/)
-  assert.match(panel, /if \(detailsEntry\) detailsEntry = Model\.findRow\(loadedCatalog, detailsEntry\.id\)/)
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  // The store re-stamps install state without knowing about any open details;
+  // it only publishes a new catalog when something actually changed.
+  assert.match(store,
+    /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), null\)/)
+  assert.match(store, /if \(!stampedState\.changed\) return\s*catalog = stampedState\.entries/)
+  assert.match(store, /catalog = Model\.catalogEntries\(doc, Model\.installedIdSet\(rows\)\)/)
+  // Every published catalog — re-stamp or fresh fetch — refreshes the open
+  // details entry from the same list the cards are drawn from.
+  assert.match(panel, /onCatalogChanged: if \(detailsEntry\) detailsEntry = Model\.findRow\(catalog, detailsEntry\.id\)/)
+  assert.doesNotMatch(panel, /restampCatalogInstallState|Model\.catalogEntries\(/)
+})
+
+test("Panel delegates data, processes and actions to PluginStore", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+
+  assert.match(panel, /PluginStore \{\s*id: store\s*\}/)
+  // Every process and script lives in the store; the panel keeps only the
+  // release probe, which is about navigation rather than data.
+  for (const id of ["loadProc", "updateProc", "catalogProc", "actionProc"]) {
+    assert.match(store, new RegExp(`Process \\{\\s*id: ${id}`), id)
+    assert.doesNotMatch(panel, new RegExp(`id: ${id}\\b`), id)
+  }
+  assert.match(panel, /Process \{\s*id: releaseProbe/)
+  for (const script of ["installScript", "catalogScript", "updateScript", "noticeScript"]) {
+    assert.match(store, new RegExp(`readonly property string ${script}:`), script)
+    assert.doesNotMatch(panel, new RegExp(`property string ${script}`), script)
+  }
+  // State the surface binds to is aliased, so existing bindings read the
+  // store without naming it.
+  for (const name of [
+    "rows", "loading", "loadError", "checkingUpdates", "catalog", "catalogLoading",
+    "catalogLoaded", "catalogError", "previewsSupported", "busyKind", "busyRowId",
+    "busyId", "status", "statusIsError"
+  ]) assert.match(panel, new RegExp(`property alias ${name}: store\\.${name}\\b`), name)
+  for (const name of ["busy", "verifiedIds", "behindCount", "installedTotal", "updateActionsEnabled"])
+    assert.match(panel, new RegExp(`readonly property (alias|\\w+) ${name}: store\\.${name}\\b`), name)
+  // Thin wrappers keep the keyboard handler and buttons untouched, and keep
+  // release navigation — a panel concern — revoked where it always was.
+  assert.match(panel, /function reload\(\) \{\s*revokeReleaseNavigation\(\)\s*return store\.reload\(\)\s*\}/)
+  assert.match(panel, /function checkUpdates\(\) \{\s*return store\.checkUpdates\(\)\s*\}/)
+  assert.match(panel, /function loadCatalog\(force\) \{\s*revokeReleaseNavigation\(\)\s*store\.loadCatalog\(force\)\s*\}/)
+  assert.match(panel, /function setStatus\(text, isError\) \{\s*store\.setStatus\(text, isError\)\s*\}/)
+  // The store announces what the panel used to do inline.
+  assert.match(store, /signal reloadStarted\(\)/)
+  assert.match(store, /signal rowsLoaded\(\)/)
+  assert.match(store, /signal actionFinished\(string kind, string label, int exitCode\)/)
+  assert.match(panel, /function onReloadStarted\(\) \{ root\.revokeReleaseNavigation\(\) \}/)
+  assert.match(panel, /function onRowsLoaded\(\) \{ root\.clampSelection\(\) \}/)
+  // The store never touches the browser or the dialogs.
+  assert.doesNotMatch(store, /omarchy-launch-browser|pendingKind|detailsEntry|releaseNavigation/)
+  assert.doesNotMatch(panel, /Quickshell\.execDetached\(\["bash"/)
 })
 
 test("add confirmation never promises placement after cloning", () => {
@@ -2648,7 +2706,8 @@ test("add confirmation never promises placement after cloning", () => {
 
 test("catalog projection joins the Marketplace engagement hearts endpoint by plugin id", () => {
   const model = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
-  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  // The fetch script belongs to the store now, whichever surface asks for it.
+  const panel = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 
   assert.match(model, /MARKETPLACE_STATS_URL = "https:\/\/api\.omarchyplugins\.com\/v1\/stats"/)
   assert.match(panel, /Model\.MARKETPLACE_STATS_URL/)
