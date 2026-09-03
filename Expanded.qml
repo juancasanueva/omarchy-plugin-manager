@@ -60,8 +60,13 @@ Item {
     selectedIndex = -1
     detailsEntry = null
     opened = true
-    // Not yet: the list read asks the shell over IPC, and the shell is still
-    // busy building this very window. A beat later it answers.
+    // The piece is hidden until the window's first frame, then snaps in.
+    titleIconIntro.stop()
+    titleIcon.opacity = 0
+    titleIconIntroArmed = true
+    // Not yet: the list read makes the shell serve an IPC call on its main
+    // thread, and that stalls the intro playing right now. Once the piece
+    // has landed, the read runs with nothing to interrupt.
     initialLoad.restart()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -72,7 +77,7 @@ Item {
 
   Timer {
     id: initialLoad
-    interval: 250
+    interval: 1300
     repeat: false
     onTriggered: root.loadEverything()
   }
@@ -132,6 +137,68 @@ Item {
 
   property string activeTab: "installed"   // "installed" | "browse"
   readonly property bool browsing: activeTab === "browse"
+
+  property bool titleIconIntroArmed: false
+
+  // ---- Tab flip -----------------------------------------------------------
+
+  // The content below the header turns over like a card when the tab changes:
+  // the current face rotates edge-on around its vertical axis, the other tab
+  // takes its place at the midpoint, and it turns the rest of the way in from
+  // the far side. Same rotational direction throughout, mirrored on the way
+  // back, so the flip also says which way you went. The header, tab bar and
+  // hint bar stay put — a frame that moves is a transition nobody can read.
+  property string pendingTab: ""
+  property real contentFlipAngle: 0
+  readonly property bool contentFlipping: contentFlip.running
+  // A slight shrink at the edge-on point sells the depth of the turn.
+  readonly property real contentFlipScale: 1 - 0.06 * Math.sin(Math.abs(contentFlipAngle) * Math.PI / 180)
+
+  SequentialAnimation {
+    id: contentFlip
+    property int direction: 1   // 1 turning toward Browse, -1 back to Installed
+
+    NumberAnimation {
+      target: root
+      property: "contentFlipAngle"
+      from: 0
+      to: -90 * contentFlip.direction
+      duration: 200
+      easing.type: Easing.InCubic
+    }
+    ScriptAction { script: root.applyPendingTab() }
+    NumberAnimation {
+      target: root
+      property: "contentFlipAngle"
+      from: 90 * contentFlip.direction
+      to: 0
+      duration: 200
+      easing.type: Easing.OutCubic
+    }
+  }
+
+  function switchTab(tab) {
+    // A click mid-turn lands the turn in progress first rather than being
+    // swallowed, so no tap is ever lost to the animation.
+    if (contentFlip.running) {
+      contentFlip.stop()
+      if (pendingTab !== "") applyPendingTab()
+      contentFlipAngle = 0
+    }
+    if (activeTab === tab) return
+    pendingTab = tab
+    contentFlip.direction = tab === "browse" ? 1 : -1
+    contentFlip.restart()
+  }
+
+  // The actual switch, run at the edge-on midpoint where nothing is visible.
+  function applyPendingTab() {
+    var tab = pendingTab
+    if (tab === "") return
+    pendingTab = ""
+    activeTab = tab
+  }
+
   readonly property var tabOptions: [
     { value: "installed", label: "Installed" },
     { value: "browse", label: "Browse" }
@@ -415,8 +482,8 @@ Item {
             else { store.reload(); store.checkUpdates() }
             event.accepted = true
           }
-          else if (text === "1") { root.activeTab = "installed"; event.accepted = true }
-          else if (text === "2") { root.activeTab = "browse"; event.accepted = true }
+          else if (text === "1") { root.switchTab("installed"); event.accepted = true }
+          else if (text === "2") { root.switchTab("browse"); event.accepted = true }
         }
 
         // ---- Header: what this is, the tabs, and the two icons.
@@ -437,6 +504,79 @@ Item {
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: title.font.pixelSize
+            transformOrigin: Item.Center
+
+            // A puzzle piece should arrive like one: oversized and tilted, it
+            // travels into its slot and lands with a small "click" — a dip, a
+            // bounce and a wiggle. Anchors are untouched by scale and rotation,
+            // so the title beside it never moves.
+            //
+            // The travel is a smooth in-out rather than a back easing: a back
+            // easing does nearly all its motion in the first quarter and spends
+            // the rest on an invisible overshoot, which is how a one-second
+            // animation came to look like a 200ms flash.
+            SequentialAnimation {
+              id: titleIconIntro
+
+              PauseAnimation { duration: 120 }
+
+              ParallelAnimation {
+                NumberAnimation {
+                  target: titleIcon
+                  property: "scale"
+                  from: 3
+                  to: 1
+                  duration: 700
+                  easing.type: Easing.InOutCubic
+                }
+                NumberAnimation {
+                  target: titleIcon
+                  property: "rotation"
+                  from: -150
+                  to: 0
+                  duration: 700
+                  easing.type: Easing.InOutCubic
+                }
+                NumberAnimation {
+                  target: titleIcon
+                  property: "opacity"
+                  from: 0
+                  to: 1
+                  duration: 250
+                }
+              }
+
+              // The click: the piece compresses into the slot, springs back a
+              // touch past size, and settles; a wiggle rides along with it.
+              ParallelAnimation {
+                id: titleIconSettle
+                SequentialAnimation {
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 0.88; duration: 90; easing.type: Easing.OutQuad }
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 1.08; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "scale"; to: 1; duration: 120; easing.type: Easing.OutQuad }
+                }
+                SequentialAnimation {
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 110; easing.type: Easing.InOutQuad }
+                  NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 100; easing.type: Easing.OutQuad }
+                }
+              }
+            }
+
+            // The intro is clocked from the window's first rendered frame, not
+            // from `opened`: Browse's first frame is drawn noticeably later
+            // than Installed's, and an animation started at `opened` had
+            // finished before that frame ever reached the screen. The piece is
+            // hidden at open so that first frame shows an empty slot.
+            Connections {
+              id: titleIconIntroTrigger
+              target: titleIcon.Window.window
+              enabled: root.titleIconIntroArmed
+              function onFrameSwapped() {
+                root.titleIconIntroArmed = false
+                titleIconIntro.restart()
+              }
+            }
           }
 
           Text {
@@ -511,12 +651,12 @@ Item {
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
-            value: root.activeTab
+            value: root.pendingTab !== "" ? root.pendingTab : root.activeTab
             foreground: root.foreground
             fontFamily: root.fontFamily
             fontSize: Style.font.caption
             focusable: false
-            onChanged: function(value) { root.activeTab = value }
+            onChanged: function(value) { root.switchTab(value) }
           }
 
           // The way back. Same slot the popup's expand icon sits in, so the
@@ -839,6 +979,15 @@ Item {
           anchors.topMargin: Style.space(10)
           anchors.bottom: hintBar.top
           anchors.bottomMargin: Style.space(10)
+          // One face of the tab-flip card; see contentFlip.
+          transform: Rotation {
+            origin.x: installedPane.width / 2
+            origin.y: installedPane.height / 2
+            axis { x: 0; y: 1; z: 0 }
+            angle: root.contentFlipAngle
+          }
+          scale: root.contentFlipScale
+          layer.enabled: root.contentFlipping
 
           Flickable {
             id: listScroll
@@ -884,7 +1033,7 @@ Item {
                 id: installedRepeater
                 model: root.installedRows
 
-                PluginRow {
+                InstalledListRow {
                   required property int index
                   required property var modelData
 
@@ -892,21 +1041,12 @@ Item {
                   row: modelData
                   verified: Model.isVerified(modelData, root.verifiedIds)
                   selected: root.selectedIndex === index
-                  actionsEnabled: !root.busy
-                  updateEnabled: root.updateActionsEnabled
-                  updating: root.busyKind === "update" && root.busyRowId === modelData.id
                   showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
                   foreground: root.foreground
                   secondaryForeground: root.secondaryForeground
                   fontFamily: root.fontFamily
 
                   onClicked: root.selectedIndex = index
-                  onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
-                  onGithubNavigationRequested: function(candidates, fallbackUrl) { root.navigateExternalUrl(fallbackUrl) }
-                  onUpdateRequested: { root.selectedIndex = index; root.startUpdate(modelData) }
-                  onRemoveRequested: { root.selectedIndex = index; store.askRemove(modelData) }
-                  onEnableRequested: { root.selectedIndex = index; store.askEnable(modelData) }
-                  onDisableRequested: { root.selectedIndex = index; store.askDisable(modelData) }
                 }
               }
 
@@ -924,7 +1064,7 @@ Item {
                 id: builtinRepeater
                 model: root.builtinRows
 
-                PluginRow {
+                InstalledListRow {
                   required property int index
                   required property var modelData
 
@@ -934,16 +1074,12 @@ Item {
                   row: modelData
                   verified: Model.isVerified(modelData, root.verifiedIds)
                   selected: root.selectedIndex === globalIndex
-                  actionsEnabled: !root.busy
                   showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
                   foreground: root.foreground
                   secondaryForeground: root.secondaryForeground
                   fontFamily: root.fontFamily
 
                   onClicked: root.selectedIndex = globalIndex
-                  onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
-                  onEnableRequested: { root.selectedIndex = globalIndex; store.askEnable(modelData) }
-                  onDisableRequested: { root.selectedIndex = globalIndex; store.askDisable(modelData) }
                 }
               }
             }
@@ -994,6 +1130,15 @@ Item {
           anchors.topMargin: Style.space(10)
           anchors.bottom: hintBar.top
           anchors.bottomMargin: Style.space(10)
+          // One face of the tab-flip card; see contentFlip.
+          transform: Rotation {
+            origin.x: catalogGrid.width / 2
+            origin.y: catalogGrid.height / 2
+            axis { x: 0; y: 1; z: 0 }
+            angle: root.contentFlipAngle
+          }
+          scale: root.contentFlipScale
+          layer.enabled: root.contentFlipping
           clip: true
           boundsBehavior: Flickable.StopAtBounds
           cacheBuffer: Math.round(cellHeight * 2)

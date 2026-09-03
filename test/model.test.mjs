@@ -3263,7 +3263,10 @@ test("the expanded panel starts its loads a beat after it opens", () => {
   // Spawning the list read while the overlay is still being built stalls the
   // shell's IPC reply to that very read; a short deferral lets the window
   // settle first.
-  assert.match(expanded, /Timer \{\s*id: initialLoad\s*interval: 250[\s\S]*?onTriggered: root\.loadEverything\(\)/)
+  // Long enough for the puzzle piece to land: the list read makes the shell
+  // serve an IPC call on its main thread, and that stalls whatever is
+  // animating at the time.
+  assert.match(expanded, /Timer \{\s*id: initialLoad\s*interval: 1300[\s\S]*?onTriggered: root\.loadEverything\(\)/)
   assert.match(expanded, /function loadEverything\(\) \{\s*store\.loadOnOpen\(\)\s*\}/)
   const open = expanded.slice(expanded.indexOf("function open(payloadJson) {"), expanded.indexOf("function loadEverything() {"))
   assert.match(open, /initialLoad\.restart\(\)/)
@@ -3282,6 +3285,68 @@ test("the expanded search box is captioned and sized like the filter dropdowns",
   assert.match(control, /id: searchField[\s\S]*?font\.pixelSize: Style\.font\.body/)
   assert.doesNotMatch(control, /verticalPadding: Style\.spacing\.xs/)
   assert.match(expanded, /id: searchControl\s*anchors\.left: parent\.left\s*anchors\.top: parent\.top\s*anchors\.bottom: parent\.bottom\s*anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
+})
+
+test("the expanded list row shows name, verified pill and description only", () => {
+  const row = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
+  assert.match(row, /property var row: null/)
+  assert.match(row, /property bool selected: false/)
+  assert.match(row, /property bool verified: false/)
+  assert.match(row, /signal clicked\(\)/)
+  // Nothing actionable and no metadata: no toggle, icons, author line or link.
+  for (const gone of ["ToggleSwitch", "PanelActionButton", "metaLine", "repoShortLabel", "updateBadge", "󰩹", "󰑐"])
+    assert.doesNotMatch(row, new RegExp(gone), gone)
+  assert.match(row, /id: stateBar[\s\S]*?color: root\.row && root\.row\.enabled \? Color\.accent : Color\.muted/)
+  assert.match(row, /id: verifiedPill[\s\S]*?visible: root\.verified[\s\S]*?text: "󰄬 verified"/)
+  // The state bar already says on or off; a pill saying it again is noise.
+  assert.doesNotMatch(row, /id: statePill|"On"|"Off"/)
+  assert.match(row, /readonly property real pillsWidth: verifiedPill\.visible \? verifiedPill\.width \+ spacing : 0/)
+  assert.match(row, /text: Model\.descriptionLine\(root\.row\)[\s\S]*?wrapMode: Text\.WordWrap[\s\S]*?maximumLineCount: 2[\s\S]*?elide: Text\.ElideRight/)
+  // The name yields to both pills instead of pushing them off the row.
+  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - nameLine\.pillsWidth\)/)
+})
+
+test("the expanded panel plays the same puzzle-piece intro as the popup", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const icon = expanded.slice(expanded.indexOf("id: titleIcon"), expanded.indexOf("id: title\n"))
+  assert.match(icon, /transformOrigin: Item\.Center/)
+  assert.match(icon, /SequentialAnimation \{\s*id: titleIconIntro/)
+  const intro = icon.slice(icon.indexOf("id: titleIconIntro"))
+  assert.match(intro, /property: "scale"[\s\S]*?from: 3[\s\S]*?to: 1[\s\S]*?duration: 700[\s\S]*?easing\.type: Easing\.InOutCubic/)
+  assert.match(intro, /id: titleIconSettle/)
+  assert.match(expanded, /property bool titleIconIntroArmed: false/)
+  const arm = expanded.slice(expanded.indexOf("id: titleIconIntroTrigger"), expanded.indexOf("id: titleIconIntroTrigger") + 500)
+  assert.match(arm, /target: titleIcon\.Window\.window/)
+  assert.match(arm, /enabled: root\.titleIconIntroArmed/)
+  assert.match(arm, /function onFrameSwapped\(\) \{\s*root\.titleIconIntroArmed = false\s*titleIconIntro\.restart\(\)\s*\}/)
+  const open = expanded.slice(expanded.indexOf("function open(payloadJson) {"), expanded.indexOf("function loadEverything() {"))
+  assert.match(open, /titleIconIntro\.stop\(\)\s*titleIcon\.opacity = 0\s*titleIconIntroArmed = true/)
+})
+
+test("the expanded panel flips its content like a card when switching tabs", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.match(expanded, /property string pendingTab: ""/)
+  assert.match(expanded, /property real contentFlipAngle: 0/)
+  assert.match(expanded, /readonly property bool contentFlipping: contentFlip\.running/)
+  assert.match(expanded, /readonly property real contentFlipScale: 1 - 0\.06 \* Math\.sin\(Math\.abs\(contentFlipAngle\) \* Math\.PI \/ 180\)/)
+  assert.match(expanded, /value: root\.pendingTab !== "" \? root\.pendingTab : root\.activeTab/)
+  assert.match(expanded, /onChanged: function\(value\) \{ root\.switchTab\(value\) \}/)
+  assert.match(expanded, /text === "1"\) \{ root\.switchTab\("installed"\)/)
+  assert.match(expanded, /text === "2"\) \{ root\.switchTab\("browse"\)/)
+  const switchTab = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("function applyPendingTab() {"))
+  assert.match(switchTab, /if \(contentFlip\.running\) \{\s*contentFlip\.stop\(\)\s*if \(pendingTab !== ""\) applyPendingTab\(\)\s*contentFlipAngle = 0\s*\}/)
+  assert.match(switchTab, /if \(activeTab === tab\) return/)
+  assert.match(switchTab, /pendingTab = tab\s*contentFlip\.direction = tab === "browse" \? 1 : -1\s*contentFlip\.restart\(\)/)
+  const flip = expanded.slice(expanded.indexOf("id: contentFlip\n"), expanded.indexOf("id: contentFlip\n") + 1400)
+  assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 0[\s\S]*?to: -90 \* contentFlip\.direction[\s\S]*?easing\.type: Easing\.InCubic/)
+  assert.match(flip, /ScriptAction \{ script: root\.applyPendingTab\(\) \}/)
+  assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 90 \* contentFlip\.direction[\s\S]*?to: 0[\s\S]*?easing\.type: Easing\.OutCubic/)
+  for (const id of ["id: installedPane", "id: catalogGrid"]) {
+    const face = expanded.slice(expanded.indexOf(id), expanded.indexOf(id) + 1200)
+    assert.match(face, /transform: Rotation \{[\s\S]*?axis \{ x: 0; y: 1; z: 0 \}[\s\S]*?angle: root\.contentFlipAngle/, id)
+    assert.match(face, /scale: root\.contentFlipScale/, id)
+    assert.match(face, /layer\.enabled: root\.contentFlipping/, id)
+  }
 })
 
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
@@ -3397,11 +3462,14 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /iconText: "󰊔"/)
   assert.match(expanded, /tooltipText: "Back to the popup"/)
   assert.match(expanded, /onClicked: root\.collapse\(\)/)
-  assert.match(expanded, /id: tabs[\s\S]*?onChanged: function\(value\) \{ root\.activeTab = value \}/)
+  assert.match(expanded, /id: tabs[\s\S]*?onChanged: function\(value\) \{ root\.switchTab\(value\) \}/)
 
   // Installed is master/detail; Browse is the popup's card grid.
   assert.match(expanded, /InstalledDetails \{/)
-  assert.equal((expanded.match(/PluginRow \{/g) || []).length, 2)
+  // The list beside a details pane is a summary: the actions and the
+  // metadata live on the right, so the row keeps only what identifies it.
+  assert.equal((expanded.match(/InstalledListRow \{/g) || []).length, 2)
+  assert.equal((expanded.match(/PluginRow \{/g) || []).length, 0)
   assert.match(expanded, /GridView \{[\s\S]*?readonly property int columns: 4/)
   assert.match(expanded, /CatalogCard \{/)
   assert.match(expanded, /PluginDetails \{/)
@@ -3412,7 +3480,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /Keys\.onPressed: function\(event\) \{[\s\S]*?event\.key === Qt\.Key_Escape[\s\S]*?root\.detailsOpen[\s\S]*?root\.dismiss\(\)/)
 
   // Never rich text, anywhere on this surface either.
-  for (const file of ["Expanded.qml", "InstalledDetails.qml"]) {
+  for (const file of ["Expanded.qml", "InstalledDetails.qml", "InstalledListRow.qml"]) {
     const qml = readFileSync(new URL("../" + file, import.meta.url), "utf8")
     const texts = (qml.match(/\n\s*Text \{/g) || []).length
     const plain = (qml.match(/textFormat: Text\.PlainText/g) || []).length
