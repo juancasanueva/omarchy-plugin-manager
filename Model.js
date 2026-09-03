@@ -1135,6 +1135,39 @@ function starLabel(count) {
 // are not one-command installable — suites with their own installers, repos
 // that are not plugin-shaped — and each carries a note saying why. Showing the
 // reason beats showing a button that cannot work.
+// The facts a listing can state about itself, in the order the details
+// surfaces show them. Absent facts are absent rows, never blank ones, and an
+// unknown count is omitted rather than shown as zero.
+function catalogDetailFields(entry, stateText, needsPlacement) {
+  var rows = []
+  if (!entry) return rows
+  var version = catalogVersionLabel(entry)
+  if (entry.author !== "") rows.push({ label: "Author", value: entry.author })
+  if (version !== "") rows.push({ label: "Version", value: version })
+  if (entry.categoryPresent === true && entry.category !== "")
+    rows.push({ label: "Category", value: entry.category })
+  if (entry.kind !== "") rows.push({ label: "Kind", value: entry.kind })
+  if (entry.license !== "") rows.push({ label: "License", value: entry.license })
+  if (entry.verified === true) rows.push({ label: "Marketplace review", value: "Verified" })
+  if (starLabel(entry.stars) !== "")
+    rows.push({ label: "GitHub stars", value: starLabel(entry.stars) })
+  if (starLabel(entry.marketplaceHearts) !== "")
+    rows.push({ label: "Marketplace hearts", value: starLabel(entry.marketplaceHearts) })
+  rows.push({ label: "Availability", value: String(stateText || "") })
+  if (needsPlacement === true)
+    rows.push({ label: "Placement", value: "Choose a bar section before installation" })
+  return rows
+}
+
+// Who made it and what it plugs into, one line under the name.
+function catalogMetaLine(entry) {
+  if (!entry) return ""
+  var parts = []
+  if (entry.author) parts.push(String(entry.author))
+  if (entry.kind) parts.push(String(entry.kind))
+  return parts.join("  ·  ")
+}
+
 function installState(entry) {
   if (!entry) return "unavailable"
   if (entry.installed) return "installed"

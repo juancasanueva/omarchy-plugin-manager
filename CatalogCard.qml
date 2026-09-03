@@ -29,6 +29,16 @@ Rectangle {
 
   signal detailsRequested()
   signal installRequested()
+
+  // The popup's cards carry an info and an install button. The expanded
+  // panel turns them off: there, a click or Enter opens a full page that
+  // holds every action, and two more targets on each card would only compete
+  // with it.
+  property bool showActions: true
+  // Likewise the author and version lines: on the expanded grid the card is
+  // the name, the description and the two counts, and the rest is one Enter
+  // away on the page. The footer shrinks to one line without them.
+  property bool showMeta: true
   signal previewUndecodable()
 
   readonly property string state_: Model.installState(entry)
@@ -36,7 +46,9 @@ Rectangle {
 
   // Three lines of blurb, always reserved, so the cards stay on a grid instead
   // of ragging as you filter.
-  readonly property int descriptionLines: 3
+  // Five when the author and version lines are off: the footer gave the
+  // room back, and the description is what the card is for.
+  readonly property int descriptionLines: showMeta ? 3 : 5
   readonly property real descriptionHeight: Math.ceil(descriptionMetrics.lineSpacing * descriptionLines)
 
   // Sources are tried best-first: the repository's own preview.png, then the
@@ -64,15 +76,16 @@ Rectangle {
   readonly property color starColor: "#f5c518"
   readonly property color heartColor: "#e5484d"
   readonly property bool hasMetrics: starCountText !== "" || heartCountText !== ""
-  readonly property bool hasCreator: creatorText !== ""
-  readonly property bool hasVersionOrMetrics: versionText !== "" || hasMetrics
-  readonly property string blockedText: state_ === "unavailable"
+  readonly property bool hasCreator: showMeta && creatorText !== ""
+  readonly property bool hasVersionOrMetrics: (showMeta && versionText !== "") || hasMetrics
+  // Metadata too: on the expanded grid the page states the reason instead.
+  readonly property string blockedText: showMeta && state_ === "unavailable"
     ? Model.installBlockedReason(entry) : ""
   readonly property real contentPadding: Style.space(8)
   readonly property real contentFooterGap: Style.space(6)
-  readonly property real footerMetadataHeight: Math.ceil(descriptionMetrics.lineSpacing * 2)
-    + Style.space(3)
-  readonly property real footerHeight: Math.max(footerMetadataHeight, actionRow.implicitHeight)
+  readonly property real footerMetadataHeight: Math.ceil(descriptionMetrics.lineSpacing * (showMeta ? 2 : 1))
+    + (showMeta ? Style.space(3) : 0)
+  readonly property real footerHeight: Math.max(footerMetadataHeight, actionRow.visible ? actionRow.implicitHeight : 0)
   readonly property real requiredHeight: topContent.implicitHeight + contentFooterGap
     + footerHeight + contentPadding * 2
   implicitHeight: requiredHeight
@@ -286,8 +299,8 @@ Rectangle {
     Column {
       id: metadata
       anchors.left: parent.left
-      anchors.right: actionRow.left
-      anchors.rightMargin: Style.space(6)
+      anchors.right: actionRow.visible ? actionRow.left : parent.right
+      anchors.rightMargin: actionRow.visible ? Style.space(6) : 0
       anchors.verticalCenter: parent.verticalCenter
       visible: root.hasCreator || root.hasVersionOrMetrics
       height: visible
@@ -385,7 +398,7 @@ Rectangle {
             ? Math.max(0, metricsLabel.x - Style.space(8))
             : parent.width
           width: Math.max(0, Math.min(implicitWidth, availableWidth))
-          visible: root.versionText !== ""
+          visible: root.showMeta && root.versionText !== ""
           text: root.versionText
           color: root.secondaryForeground
           font.family: root.fontFamily
@@ -397,6 +410,7 @@ Rectangle {
 
     Row {
       id: actionRow
+      visible: root.showActions
       anchors.right: parent.right
       // Centred on the version/metrics line rather than on the whole two-line
       // block, so the buttons sit beside the numbers instead of floating

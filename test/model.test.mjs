@@ -23,7 +23,7 @@ const Model = new Function(
     catalogCategories, catalogKindKey, catalogKindOptions, catalogAvailabilityOptions, catalogSortOptions,
     filterCatalog, sortCatalog, matchesCatalogQuery, catalogIsFiltering,
     clearedCatalogFilters, catalogEmptyMessage,
-    installState, installBlockedReason, starLabel, accentColor, installedTint,
+    installState, installBlockedReason, starLabel, accentColor, installedTint, catalogDetailFields, catalogMetaLine,
     repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, expandedTabFromPayload, expandedScreenFromPayload,
     normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
@@ -986,6 +986,33 @@ test("installedPreviewCandidates prefers the checkout's own preview, then the li
   assert.equal(Model.rowInitials({ name: "Herdr" }), "H")
   assert.equal(Model.rowInitials({ name: "" }), "")
   assert.equal(Model.rowInitials(null), "")
+})
+
+test("catalogDetailFields lists a listing's facts in the details order, omitting the unknown", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const weather = entries.find(entry => entry.id === "acme.weather")
+  const rows = Model.catalogDetailFields(weather, "Available to install", true)
+  assert.deepEqual(rows.map(row => row.label), [
+    "Author", "Version", "Category", "Kind", "Marketplace review",
+    "GitHub stars", "Marketplace hearts", "Availability", "Placement"
+  ])
+  assert.equal(rows.find(row => row.label === "Version").value, "v1.2.3")
+  assert.equal(rows.find(row => row.label === "GitHub stars").value, "120")
+  assert.equal(rows.find(row => row.label === "Marketplace hearts").value, "7")
+  assert.equal(rows.find(row => row.label === "Availability").value, "Available to install")
+
+  // No version, no review, no placement: the rows simply are not there; an
+  // unknown count is omitted rather than shown as zero.
+  const suite = Model.catalogDetailFields(entries.find(entry => entry.id === "acme.suite"), "Not installable here", false)
+  assert.deepEqual(suite.map(row => row.label), ["Author", "Category", "Kind", "GitHub stars", "Marketplace hearts", "Availability"])
+  const unknown = Model.catalogDetailFields(Object.assign({}, weather, { stars: null, marketplaceHearts: undefined, license: "MIT" }), "Installed", false)
+  assert.deepEqual(unknown.map(row => row.label), ["Author", "Version", "Category", "Kind", "License", "Marketplace review", "Availability"])
+  assert.deepEqual(Model.catalogDetailFields(null, "", false), [])
+
+  assert.equal(Model.catalogMetaLine(weather), "acme  ·  Bar widget")
+  assert.equal(Model.catalogMetaLine({ author: "", kind: "Suite" }), "Suite")
+  assert.equal(Model.catalogMetaLine({ author: "acme", kind: "" }), "acme")
+  assert.equal(Model.catalogMetaLine(null), "")
 })
 
 test("installedIdSet indexes the installed rows by id", () => {
@@ -2631,7 +2658,9 @@ test("catalog cards stay compact while details own complete metadata and actions
   const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
   const details = readFileSync(new URL("../PluginDetails.qml", import.meta.url), "utf8")
 
-  assert.match(card, /readonly property int descriptionLines: 3/)
+  // Three lines beside author and version; five when those lines are off
+  // and the footer gave the room back.
+  assert.match(card, /readonly property int descriptionLines: showMeta \? 3 : 5/)
   assert.match(card, /signal detailsRequested\(\)/)
   assert.match(card, /Model\.installBlockedReason\(entry\)/)
   assert.match(card, /id: creator[\s\S]*visible: root\.hasCreator[\s\S]*elide: Text\.ElideRight/)
@@ -2676,7 +2705,7 @@ test("catalog cards stay compact while details own complete metadata and actions
   assert.match(details, /kind: "install"/)
   assert.match(panel, /readonly property real compactContentWidth: cellWidth\s+- compactDelegateMargin \* 2 - compactCardPadding \* 2/)
   assert.match(panel, /readonly property real compactActionHeight: Math\.max\(\s+Style\.space\(22\), Style\.font\.icon \+ Style\.spacing\.sm \* 2\)/)
-  assert.match(card, /readonly property real footerHeight: Math\.max\(footerMetadataHeight, actionRow\.implicitHeight\)/)
+  assert.match(card, /readonly property real footerHeight: Math\.max\(footerMetadataHeight, actionRow\.visible \? actionRow\.implicitHeight : 0\)/)
   // The action buttons line up with the version/metrics line, not the middle
   // of the two-line metadata block, so they no longer float between the lines.
   const actionRow = card.slice(card.indexOf("id: actionRow"), card.indexOf("PanelActionButton {", card.indexOf("id: actionRow")))
@@ -3278,10 +3307,10 @@ test("the expanded panel carries the Installed filters, their keys, and the hint
 
   // Hint bar: filter keys on the left, row actions and close on the right.
   const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
-  assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing \? root\.browseFilterHints : root\.installedFilterHints/)
+  assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
   // The tab keys lead the right-hand group, with the current tab lit, so
   // the bar also says where you are.
-  assert.match(hints, /id: actionHints[\s\S]*?model: \[\s*\{ key: "1", text: "INSTALLED", active: !root\.browsing \},\s*\{ key: "2", text: "BROWSE", active: root\.browsing \}\s*\]\.concat\(Model\.actionHints\(root\.browsing\), \[\{ key: "esc", text: "CLOSE", active: false \}\]\)/)
+  assert.match(hints, /id: actionHints[\s\S]*?model: \[\s*\{ key: "1", text: "INSTALLED", active: !root\.browsing \},\s*\{ key: "2", text: "BROWSE", active: root\.browsing \}\s*\]\.concat\(root\.browsing && root\.detailsOpen\s*\? \[\{ key: "esc", text: "BACK", active: false \}\]\s*: Model\.actionHints\(root\.browsing\)\.concat\(\[\{ key: "esc", text: "CLOSE", active: false \}\]\)\)/)
   assert.match(hints, /color: hint\.modelData\.active \? root\.foreground : root\.secondaryForeground/)
 })
 
@@ -3387,15 +3416,22 @@ test("the expanded panel flips its content like a card when switching tabs", () 
   assert.match(expanded, /onChanged: function\(value\) \{ root\.switchTab\(value\) \}/)
   assert.match(expanded, /text === "1"\) \{ root\.switchTab\("installed"\)/)
   assert.match(expanded, /text === "2"\) \{ root\.switchTab\("browse"\)/)
-  const switchTab = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("function applyPendingTab() {"))
-  assert.match(switchTab, /if \(contentFlip\.running\) \{\s*contentFlip\.stop\(\)\s*if \(pendingTab !== ""\) applyPendingTab\(\)\s*contentFlipAngle = 0\s*\}/)
+  // The flip is general: whatever changes the face is a closure run at the
+  // edge-on midpoint, so tabs and the Browse details share one animation.
+  assert.match(expanded, /property var pendingFlip: null/)
+  const flipTo = expanded.slice(expanded.indexOf("function flipTo(direction, apply) {"), expanded.indexOf("function applyPendingFlip() {"))
+  assert.match(flipTo, /if \(contentFlip\.running\) \{\s*contentFlip\.stop\(\)\s*applyPendingFlip\(\)\s*contentFlipAngle = 0\s*\}/)
+  assert.match(flipTo, /pendingFlip = apply\s*contentFlip\.direction = direction\s*contentFlip\.restart\(\)/)
+  const applyFlip = expanded.slice(expanded.indexOf("function applyPendingFlip() {"), expanded.indexOf("function applyPendingFlip() {") + 200)
+  assert.match(applyFlip, /var apply = pendingFlip\s*pendingFlip = null\s*if \(apply\) apply\(\)/)
+  const switchTab = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("readonly property var tabOptions"))
   assert.match(switchTab, /if \(activeTab === tab\) return/)
-  assert.match(switchTab, /pendingTab = tab\s*contentFlip\.direction = tab === "browse" \? 1 : -1\s*contentFlip\.restart\(\)/)
+  assert.match(switchTab, /pendingTab = tab\s*flipTo\(tab === "browse" \? 1 : -1, function\(\) \{[\s\S]*?pendingTab = ""[\s\S]*?activeTab = tab\s*\}\)/)
   const flip = expanded.slice(expanded.indexOf("id: contentFlip\n"), expanded.indexOf("id: contentFlip\n") + 1400)
   assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 0[\s\S]*?to: -90 \* contentFlip\.direction[\s\S]*?easing\.type: Easing\.InCubic/)
-  assert.match(flip, /ScriptAction \{ script: root\.applyPendingTab\(\) \}/)
+  assert.match(flip, /ScriptAction \{ script: root\.applyPendingFlip\(\) \}/)
   assert.match(flip, /property: "contentFlipAngle"[\s\S]*?from: 90 \* contentFlip\.direction[\s\S]*?to: 0[\s\S]*?easing\.type: Easing\.OutCubic/)
-  for (const id of ["id: installedPane", "id: catalogGrid"]) {
+  for (const id of ["id: installedPane", "id: catalogGrid", "id: browseDetailsPane"]) {
     const face = expanded.slice(expanded.indexOf(id), expanded.indexOf(id) + 1200)
     assert.match(face, /transform: Rotation \{[\s\S]*?axis \{ x: 0; y: 1; z: 0 \}[\s\S]*?angle: root\.contentFlipAngle/, id)
     assert.match(face, /scale: root\.contentFlipScale/, id)
@@ -3509,7 +3545,7 @@ test("the expanded panel restores the Installed selection when you come back to 
   const handler = expanded.slice(expanded.indexOf("onActiveTabChanged: {"), expanded.indexOf("onActiveTabChanged: {") + 700)
   assert.match(handler, /if \(activeTab === "installed"\) \{\s*selectedIndex = visibleRows\.length > 0\s*\? Math\.max\(0, Math\.min\(rememberedInstalledIndex, visibleRows\.length - 1\)\)\s*: -1\s*\} else \{\s*selectedIndex = -1\s*\}/)
   assert.doesNotMatch(handler, /!browsing/)
-  const apply = expanded.slice(expanded.indexOf("function applyPendingTab() {"), expanded.indexOf("function applyPendingTab() {") + 400)
+  const apply = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("readonly property var tabOptions"))
   assert.match(apply, /if \(activeTab === "installed"\) rememberedInstalledIndex = Math\.max\(0, selectedIndex\)\s*activeTab = tab/)
 })
 
@@ -3528,6 +3564,148 @@ test("the store reloads when shell.json changes under it", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.doesNotMatch(panel, /watchConfig: true/)
   assert.match(store, /Timer \{\s*id: configReload\s*interval: 1000\s*repeat: false\s*onTriggered: root\.reload\(\)/)
+})
+
+test("Browse details are a third face of the flip, not a dialog", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // Opening turns toward the page, closing turns back; the grid and the page
+  // are the two faces, and nothing else moves.
+  assert.match(expanded, /function openDetails\(entry\) \{\s*if \(!entry \|\| detailsEntry === entry\) return\s*flipTo\(1, function\(\) \{ detailsEntry = entry \}\)\s*\}/)
+  assert.match(expanded, /function closeDetails\(\) \{\s*if \(!detailsOpen\) return\s*flipTo\(-1, function\(\) \{ detailsEntry = null \}\)\s*\}/)
+  const grid = expanded.slice(expanded.indexOf("id: catalogGrid"), expanded.indexOf("id: catalogGrid") + 200)
+  assert.match(grid, /visible: root\.browsing && !root\.detailsOpen/)
+  const pane = expanded.slice(expanded.indexOf("id: browseDetailsPane"), expanded.indexOf("id: browseDetailsPane") + 1600)
+  assert.match(pane, /visible: root\.browsing && root\.detailsOpen/)
+  assert.match(pane, /anchors\.top: statusLine\.bottom[\s\S]*?anchors\.bottom: hintBar\.top/)
+  assert.match(pane, /entry: root\.detailsEntry/)
+  assert.match(pane, /previewsEnabled: root\.previewsSupported/)
+  assert.match(pane, /onBackRequested: root\.closeDetails\(\)/)
+  assert.match(pane, /onInstallRequested: root\.askInstall\(root\.detailsEntry\)/)
+  assert.match(pane, /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{ root\.requestGithubNavigation\(candidates, fallbackUrl\) \}/)
+  assert.match(pane, /onRepositoryNavigationRequested: function\(url\) \{ root\.navigateExternalUrl\(url\) \}/)
+  assert.match(pane, /onPreviewUndecodable: root\.previewsSupported = false/)
+  // Tabs still answer while the page is up; the grid's cursor keys do not.
+  const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
+  assert.ok(keys.indexOf('text === "1"') < keys.indexOf("else if (root.detailsOpen) return"), "tab keys before the details guard")
+  // The hint bar says the one way out.
+  const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
+  assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
+  assert.match(hints, /id: actionHints[\s\S]*?root\.browsing && root\.detailsOpen\s*\? \[\{ key: "esc", text: "BACK", active: false \}\]/)
+})
+
+test("CatalogDetailsPane shows the cover on the left and the listing on the right", () => {
+  const pane = readFileSync(new URL("../CatalogDetailsPane.qml", import.meta.url), "utf8")
+  for (const decl of [
+    "property var entry: null", "property bool previewsEnabled: true", "property bool actionsEnabled: true",
+    "property color background: Color.menu.background", "required property color secondaryForeground",
+    "signal backRequested()", "signal installRequested()", "signal previewUndecodable()",
+    "signal githubNavigationRequested(var candidates, string fallbackUrl)", "signal repositoryNavigationRequested(string url)"
+  ]) assert.ok(pane.includes(decl), decl)
+  assert.match(pane, /readonly property var fieldRows: Model\.catalogDetailFields\(entry, stateText, needsPlacement\)/)
+  assert.match(pane, /readonly property var previewSources: Model\.previewCandidates\(entry, previewsEnabled\)/)
+  assert.match(pane, /onEntryChanged: \{\s*previewIndex = 0/)
+
+  const back = pane.slice(pane.indexOf("id: backButton"), pane.indexOf("id: backButton") + 400)
+  assert.match(back, /anchors\.left: parent\.left\s*anchors\.top: parent\.top/)
+  assert.match(back, /iconText: "󰁍"/)
+  assert.match(back, /text: "Back"/)
+  assert.match(back, /onClicked: root\.backRequested\(\)/)
+
+  // The cover takes the left two fifths and is fitted, never cropped, capped
+  // to the height it has rather than to a square.
+  const cover = pane.slice(pane.indexOf("id: coverColumn"), pane.indexOf("id: detailsScroll"))
+  assert.match(cover, /width: Math\.round\(parent\.width \* 0\.4\)/)
+  assert.match(cover, /fillMode: Image\.PreserveAspectFit/)
+  assert.match(cover, /Math\.min\(coverColumn\.height, Math\.round\(width \* detailsThumbnail\.implicitHeight \/ detailsThumbnail\.implicitWidth\)\)/)
+  assert.match(cover, /text: root\.entry \? root\.entry\.initials : ""/)
+  assert.match(cover, /if \(root\.previewSource === \(root\.entry \? root\.entry\.thumbnail : ""\)\) root\.previewUndecodable\(\)\s*root\.previewIndex\+\+/)
+
+  const right = pane.slice(pane.indexOf("id: detailsScroll"))
+  assert.match(right, /id: nameLabel[\s\S]*?font\.pixelSize: Style\.font\.display[\s\S]*?font\.bold: true/)
+  assert.match(right, /text: Model\.catalogMetaLine\(root\.entry\)/)
+  assert.match(right, /id: verifiedPill[\s\S]*?visible: root\.verified[\s\S]*?text: "󰄬 verified"/)
+  assert.match(right, /model: root\.fieldRows/)
+  assert.match(right, /text: root\.blockedReason[\s\S]*?color: Color\.urgent/)
+  const actions = right.slice(right.indexOf("id: actionRow"))
+  assert.match(right, /Flow \{\s*id: actionRow/)
+  assert.match(actions, /id: installButton[\s\S]*?visible: root\.entry \? root\.entry\.installable === true : false[\s\S]*?iconText: "󰐕"[\s\S]*?enabled: root\.actionsEnabled[\s\S]*?onClicked: root\.installRequested\(\)/)
+  assert.match(actions, /id: repositoryButton[\s\S]*?visible: root\.repoUrl !== ""[\s\S]*?iconText: "󰊤"[\s\S]*?onClicked: root\.repositoryNavigationRequested\(root\.repoUrl\)/)
+  assert.match(actions, /id: releaseButton[\s\S]*?visible: root\.versionFallbackUrl !== ""[\s\S]*?text: "Open " \+ root\.versionText \+ " on GitHub"[\s\S]*?onClicked: root\.githubNavigationRequested\(root\.versionReleaseCandidates, root\.versionFallbackUrl\)/)
+})
+
+test("the catalog details page puts stars and hearts at the right of the title line", () => {
+  const pane = readFileSync(new URL("../CatalogDetailsPane.qml", import.meta.url), "utf8")
+  const line = pane.slice(pane.indexOf("id: titleLine"), pane.indexOf("id: titleLine") + 3800)
+  // The name keeps the left and yields to the metrics; the metrics keep the
+  // right edge, the same gold star and red heart the cards wear, each shown
+  // only when the listing has a count.
+  assert.match(line, /id: nameLabel[\s\S]*?anchors\.left: parent\.left[\s\S]*?anchors\.right: metricsRow\.left/)
+  assert.match(line, /Row \{\s*id: metricsRow\s*anchors\.right: parent\.right/)
+  assert.match(line, /readonly property string starText: Model\.starLabel\(root\.entry \? root\.entry\.stars : null\)/)
+  assert.match(line, /readonly property string heartText: Model\.starLabel\(root\.entry \? root\.entry\.marketplaceHearts : null\)/)
+  assert.match(line, /id: starIcon[\s\S]*?text: "󰓎"[\s\S]*?color: "#f5c518"/)
+  assert.match(line, /id: heartIcon[\s\S]*?text: "󰋑"[\s\S]*?color: "#e5484d"/)
+  assert.match(line, /id: starCount[\s\S]*?anchors\.baseline: starIcon\.baseline[\s\S]*?text: metricsRow\.starText/)
+  assert.match(line, /id: heartCount[\s\S]*?anchors\.baseline: heartIcon\.baseline[\s\S]*?text: metricsRow\.heartText/)
+  // Display-size glyphs with title-size counts: the two numbers should read
+  // at the same glance as the name they sit beside.
+  assert.equal((line.match(/font\.pixelSize: Style\.font\.display\n/g) || []).length, 3)
+  assert.equal((line.match(/font\.pixelSize: Style\.font\.title\n/g) || []).length, 2)
+  assert.match(line, /visible: metricsRow\.starText !== ""/)
+  assert.match(line, /visible: metricsRow\.heartText !== ""/)
+})
+
+test("the expanded grid's cards carry no buttons: click or Enter opens the page", () => {
+  const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  // The popup keeps its info and install buttons; the expanded panel turns
+  // them off and the metadata takes the whole footer width.
+  assert.match(card, /property bool showActions: true/)
+  assert.match(card, /id: actionRow\s*visible: root\.showActions/)
+  assert.match(card, /anchors\.right: actionRow\.visible \? actionRow\.left : parent\.right/)
+  assert.match(card, /anchors\.rightMargin: actionRow\.visible \? Style\.space\(6\) : 0/)
+  const delegate = expanded.slice(expanded.indexOf("CatalogCard {"), expanded.indexOf("CatalogCard {") + 600)
+  assert.match(delegate, /showActions: false/)
+  assert.doesNotMatch(panel, /showActions/)
+})
+
+test("the expanded grid's cards drop the author and version lines too", () => {
+  const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  // Name, description and the two counts are the card; everything else is
+  // one Enter away on the page. The footer shrinks to one line with them.
+  assert.match(card, /property bool showMeta: true/)
+  assert.match(card, /readonly property bool hasCreator: showMeta && creatorText !== ""/)
+  assert.match(card, /readonly property bool hasVersionOrMetrics: \(showMeta && versionText !== ""\) \|\| hasMetrics/)
+  assert.match(card, /id: versionLabel[\s\S]*?visible: root\.showMeta && root\.versionText !== ""/)
+  assert.match(card, /readonly property real footerMetadataHeight: Math\.ceil\(descriptionMetrics\.lineSpacing \* \(showMeta \? 2 : 1\)\)\s*\+ \(showMeta \? Style\.space\(3\) : 0\)/)
+  // The "requires additional setup" note is metadata too: the page says it.
+  assert.match(card, /readonly property string blockedText: showMeta && state_ === "unavailable"\s*\? Model\.installBlockedReason\(entry\) : ""/)
+  const delegate = expanded.slice(expanded.indexOf("CatalogCard {"), expanded.indexOf("CatalogCard {") + 600)
+  assert.match(delegate, /showMeta: false/)
+  assert.doesNotMatch(panel, /showMeta/)
+})
+
+test("the catalog details page wears an installed pill beside the verified one", () => {
+  const pane = readFileSync(new URL("../CatalogDetailsPane.qml", import.meta.url), "utf8")
+  const pills = pane.slice(pane.indexOf("id: pillRow") - 20, pane.indexOf("id: pillRow") + 1800)
+  // Bound to the facts, never to the children's `visible`: a child of a
+  // hidden item reports itself hidden, so a row that waits for its pills to
+  // be visible before showing itself never shows at all.
+  assert.match(pane, /readonly property bool verified: entry \? entry\.verified === true : false/)
+  assert.match(pane, /readonly property bool installed: entry \? entry\.installed === true : false/)
+  assert.match(pills, /Row \{\s*id: pillRow[\s\S]*?visible: root\.verified \|\| root\.installed/)
+  assert.doesNotMatch(pills, /verifiedPill\.visible \|\| installedPill\.visible/)
+  assert.match(pills, /id: verifiedPill[\s\S]*?text: "󰄬 verified"/)
+  // The same green the cards use for "installed", picked against the
+  // background so it reads on light themes too.
+  assert.match(pills, /id: installedPill[\s\S]*?visible: root\.installed/)
+  assert.match(pills, /id: verifiedPill[\s\S]*?visible: root\.verified/)
+  assert.match(pills, /readonly property color tint: Model\.installedTint\(root\.background\)/)
+  assert.match(pills, /text: "󰗠 installed"/)
+  assert.match(pills, /color: installedPill\.tint/)
 })
 
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
@@ -3653,7 +3831,8 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.equal((expanded.match(/PluginRow \{/g) || []).length, 0)
   assert.match(expanded, /GridView \{[\s\S]*?readonly property int columns: 4/)
   assert.match(expanded, /CatalogCard \{/)
-  assert.match(expanded, /PluginDetails \{/)
+  assert.doesNotMatch(expanded, /PluginDetails \{/)
+  assert.match(expanded, /CatalogDetailsPane \{\s*id: browseDetailsPane/)
   assert.match(expanded, /ConfirmDialog \{[\s\S]*?opened: root\.confirming/)
   assert.match(expanded, /ChoiceDialog \{[\s\S]*?opened: root\.placing/)
 
@@ -3661,7 +3840,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /Keys\.onPressed: function\(event\) \{[\s\S]*?event\.key === Qt\.Key_Escape[\s\S]*?root\.detailsOpen[\s\S]*?root\.dismiss\(\)/)
 
   // Never rich text, anywhere on this surface either.
-  for (const file of ["Expanded.qml", "InstalledDetails.qml", "InstalledListRow.qml"]) {
+  for (const file of ["Expanded.qml", "InstalledDetails.qml", "InstalledListRow.qml", "CatalogDetailsPane.qml"]) {
     const qml = readFileSync(new URL("../" + file, import.meta.url), "utf8")
     const texts = (qml.match(/\n\s*Text \{/g) || []).length
     const plain = (qml.match(/textFormat: Text\.PlainText/g) || []).length

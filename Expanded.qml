@@ -152,6 +152,9 @@ Item {
   // back, so the flip also says which way you went. The header, tab bar and
   // hint bar stay put — a frame that moves is a transition nobody can read.
   property string pendingTab: ""
+  // What the edge-on midpoint applies: a closure, so the same turn serves
+  // the tabs and the Browse details page alike.
+  property var pendingFlip: null
   property real contentFlipAngle: 0
   readonly property bool contentFlipping: contentFlip.running
   // A slight shrink at the edge-on point sells the depth of the turn.
@@ -169,7 +172,7 @@ Item {
       duration: 200
       easing.type: Easing.InCubic
     }
-    ScriptAction { script: root.applyPendingTab() }
+    ScriptAction { script: root.applyPendingFlip() }
     NumberAnimation {
       target: root
       property: "contentFlipAngle"
@@ -180,27 +183,36 @@ Item {
     }
   }
 
-  function switchTab(tab) {
-    // A click mid-turn lands the turn in progress first rather than being
-    // swallowed, so no tap is ever lost to the animation.
+  // Turn the content over and apply `apply` at the edge-on midpoint, where
+  // nothing is visible. A call mid-turn lands the turn in progress first
+  // rather than being swallowed, so no tap is ever lost to the animation.
+  function flipTo(direction, apply) {
     if (contentFlip.running) {
       contentFlip.stop()
-      if (pendingTab !== "") applyPendingTab()
+      applyPendingFlip()
       contentFlipAngle = 0
     }
-    if (activeTab === tab) return
-    pendingTab = tab
-    contentFlip.direction = tab === "browse" ? 1 : -1
+    pendingFlip = apply
+    contentFlip.direction = direction
     contentFlip.restart()
   }
 
-  // The actual switch, run at the edge-on midpoint where nothing is visible.
-  function applyPendingTab() {
-    var tab = pendingTab
-    if (tab === "") return
-    pendingTab = ""
-    if (activeTab === "installed") rememberedInstalledIndex = Math.max(0, selectedIndex)
-    activeTab = tab
+  function applyPendingFlip() {
+    var apply = pendingFlip
+    pendingFlip = null
+    if (apply) apply()
+  }
+
+  function switchTab(tab) {
+    if (activeTab === tab) return
+    // The tab bar lights the destination at once; the content follows at
+    // the midpoint, remembering where Installed's cursor was on the way out.
+    pendingTab = tab
+    flipTo(tab === "browse" ? 1 : -1, function() {
+      pendingTab = ""
+      if (activeTab === "installed") rememberedInstalledIndex = Math.max(0, selectedIndex)
+      activeTab = tab
+    })
   }
 
   readonly property var tabOptions: [
@@ -356,13 +368,16 @@ Item {
   readonly property bool detailsOpen: detailsEntry !== null
   onCatalogChanged: if (detailsEntry) detailsEntry = Model.findRow(catalog, detailsEntry.id)
 
+  // The details page is the third face of the flip: the grid turns over
+  // into it, Back or Esc turns it back.
   function openDetails(entry) {
-    if (!entry) return
-    detailsEntry = entry
+    if (!entry || detailsEntry === entry) return
+    flipTo(1, function() { detailsEntry = entry })
   }
 
   function closeDetails() {
-    detailsEntry = null
+    if (!detailsOpen) return
+    flipTo(-1, function() { detailsEntry = null })
   }
 
   // ---- Actions -----------------------------------------------------------------
@@ -371,7 +386,7 @@ Item {
 
   function askInstall(entry) {
     if (!store.askInstall(entry)) return
-    detailsEntry = null
+    closeDetails()
   }
 
   function startUpdate(row) {
@@ -479,6 +494,8 @@ Item {
             else root.dismiss()
             event.accepted = true
           }
+          else if (text === "1") { root.switchTab("installed"); event.accepted = true }
+          else if (text === "2") { root.switchTab("browse"); event.accepted = true }
           else if (root.detailsOpen) return
           else if (event.key === Qt.Key_Down || text === "j") { root.moveSelection(0, 1); event.accepted = true }
           else if (event.key === Qt.Key_Up || text === "k") { root.moveSelection(0, -1); event.accepted = true }
@@ -506,8 +523,6 @@ Item {
             else { store.reload(); store.checkUpdates() }
             event.accepted = true
           }
-          else if (text === "1") { root.switchTab("installed"); event.accepted = true }
-          else if (text === "2") { root.switchTab("browse"); event.accepted = true }
         }
 
         // ---- Header: what this is, the tabs, and the two icons.
@@ -945,7 +960,7 @@ Item {
               spacing: Style.space(10)
 
               Repeater {
-                model: root.browsing ? root.browseFilterHints : root.installedFilterHints
+                model: root.browsing && root.detailsOpen ? [] : (root.browsing ? root.browseFilterHints : root.installedFilterHints)
                 delegate: hintDelegate
               }
             }
@@ -962,7 +977,9 @@ Item {
                 model: [
                   { key: "1", text: "INSTALLED", active: !root.browsing },
                   { key: "2", text: "BROWSE", active: root.browsing }
-                ].concat(Model.actionHints(root.browsing), [{ key: "esc", text: "CLOSE", active: false }])
+                ].concat(root.browsing && root.detailsOpen
+                  ? [{ key: "esc", text: "BACK", active: false }]
+                  : Model.actionHints(root.browsing).concat([{ key: "esc", text: "CLOSE", active: false }]))
                 delegate: hintDelegate
               }
             }
@@ -1158,7 +1175,7 @@ Item {
         // ---- Browse: the popup's card grid, one column wider.
         GridView {
           id: catalogGrid
-          visible: root.browsing
+          visible: root.browsing && !root.detailsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: statusLine.bottom
@@ -1230,6 +1247,8 @@ Item {
               selected: root.selectedIndex === index
               actionsEnabled: !root.busy
               previewsEnabled: root.previewsSupported
+              showActions: false
+              showMeta: false
               foreground: root.foreground
               secondaryForeground: root.secondaryForeground
               fontFamily: root.fontFamily
@@ -1286,35 +1305,39 @@ Item {
           }
         }
 
-        PluginDetails {
-          id: pluginDetails
-          anchors.fill: parent
-          z: 10
-          opened: root.detailsOpen
+        // ---- Browse details: the grid turned over. Cover left, listing
+        //      right, and the way back at the top; the third face of the flip.
+        CatalogDetailsPane {
+          id: browseDetailsPane
+          visible: root.browsing && root.detailsOpen
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: statusLine.bottom
+          anchors.topMargin: Style.space(10)
+          anchors.bottom: hintBar.top
+          anchors.bottomMargin: Style.space(10)
+          // One face of the tab-flip card; see contentFlip.
+          transform: Rotation {
+            origin.x: browseDetailsPane.width / 2
+            origin.y: browseDetailsPane.height / 2
+            axis { x: 0; y: 1; z: 0 }
+            angle: root.contentFlipAngle
+          }
+          scale: root.contentFlipScale
+          layer.enabled: root.contentFlipping
           entry: root.detailsEntry
           previewsEnabled: root.previewsSupported
+          actionsEnabled: !root.busy
           background: Color.menu.background
           foreground: root.foreground
           secondaryForeground: root.secondaryForeground
           fontFamily: root.fontFamily
 
-          onPreviewUndecodable: root.previewsSupported = false
-
-          onOpenedChanged: {
-            if (opened) forceActiveFocus()
-            else root.returnFocusToList()
-          }
-
-          Keys.onPressed: function(event) {
-            if (pluginDetails.handleKey(event)) event.accepted = true
-          }
-
-          onClosed: root.closeDetails()
-          onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
-          // No Release probing on this surface: the fallback page is the
-          // Releases list, which is always a fine place to land.
-          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+          onBackRequested: root.closeDetails()
           onInstallRequested: root.askInstall(root.detailsEntry)
+          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+          onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+          onPreviewUndecodable: root.previewsSupported = false
         }
 
         ConfirmDialog {
