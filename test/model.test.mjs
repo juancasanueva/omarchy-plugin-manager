@@ -3708,6 +3708,19 @@ test("the catalog details page wears an installed pill beside the verified one",
   assert.match(pills, /color: installedPill\.tint/)
 })
 
+test("card previews fit inside the frame instead of cropping", () => {
+  const card = readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")
+  // The frame keeps the grid uniform; the picture inside it is whole. Once
+  // it is up, the tile steps aside so the gutters read as card, not as a
+  // coloured mat around the photo.
+  const preview = card.slice(card.indexOf("id: preview"), card.indexOf("id: preview") + 2600)
+  // Opaque gutters: the card fill and the panel are both translucent, so a
+  // transparent tile let the desktop show through beside the picture.
+  assert.match(preview, /id: previewTile[\s\S]*?color: thumbnail\.status === Image\.Ready \? Color\.background : "transparent"[\s\S]*?gradient: thumbnail\.status === Image\.Ready \? null : previewTileGradient/)
+  assert.match(preview, /id: thumbnail[\s\S]*?fillMode: Image\.PreserveAspectFit/)
+  assert.doesNotMatch(preview, /PreserveAspectCrop/)
+})
+
 test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)

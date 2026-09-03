@@ -120,12 +120,22 @@ Rectangle {
       height: Math.round(width * 9 / 16)
 
       Rectangle {
+        id: previewTile
         anchors.fill: parent
         radius: Style.cornerRadius
         clip: true
         // The tile is the fallback and the backdrop both: it sits under the
         // image so a half-loaded photo never flashes the panel background.
-        gradient: Gradient {
+        // Once the picture is up it steps aside: the picture is fitted, not
+        // cropped, and the gutters beside a tall or wide one should read as
+        // panel, not as a coloured mat around the photo. The theme's base
+        // background rather than the card's fill: the fill and the panel are
+        // both translucent, and a see-through gutter shows the desktop.
+        color: thumbnail.status === Image.Ready ? Color.background : "transparent"
+        gradient: thumbnail.status === Image.Ready ? null : previewTileGradient
+
+        Gradient {
+          id: previewTileGradient
           GradientStop { position: 0.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.38) }
           GradientStop { position: 1.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.14) }
         }
@@ -158,7 +168,9 @@ Rectangle {
           // it is actually showing.
           asynchronous: true
           cache: true
-          fillMode: Image.PreserveAspectCrop
+          // Whole, never cropped: the frame keeps the grid uniform, the
+          // picture keeps its shape inside it.
+          fillMode: Image.PreserveAspectFit
           sourceSize.width: 720
           visible: status === Image.Ready
         }
