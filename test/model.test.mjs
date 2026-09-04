@@ -3370,6 +3370,20 @@ test("the expanded search box is captioned and sized like the filter dropdowns",
   assert.match(expanded, /id: searchControl\s*anchors\.left: parent\.left\s*anchors\.top: parent\.top\s*anchors\.bottom: parent\.bottom\s*anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
 })
 
+test("the expanded search box grows the popup's clear (x) button once a term is typed", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const control = expanded.slice(expanded.indexOf("id: searchControl"), expanded.indexOf("id: installedFilters"))
+  // Same glyph, same trigger as the popup: the button exists only while
+  // there is something to clear, and the field gives it room only then.
+  assert.match(control, /PanelActionButton \{\s*id: clearSearchButton[\s\S]*?visible: root\.searchQuery !== ""[\s\S]*?iconText: "󰅙"[\s\S]*?tooltipText: "Clear the search"/)
+  assert.match(control, /id: clearSearchButton[\s\S]*?onClicked: \{\s*root\.clearSearch\(\)\s*root\.returnFocusToList\(\)\s*\}/)
+  assert.match(control, /id: searchField[\s\S]*?anchors\.right: clearSearchButton\.visible \? clearSearchButton\.left : parent\.right\s*anchors\.rightMargin: clearSearchButton\.visible \? Style\.space\(4\) : 0/)
+  // One clearing path for the button, Escape, and "Clear filters" alike.
+  assert.match(expanded, /function clearSearch\(\) \{\s*searchField\.text = ""\s*\}/)
+  assert.match(control, /if \(searchField\.text !== ""\) root\.clearSearch\(\)/)
+  assert.match(expanded, /function clearCatalogFilters\(\) \{[\s\S]*?clearSearch\(\)[\s\S]*?selectedIndex = -1/)
+})
+
 test("the expanded list row carries no actions or metadata lines", () => {
   const row = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
   assert.match(row, /property var row: null/)

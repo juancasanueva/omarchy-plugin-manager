@@ -355,12 +355,16 @@ Item {
   function cycleAvailabilityFilter() { availabilityFilter = Model.nextOption(availabilityOptions, availabilityFilter); selectedIndex = -1 }
   function cycleCatalogSort() { catalogSort = Model.nextOption(catalogSortOptions, catalogSort); selectedIndex = -1 }
 
+  function clearSearch() {
+    searchField.text = ""
+  }
+
   function clearCatalogFilters() {
     var cleared = Model.clearedCatalogFilters()
     categoryFilter = cleared.category
     catalogKindFilter = cleared.kind
     availabilityFilter = cleared.availability
-    searchField.text = ""
+    clearSearch()
     selectedIndex = -1
   }
 
@@ -807,7 +811,10 @@ Item {
             TextField {
               id: searchField
               anchors.left: parent.left
-              anchors.right: parent.right
+              // The field gives the clear button room only while it shows,
+              // so an empty search box runs the full width like the others.
+              anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
+              anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
               anchors.bottom: parent.bottom
               height: Style.spacing.controlHeight
               placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
@@ -819,9 +826,28 @@ Item {
               onAccepted: root.returnFocusToList()
               Keys.onPressed: function(event) {
                 if (event.key !== Qt.Key_Escape) return
-                if (searchField.text !== "") searchField.text = ""
+                // Escape clears before it leaves: a search box that keeps a
+                // stale term after you back out of it silently hides plugins.
+                if (searchField.text !== "") root.clearSearch()
                 else root.returnFocusToList()
                 event.accepted = true
+              }
+            }
+
+            // The popup's clear (x): appears the moment there is a term to
+            // clear and takes the keyboard back to the list once it is gone.
+            PanelActionButton {
+              id: clearSearchButton
+              anchors.right: parent.right
+              anchors.verticalCenter: searchField.verticalCenter
+              visible: root.searchQuery !== ""
+              iconText: "󰅙"
+              tooltipText: "Clear the search"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: {
+                root.clearSearch()
+                root.returnFocusToList()
               }
             }
           }
