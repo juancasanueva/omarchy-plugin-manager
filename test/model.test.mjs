@@ -2469,7 +2469,7 @@ test("switching tabs flips the content area like a card", () => {
   assert.doesNotMatch(switchTab, /activeTab = tab/)
 
   const apply = panel.slice(panel.indexOf("function applyPendingTab() {"), panel.indexOf("onSearchQueryChanged"))
-  assert.match(apply, /pendingTab = ""\s*activeTab = tab\s*resetSelection\(\)/)
+  assert.match(apply, /pendingTab = ""(?:\s*\/\/[^\n]*)*\s*clearSearch\(\)\s*activeTab = tab\s*resetSelection\(\)/)
   assert.match(apply, /if \(tab === "browse" && !catalogLoaded && !catalogLoading\) loadCatalog\(false\)/)
 
   // Turn to edge-on, swap, turn back in from the other side — same rotational
@@ -3370,6 +3370,19 @@ test("the expanded search box is captioned and sized like the filter dropdowns",
   assert.match(expanded, /id: searchControl\s*anchors\.left: parent\.left\s*anchors\.top: parent\.top\s*anchors\.bottom: parent\.bottom\s*anchors\.right: root\.browsing \? browseFilters\.left : installedFilters\.left/)
 })
 
+test("switching tabs clears the search on both panels", () => {
+  // The two tabs search different things (Installed: name and id; Browse:
+  // also author and description), so a term carried across is a different
+  // query that silently shrinks the other list. The dropdown filters are
+  // already per tab; the search follows suit.
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel, /function applyPendingTab\(\) \{[\s\S]*?pendingTab = ""(?:\s*\/\/[^\n]*)*\s*clearSearch\(\)\s*activeTab = tab/)
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  // Installed's cursor is remembered before the clear, so the restored row
+  // is the one you left, not the first row of an unfiltered list.
+  assert.match(expanded, /function switchTab\(tab\) \{[\s\S]*?rememberedInstalledIndex = Math\.max\(0, selectedIndex\)(?:\s*\/\/[^\n]*)*\s*clearSearch\(\)\s*activeTab = tab/)
+})
+
 test("the expanded search box grows the popup's clear (x) button once a term is typed", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   const control = expanded.slice(expanded.indexOf("id: searchControl"), expanded.indexOf("id: installedFilters"))
@@ -3560,7 +3573,7 @@ test("the expanded panel restores the Installed selection when you come back to 
   assert.match(handler, /if \(activeTab === "installed"\) \{\s*selectedIndex = visibleRows\.length > 0\s*\? Math\.max\(0, Math\.min\(rememberedInstalledIndex, visibleRows\.length - 1\)\)\s*: -1\s*\} else \{\s*selectedIndex = -1\s*\}/)
   assert.doesNotMatch(handler, /!browsing/)
   const apply = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("readonly property var tabOptions"))
-  assert.match(apply, /if \(activeTab === "installed"\) rememberedInstalledIndex = Math\.max\(0, selectedIndex\)\s*activeTab = tab/)
+  assert.match(apply, /if \(activeTab === "installed"\) rememberedInstalledIndex = Math\.max\(0, selectedIndex\)(?:\s*\/\/[^\n]*)*\s*clearSearch\(\)\s*activeTab = tab/)
 })
 
 test("the store reloads when shell.json changes under it", () => {

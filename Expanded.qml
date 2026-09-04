@@ -211,6 +211,9 @@ Item {
     flipTo(tab === "browse" ? 1 : -1, function() {
       pendingTab = ""
       if (activeTab === "installed") rememberedInstalledIndex = Math.max(0, selectedIndex)
+      // The search does not travel: the tabs search different things, so a
+      // term carried across would be a different query hiding a different list.
+      clearSearch()
       activeTab = tab
     })
   }

@@ -262,6 +262,9 @@ Panel {
     var tab = pendingTab
     if (tab === "") return
     pendingTab = ""
+    // The search does not travel: the tabs search different things, so a
+    // term carried across would be a different query hiding a different list.
+    clearSearch()
     activeTab = tab
     resetSelection()
     if (tab === "browse" && !catalogLoaded && !catalogLoading) loadCatalog(false)
