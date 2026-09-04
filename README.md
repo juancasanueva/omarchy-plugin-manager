@@ -2,35 +2,96 @@
 
 An Omarchy bar widget that manages your plugins from the bar: browse the
 marketplace, install from it — choosing where in the bar each widget goes —
-and enable, disable, update, or remove what you already have.
+and enable, disable, update, or remove what you already have. It opens as a
+popup under the bar and expands, on request, into a full-size panel with a
+details pane.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
-![The Installed tab: a puzzle icon and Plugins heading above labelled Source,
-Kind, and Status dropdowns, a Search field, separated plugin rows with
-descriptions, metadata, repository links, switches, and actions, and a hint
-bar with filter keys on the left and row actions on the right](preview.png)
+![The popup's Installed tab: a puzzle icon and Plugins heading with an
+installed, total, and to-update summary, Installed and Browse tabs, expand and
+refresh icons, labelled Source, Kind, and Status dropdowns, a Search field, and
+separated plugin rows with descriptions, metadata, repository links, update
+badges, switches, and actions above a hint bar with filter keys on the left and
+row actions on the right](preview.png)
 
 ## What it does
 
-Click the puzzle icon and you get two tabs.
+Click the puzzle icon and you get two tabs in a popup: **Installed**, which is
+what the shell actually found on disk, and **Browse**, which is the
+marketplace. Both are described below. When the popup is too small for the
+job, the same two tabs open in a full-size panel.
 
 ## The expanded panel
 
+![The expanded panel's Installed tab: the same heading and summary, a search
+box and Source, Kind, and Status dropdowns in one labelled row, a list of
+plugin rows with state marks, verified pills, star counts, and one-line
+descriptions beside a details pane showing the selected plugin's name, on/off
+switch, Update, Remove, and Open repository buttons, its screenshot, and its
+description, above a hint bar with tab, action, and close keys](preview-expanded.png)
+
 The popup is built for a glance. When you want room, the icon left of the
-refresh button (`󰊓`) hands the same manager to a full-size overlay: the
-Installed tab becomes a list beside a details pane for the selected plugin,
-with its facts and its actions written out, and the Browse tab becomes a wider
-grid of the same clickable cards. The `󰊔` icon in the same corner brings the
-popup back.
+refresh button (`󰊓`) hands the same manager to a full-size panel, and the `󰊔`
+icon in the same corner brings the popup back. The header, the tabs, the
+summary counts, the opening animation and the card flip between tabs are the
+ones the popup has; what changes is how much each tab can show.
+
+**Installed** becomes a list beside a details pane. The rows are summaries:
+a mark leads the name — a green check when the checkout is up to date, an
+orange arrow when an update is confirmed — followed by the `verified` pill
+and, on the right, the repository's GitHub star count, with one line of
+description underneath. Everything else moves to the pane on the right, which
+shows the selected plugin in full: its name, the on/off switch and the Update,
+Remove, and Open repository buttons laid out under it, the plugin's own
+screenshot, the whole description, and its facts. The screenshot is the
+checkout's `preview.png` when it ships one, otherwise the catalog preview for
+the same id. The Version fact is a link that resolves to the matching GitHub
+Release at click time, exactly as the popup's row does. Your place in the list
+survives a trip to Browse and back, and the pane refreshes on its own once the
+shell has finished an enable or disable.
+
+![The expanded panel's Browse tab: a search box beside Category, Kind,
+Availability, and Sort dropdowns above a four-column grid of marketplace cards
+with whole previews, names, descriptions, star and heart counts, and installed
+and verified badges](preview-expanded-browse.png)
+
+**Browse** becomes a wider grid of the same cards, with the card pictures shown
+whole rather than cropped to the frame, so a tall or wide screenshot is still
+the screenshot. The cards drop their info and install buttons because a card
+opens a full page instead: click it, or select it and press `Enter`.
+
+![The expanded panel's Browse details page: a Back button, the plugin's preview
+shown whole, its name with star and heart counts, author and kind, verified
+and installed pills, the full description, a table of catalog facts, the
+installation warning, and Open repository and Release buttons](preview-expanded-details.png)
+
+The details page takes the whole panel. It leads with the preview and the
+name, then the author and kind, the `verified` and `installed` pills, the full
+description, and every catalog fact the manager has — author, version,
+category, kind, license, review status, stars, hearts, availability, and
+whether installation will ask for a bar section — followed by the installation
+warning and the repository and Release buttons. A plugin you do not have yet
+gets an **Install** button here; the confirmation overlays the page, and the
+page stays open once the install lands so you can see the `installed` pill
+arrive. The filter row hides while the page is up, `Esc` or **Back** returns
+you to the grid.
+
+Both tabs share one search box and, on this surface, it wears a caption like
+the dropdowns beside it and grows an `x` the moment there is something to
+clear. The hint bar names the tab keys as well as the actions — `[1] INSTALLED
+[2] BROWSE` on the right, before `[ESC] CLOSE` — so every way in and out is
+written down.
 
 Under the hood the plugin registers a second kind, `panel`, whose entry point
 is `Expanded.qml`. Both surfaces share one data layer, `PluginStore.qml`, so
 an install, update, enable, disable or remove is the same code whichever
-window you started it from. One consequence of the extra kind: the shell now
-routes `omarchy-shell shell toggle io.github.juancasanueva.plugin-manager` to
-the expanded panel, which makes it the thing to bind a hotkey to, while the
-bar button still opens the popup.
+window you started it from, and the catalog is parsed on a worker thread so a
+two-thousand-entry marketplace never freezes the window that asked for it.
+One consequence of the extra kind: the shell now routes
+`omarchy-shell shell toggle io.github.juancasanueva.plugin-manager` to the
+expanded panel, which makes it the thing to bind a hotkey to, while the bar
+button still opens the popup.
 
 ## The Installed tab
 
@@ -100,7 +161,10 @@ uses, and every control narrows both lists at once:
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
-  look nothing like what you typed.
+  look nothing like what you typed. An `x` appears at the end of the box while
+  there is a term to clear, and switching tabs clears it too: the two tabs
+  search different things, so a term carried across would be a different
+  query silently shrinking the other list.
 
 The hint bar under the list shows the filters on the left — `[S] SOURCE
 [F] KIND  [T] STATUS`, each naming its dropdown while neutral and its value,
@@ -167,12 +231,13 @@ quietly told nothing is how a stale plugin sits there looking current.
 
 ## The Browse tab
 
-![The Browse tab: a puzzle icon and Plugins heading with a Browse-only
-Marketplace link to the left of the tabs, aligned category and search
-controls, and a grid of compact plugin cards with previews, descriptions,
-creator lines, versions, GitHub stars, Marketplace hearts, installed or blocked
-state, and details or install actions, above a hint bar with filter keys on
-the left and details and search keys on the right](preview-browse.png)
+![The popup's Browse tab: a puzzle icon and Plugins heading with a Browse-only
+Marketplace link to the left of the tabs, labelled Category, Kind,
+Availability, and Sort dropdowns above a search field, and a grid of compact
+plugin cards with previews, descriptions, creator lines, versions, GitHub
+stars, Marketplace hearts, installed and verified badges, and details or
+install actions, above a hint bar with filter keys on the left and details and
+search keys on the right](preview-browse.png)
 
 <sub>Shown with `qt6-imageformats` installed, so the registry thumbnails
 decode too. Without it the second source is skipped and more cards fall back
@@ -195,13 +260,14 @@ never combined. Names and ids provide deterministic tie-breakers.
 
 Cards are summaries: preview, three description lines, creator, version,
 separate popularity counts, installed state, and an install or details action.
-Open details by clicking a card or selecting it and pressing `Enter`. The
-details surface leads with the same preview the card showed, then shows every
-available catalog fact used by the manager, including the full description,
-author, version, category, kind, license, repository and Release actions,
-both popularity counts, install state, placement requirement, and
-installation limitations. Missing fields are omitted rather than replaced
-with claims the catalog did not make.
+Open details by clicking a card or selecting it and pressing `Enter`. In the
+popup the details open over the grid; in the expanded panel they take the
+whole window. Either way the details surface leads with the same preview the
+card showed, then shows every available catalog fact used by the manager,
+including the full description, author, version, category, kind, license,
+repository and Release actions, both popularity counts, install state,
+placement requirement, and installation limitations. Missing fields are
+omitted rather than replaced with claims the catalog did not make.
 
 Repository and Release actions open through `omarchy-launch-browser`, so they
 land in whichever browser `omarchy default browser` selected, and only trusted
@@ -301,7 +367,7 @@ url cannot become a command. Urls are also validated against `https://`,
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `k` `j` | Move the selection; Browse also supports `←` `→` |
+| `↑` `↓` / `k` `j` | Move the selection; Browse also supports `←` `→` and `h` `l` |
 | `Enter` | Update the selected Installed plugin; open the selected Browse card's details |
 | `Delete` | Remove the selected plugin |
 | `/` | Focus the search box |
@@ -314,7 +380,9 @@ url cannot become a command. Urls are also validated against `https://`,
 | `Esc` | Clear the search, then leave the field, then close the panel |
 
 In Browse details, `Tab`, `Shift+Tab`, and the arrow keys move between actions;
-`Enter` activates the selected action and `Esc` returns to the card grid.
+`Enter` activates the selected action and `Esc` returns to the card grid. The
+expanded panel answers the same keys, with `1` and `2` written into its hint
+bar.
 
 ## Install
 
@@ -384,7 +452,7 @@ file under `~/.config/omarchy/plugins/` hot-reloads the plugin code.
 
 ```bash
 omarchy plugin validate ~/.config/omarchy/plugins/io.github.juancasanueva.plugin-manager
-qmllint -I /usr/share/omarchy/shell BarWidget.qml Panel.qml
+qmllint -I /usr/share/omarchy/shell BarWidget.qml Panel.qml Expanded.qml
 
 omarchy-shell shell rescanPlugins
 omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
@@ -397,12 +465,16 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `manifest.json` | Plugin contract — id, kinds, entry points |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | The popup: both tabs, search, filters, and the dialogs |
-| `Expanded.qml` | The full-size overlay: Installed as list plus details, Browse as a wider card grid |
-| `InstalledDetails.qml` | One installed plugin in full: facts, links, and its four actions as buttons |
+| `Expanded.qml` | The full-size panel: Installed as list plus details, Browse as a wider card grid with a full-page details face |
+| `InstalledListRow.qml` | One summary row in the expanded list: state mark, name, verified pill, star count, one line of description |
+| `InstalledDetails.qml` | One installed plugin in full: switch and action buttons, screenshot, description, facts, and links |
+| `CatalogDetailsPane.qml` | The expanded panel's Browse details page: preview, facts, warning, repository, Release, and Install |
 | `PluginStore.qml` | The shared data layer: plugin list, update check, catalog fetch, actions, and what is pending confirmation |
-| `PluginRow.qml` | One row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
+| `CatalogWorker.js` | The worker thread that parses the catalog so the window never waits on it |
+| `ReleaseNavigator.qml` | The click-time Release probe and the one place a browser is launched from, shared by both surfaces |
+| `PluginRow.qml` | One popup row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
 | `CatalogCard.qml` | One compact marketplace card: preview, summary, state, metrics, details, and install |
-| `PluginDetails.qml` | Full Marketplace metadata, trusted links, limitations, and keyboard actions |
+| `PluginDetails.qml` | The popup's Browse details: full Marketplace metadata, trusted links, limitations, and keyboard actions |
 | `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 
