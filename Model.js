@@ -777,6 +777,19 @@ function catalogStarsById(entries) {
   return stars
 }
 
+// The marketplace's reviewed commit per plugin id, for the update gate below.
+// Same null-prototype discipline as the other id maps.
+function catalogVerifiedCommitsById(entries) {
+  var commits = Object.create(null)
+  for (var i = 0; i < (entries || []).length; i++) {
+    var entry = entries[i]
+    if (!entry || !entry.id) continue
+    var sha = normalizeGitObjectId(entry.verifiedCommit)
+    if (sha !== "") commits[String(entry.id)] = sha
+  }
+  return commits
+}
+
 function rowStarLabel(row, starsById) {
   if (!row || !row.id || !hasOwnKey(starsById, row.id)) return ""
   return starLabel(starsById[String(row.id)])
@@ -852,6 +865,9 @@ function catalogEntries(doc, installedIds) {
       initials: plainText(p.initials).toUpperCase(),
       license: plainText(p.license).trim(),
       thumbnail: catalogAssetUrl(p.previewThumbnail),
+      // The one commit the marketplace actually reviewed. Verification is a
+      // statement about this snapshot, not about the branch it came from.
+      verifiedCommit: normalizeGitObjectId(p.verificationCommit),
       branch: String(p.listingValidatedBranch || ""),
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: hasOwnKey(installed, p.id)
@@ -1604,6 +1620,67 @@ function applyUpdateReport(rows, report) {
     out.push(copy)
   }
   return out
+}
+
+// ---- The update gate ------------------------------------------------------
+//
+// Omarchy's own `plugin update` shows the diff and asks before it pulls. This
+// panel runs it with `--yes`, so that review has to happen here instead. The
+// marketplace reviews one exact commit per plugin, and an update is only as
+// trusted as that snapshot: pulling to the reviewed commit is one click, and
+// pulling past it — or pulling a plugin the marketplace has never seen — is
+// a question, put in words that say what nobody has looked at.
+//
+// `verifiedCommits` is null while the catalog is not loaded, which is its
+// own answer: unknown is not verified.
+var UPDATE_VERIFIED = "verified"
+var UPDATE_UNREVIEWED = "unreviewed"
+var UPDATE_UNLISTED = "unlisted"
+var UPDATE_UNKNOWN = "unknown"
+var UPDATE_NONE = "none"
+
+function updateReview(row, verifiedCommits) {
+  var remoteSha = normalizeGitObjectId(row && row.remoteSha)
+  var review = { kind: UPDATE_NONE, verifiedCommit: "", remoteSha: remoteSha }
+  if (!row || row.behind !== true || remoteSha === "") return review
+  if (!verifiedCommits) { review.kind = UPDATE_UNKNOWN; return review }
+  if (!hasOwnKey(verifiedCommits, row.id)) { review.kind = UPDATE_UNLISTED; return review }
+  review.verifiedCommit = normalizeGitObjectId(verifiedCommits[String(row.id)])
+  review.kind = review.verifiedCommit === remoteSha ? UPDATE_VERIFIED : UPDATE_UNREVIEWED
+  return review
+}
+
+function updateNeedsConfirmation(review) {
+  return !review || review.kind !== UPDATE_VERIFIED
+}
+
+function shortSha(sha) {
+  return normalizeGitObjectId(sha).slice(0, 7)
+}
+
+// The question, as the confirmation dialog puts it. Every branch ends on the
+// same sentence the install dialog uses, because the risk is the same one.
+function updateConfirmMessage(label, review, compareUrl) {
+  var kind = review ? review.kind : UPDATE_UNKNOWN
+  var head = "Update " + label + "?\n\n"
+  var why
+  if (kind === UPDATE_UNREVIEWED) {
+    why = "The marketplace reviewed this plugin at " + shortSha(review.verifiedCommit)
+      + ". Its repository is now at " + shortSha(review.remoteSha)
+      + ", and nobody has reviewed what changed in between."
+  } else if (kind === UPDATE_UNLISTED) {
+    why = "This plugin is not listed on the marketplace, so nothing about the new commit"
+      + (review && review.remoteSha ? " (" + shortSha(review.remoteSha) + ")" : "")
+      + " has been reviewed."
+  } else {
+    why = "The marketplace catalog is not loaded, so the new commit"
+      + (review && review.remoteSha ? " (" + shortSha(review.remoteSha) + ")" : "")
+      + " could not be checked against its reviewed snapshot."
+  }
+  var tail = "\n\nPlugins run unsandboxed inside omarchy-shell. Update only if you are willing to run code you have not looked at."
+  var link = browsableUrl(compareUrl)
+  if (link !== "") tail += "\n\nThe changes: " + link
+  return head + why + tail
 }
 
 // What the row's badge should say. The version arrow when the numbers differ,

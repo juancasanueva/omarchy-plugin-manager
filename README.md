@@ -226,6 +226,14 @@ quietly told nothing is how a stale plugin sits there looking current.
 - **Update** — for a plugin that is a git checkout with an origin remote, runs
   `omarchy plugin update <id> --yes`. A checkout with no origin has nothing to
   fast-forward from, so it gets no button rather than one that can only fail.
+  Omarchy's own command shows the diff and asks before it pulls; `--yes` skips
+  that, so the review happens here instead. The marketplace reviews one exact
+  commit per plugin, and the update is one click only when the remote commit
+  *is* that reviewed snapshot. Anything else — a repository that has moved
+  past its reviewed commit, a plugin the marketplace does not list, or a
+  catalog that has not loaded yet — puts up a confirmation that says exactly
+  what nobody has reviewed, with a link to the diff on GitHub when the remote
+  is there.
 - **Remove** — for anything under `~/.config/omarchy/plugins`, runs
   `omarchy plugin remove <id> --yes` behind a confirmation.
 

@@ -65,6 +65,7 @@ Item {
   property var catalog: []
   readonly property var verifiedIds: Model.verifiedIdSet(catalog)
   readonly property var starsById: Model.catalogStarsById(catalog)
+  readonly property var verifiedCommitsById: Model.catalogVerifiedCommitsById(catalog)
   property bool catalogLoading: false
   property bool catalogLoaded: false
   property string catalogError: ""
@@ -110,6 +111,9 @@ Item {
   property string pendingLabel: ""
   property string pendingUrl: ""
   property bool pendingVerified: false
+  // For an update: what the marketplace has and has not reviewed (see
+  // Model.updateReview), so the dialog can say exactly what is unreviewed.
+  property var pendingReview: null
   readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
 
   // Enabling a bar widget is a different question from the yes/no ones above:
@@ -143,6 +147,9 @@ Item {
         + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
+    if (pendingKind === "update")
+      return Model.updateConfirmMessage(pendingLabel, pendingReview,
+        Model.updateCompareUrl(Model.findRow(rows, pendingId)))
     if (pendingKind === "disable")
       return "Disable " + pendingLabel + "?\n\n"
         + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
@@ -482,6 +489,7 @@ Item {
     pendingLabel = ""
     pendingUrl = ""
     pendingPlacementNeeded = false
+    pendingReview = null
   }
 
   // Confirmation answered. A bar widget still owes us one more answer, and it
@@ -493,6 +501,15 @@ Item {
       var row = Model.findRow(rows, pendingId)
       cancelPending()
       if (row) startDisable(row)
+      return
+    }
+    if (pendingKind === "update") {
+      // Re-gated: the list may have reloaded, or the check re-run, while the
+      // question was on screen. A row that is no longer behind has nothing
+      // to pull, and one that vanished must not be looked up by index.
+      var target = Model.findRow(rows, pendingId)
+      cancelPending()
+      if (canStartUpdate(target)) runUpdate(target)
       return
     }
     if (pendingKind === "add") {
@@ -518,9 +535,12 @@ Item {
     launchAdd(url, id, section, label)
   }
 
-  // Update needs no confirmation: it is a fast-forward of a checkout the user
-  // already chose to trust, and it destroys nothing. The gate is public so a
-  // surface can decide whether a click is even a request before it retires
+  // An update is a fast-forward of a checkout the user already chose to
+  // trust, and it destroys nothing — but `--yes` skips the diff that
+  // `omarchy plugin update` would otherwise show, so the review happens
+  // here. Pulling to the commit the marketplace reviewed is one click;
+  // anything else asks first (see Model.updateReview). The gate is public so
+  // a surface can decide whether a click is even a request before it retires
   // anything of its own on the strength of it.
   function canStartUpdate(row) {
     if (!row || !row.updatable || Model.upToDate(row) || busy
@@ -530,6 +550,19 @@ Item {
 
   function startUpdate(row) {
     if (!canStartUpdate(row)) return
+    var review = Model.updateReview(row, catalogLoaded ? verifiedCommitsById : null)
+    if (!Model.updateNeedsConfirmation(review)) {
+      runUpdate(row)
+      return
+    }
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingReview = review
+    pendingKind = "update"
+  }
+
+  function runUpdate(row) {
     busyRowId = row.id
     runAction("update", row.name, ["omarchy", "plugin", "update", row.id, "--yes"])
   }
@@ -694,7 +727,7 @@ Item {
     // stats ceiling is over 15x today's 67 KiB payload. The projection should
     // shrink the catalog, so the same 8 MiB ceiling leaves substantial growth
     // room while placing a hard bound on cache and shell-parser input.
-    + "catalog_max=8388608; stats_max=1048576; projection_max=8388608; projection_schema=1; "
+    + "catalog_max=8388608; stats_max=1048576; projection_max=8388608; projection_schema=2; "
     + "dir=\"$HOME/.cache/omarchy-plugin-manager\"; file=\"$dir/catalog.json\"; "
     + "cache_usable() { local size; [ -s \"$file\" ] || return 1; "
     + "  size=$(stat -c %s -- \"$file\" 2>/dev/null) || return 1; [ \"$size\" -le \"$projection_max\" ] || return 1; "
@@ -713,7 +746,7 @@ Item {
     + "  printf '%s' '{\"plugins\":{}}' > \"$stats_tmp\"; "
     + "fi; "
     + "if [ \"$catalog_status\" -eq 0 ] "
-    + "   && jq -c --argjson schema \"$projection_schema\" --slurpfile stats \"$stats_tmp\" '{projectionSchemaVersion: $schema, generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,addedAt,listedAt,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch}]}' \"$catalog_tmp\" 2>/dev/null "
+    + "   && jq -c --argjson schema \"$projection_schema\" --slurpfile stats \"$stats_tmp\" '{projectionSchemaVersion: $schema, generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,addedAt,listedAt,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch,verificationCommit}]}' \"$catalog_tmp\" 2>/dev/null "
     // One sentinel byte distinguishes an exact-limit projection from an
     // oversized one; pipefail also rejects jq errors and its bounded SIGPIPE.
     + "      | head -c \"$((projection_max + 1))\" > \"$tmp\" "

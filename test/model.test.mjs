@@ -30,6 +30,7 @@ const Model = new Function(
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, updateBadge, updateCompareUrl,
+    catalogVerifiedCommitsById, updateReview, updateNeedsConfirmation, updateConfirmMessage,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
     githubNavigationRequest, releaseProbeCommand,
@@ -49,7 +50,7 @@ const Model = new Function(
 const CATALOG_DOWNLOAD_LIMIT = 8 * 1024 * 1024
 const STATS_DOWNLOAD_LIMIT = 1024 * 1024
 const CATALOG_PROJECTION_LIMIT = 8 * 1024 * 1024
-const CATALOG_PROJECTION_SCHEMA_VERSION = 1
+const CATALOG_PROJECTION_SCHEMA_VERSION = 2
 
 function catalogScript(catalogPath, statsPath) {
   const panel = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
@@ -847,6 +848,86 @@ test("matchesCatalogQuery uses the precomputed text and cannot match across fiel
   assert.equal(Model.matchesCatalogQuery(bare, "weatheracme"), false)
   // The stale-field case: a copy that lost its search text is recomputed.
   assert.ok(Model.matchesCatalogQuery({ ...weather, searchText: undefined }, "forecast"))
+})
+
+test("catalogEntries keeps the marketplace's reviewed commit, normalized, and drops junk", () => {
+  const doc = { plugins: [
+    { id: "a.one", verificationCommit: "2D9321902AA0176D47DCDB21D76884BCA6A34F73" },
+    { id: "a.two", verificationCommit: "not-a-sha" },
+    { id: "a.three" }
+  ] }
+  const entries = Model.catalogEntries(doc, {})
+  assert.equal(entries.find(e => e.id === "a.one").verifiedCommit, "2d9321902aa0176d47dcdb21d76884bca6a34f73")
+  assert.equal(entries.find(e => e.id === "a.two").verifiedCommit, "")
+  assert.equal(entries.find(e => e.id === "a.three").verifiedCommit, "")
+  const byId = Model.catalogVerifiedCommitsById(entries)
+  assert.deepEqual(Object.keys(byId), ["a.one"])
+  assert.equal(Object.getPrototypeOf(byId), null)
+  assert.equal(Model.catalogVerifiedCommitsById([{ id: "__proto__", verifiedCommit: "2d9321902aa0176d47dcdb21d76884bca6a34f73" }]).__proto__,
+    "2d9321902aa0176d47dcdb21d76884bca6a34f73")
+})
+
+test("updateReview is one click only when the remote is the reviewed snapshot", () => {
+  const verified = "2d9321902aa0176d47dcdb21d76884bca6a34f73"
+  const ahead = "f2477cbe21a7270fdd489ce408b5dc74aa1a763f"
+  const commits = Object.assign(Object.create(null), { "a.one": verified })
+  const behind = (remoteSha, id = "a.one") => ({ id, behind: true, updateChecked: true, remoteSha })
+
+  assert.equal(Model.updateReview(behind(verified), commits).kind, "verified")
+  assert.equal(Model.updateNeedsConfirmation(Model.updateReview(behind(verified), commits)), false)
+
+  const unreviewed = Model.updateReview(behind(ahead), commits)
+  assert.equal(unreviewed.kind, "unreviewed")
+  assert.equal(unreviewed.verifiedCommit, verified)
+  assert.equal(unreviewed.remoteSha, ahead)
+  assert.equal(Model.updateNeedsConfirmation(unreviewed), true)
+
+  assert.equal(Model.updateReview(behind(ahead, "b.two"), commits).kind, "unlisted")
+  // No catalog is not "not listed": it is not known, and unknown asks.
+  assert.equal(Model.updateReview(behind(ahead), null).kind, "unknown")
+  // Nothing to pull, or a remote the check could not name, is no question.
+  assert.equal(Model.updateReview({ id: "a.one", behind: false, remoteSha: ahead }, commits).kind, "none")
+  assert.equal(Model.updateReview({ id: "a.one", behind: true, remoteSha: "" }, commits).kind, "none")
+  assert.equal(Model.updateReview({ id: "a.one", behind: true, remoteSha: "junk" }, commits).kind, "none")
+  assert.equal(Model.updateNeedsConfirmation(null), true)
+})
+
+test("updateConfirmMessage names what nobody reviewed and links the diff only when it is a web page", () => {
+  const verified = "2d9321902aa0176d47dcdb21d76884bca6a34f73"
+  const ahead = "f2477cbe21a7270fdd489ce408b5dc74aa1a763f"
+  const compare = `https://github.com/acme/thing/compare/${verified}...${ahead}`
+  const unreviewed = Model.updateConfirmMessage("Thing", { kind: "unreviewed", verifiedCommit: verified, remoteSha: ahead }, compare)
+  assert.match(unreviewed, /^Update Thing\?\n\n/)
+  assert.match(unreviewed, /reviewed this plugin at 2d93219\. Its repository is now at f2477cb, and nobody has reviewed/)
+  assert.match(unreviewed, /Plugins run unsandboxed inside omarchy-shell\./)
+  assert.ok(unreviewed.endsWith("The changes: " + compare))
+
+  const unlisted = Model.updateConfirmMessage("Thing", { kind: "unlisted", verifiedCommit: "", remoteSha: ahead }, "")
+  assert.match(unlisted, /not listed on the marketplace, so nothing about the new commit \(f2477cb\) has been reviewed/)
+  assert.doesNotMatch(unlisted, /The changes:/)
+
+  const unknown = Model.updateConfirmMessage("Thing", { kind: "unknown", verifiedCommit: "", remoteSha: ahead }, "javascript:alert(1)")
+  assert.match(unknown, /catalog is not loaded/)
+  assert.doesNotMatch(unknown, /javascript:/)
+  assert.match(Model.updateConfirmMessage("Thing", null, ""), /catalog is not loaded/)
+})
+
+test("the store gates Update on the reviewed snapshot and asks otherwise", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  assert.match(store, /readonly property var verifiedCommitsById: Model\.catalogVerifiedCommitsById\(catalog\)/)
+  assert.match(store, /verificationCommit\}\]\}/)
+  assert.match(store, /projection_schema=2;/)
+  const start = store.slice(store.indexOf("function startUpdate(row)"), store.indexOf("function runUpdate(row)"))
+  assert.match(start, /if \(!canStartUpdate\(row\)\) return/)
+  assert.match(start, /Model\.updateReview\(row, catalogLoaded \? verifiedCommitsById : null\)/)
+  assert.match(start, /if \(!Model\.updateNeedsConfirmation\(review\)\) \{\s*runUpdate\(row\)\s*return\s*\}/)
+  assert.match(start, /pendingReview = review\s*pendingKind = "update"/)
+  // Confirmed updates are re-gated, by id, against the live rows.
+  assert.match(store, /if \(pendingKind === "update"\) \{[\s\S]*?Model\.findRow\(rows, pendingId\)\s*cancelPending\(\)\s*if \(canStartUpdate\(target\)\) runUpdate\(target\)/)
+  assert.match(store, /if \(pendingKind === "update"\)\s*return Model\.updateConfirmMessage\(pendingLabel, pendingReview,/)
+  assert.match(store, /pendingReview = null/)
+  // Only the run path carries --yes, and it is reached only through the gate.
+  assert.equal(store.split('"omarchy", "plugin", "update", row.id, "--yes"').length - 1, 1)
 })
 
 test("markInstalled copies keep the derived search text and timestamp", () => {
@@ -3034,7 +3115,7 @@ test("catalog producer rejects incompatible cache contracts when refresh fails",
     },
     {
       name: "wrong projection schema",
-      value: { projectionSchemaVersion: 2, generatedAt: "wrong", plugins: [] }
+      value: { projectionSchemaVersion: 99, generatedAt: "wrong", plugins: [] }
     },
     {
       name: "plugins is not an array",
