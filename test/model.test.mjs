@@ -821,6 +821,66 @@ test("catalogEntries keeps listing timestamps for Recently added sorting", () =>
   assert.equal(weather.addedAt, "2026-08-19")
 })
 
+test("catalogEntries derives the search text and the listing timestamp once, on the worker", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const weather = entries.find(entry => entry.id === "acme.weather")
+  const suite = entries.find(entry => entry.id === "acme.suite")
+  assert.equal(weather.searchText, "weather\nacme.weather\nacme\nforecast in the bar")
+  assert.equal(weather.listedTimestamp, Date.parse("2026-08-19T14:30:00.000Z"))
+  // No listing date at all is null, never undefined: the sort must not fall
+  // back to parsing the entry again.
+  assert.equal(suite.listedTimestamp, null)
+  assert.ok(Object.prototype.hasOwnProperty.call(suite, "listedTimestamp"))
+})
+
+test("matchesCatalogQuery uses the precomputed text and cannot match across field seams", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const weather = entries.find(entry => entry.id === "acme.weather")
+  assert.ok(Model.matchesCatalogQuery(weather, "FORECAST"))
+  assert.ok(Model.matchesCatalogQuery(weather, "acme.wea"))
+  // "weather" ends one field and "acme.weather" starts the next.
+  assert.equal(Model.matchesCatalogQuery(weather, "weatheracme"), false)
+  assert.equal(Model.matchesCatalogQuery(weather, "weather acme"), false)
+  // A hand-built entry without the derived field still matches the same way.
+  const bare = { name: "Weather", id: "acme.weather", author: "acme", description: "Forecast in the bar" }
+  assert.ok(Model.matchesCatalogQuery(bare, "forecast"))
+  assert.equal(Model.matchesCatalogQuery(bare, "weatheracme"), false)
+  // The stale-field case: a copy that lost its search text is recomputed.
+  assert.ok(Model.matchesCatalogQuery({ ...weather, searchText: undefined }, "forecast"))
+})
+
+test("markInstalled copies keep the derived search text and timestamp", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const stamped = Model.markInstalled(entries, { "acme.weather": true })
+  const weather = stamped.find(entry => entry.id === "acme.weather")
+  assert.equal(weather.installed, true)
+  assert.equal(weather.searchText, entries[0].searchText)
+  assert.equal(weather.listedTimestamp, entries[0].listedTimestamp)
+})
+
+test("sortCatalog reads the precomputed timestamp and parses nothing for built entries", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const originalParse = Date.parse
+  let parseCalls = 0
+  Date.parse = value => { parseCalls++; return originalParse(value) }
+  try {
+    assert.deepEqual(Model.sortCatalog(entries, "recently-added").map(e => e.id), ["acme.weather", "acme.suite"])
+  } finally {
+    Date.parse = originalParse
+  }
+  assert.equal(parseCalls, 0)
+})
+
+test("filterCatalog keeps the order it is given, so a presorted catalog stays sorted", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  for (const sort of ["recently-added", "stars", "hearts", "name"]) {
+    const sorted = Model.sortCatalog(entries, sort)
+    const filteredThenSorted = Model.sortCatalog(Model.filterCatalog(entries, "all", "all", "all", "acme"), sort)
+    const sortedThenFiltered = Model.filterCatalog(sorted, "all", "all", "all", "acme")
+    assert.deepEqual(sortedThenFiltered.map(e => e.id), filteredThenSorted.map(e => e.id), sort)
+  }
+})
+
 test("installUrlFor takes the url from the curated install command", () => {
   // The registry's installCommand carries the .git suffix that `repo` omits.
   const entries = Model.catalogEntries(catalogDoc, {})
@@ -2736,8 +2796,8 @@ test("Browse details and filters wire keyboard interaction through guarded modal
   assert.match(panel, /onActivateRequested: root\.browsing \? root\.openDetails\(root\.selectedEntry\)/)
   assert.match(panel, /onDetailsRequested:[\s\S]*root\.openDetails\(modelData\)/)
   assert.match(panel, /text: "Clear filters"[\s\S]*onClicked: root\.clearCatalogFilters\(\)/)
-  assert.match(panel, /Model\.filterCatalog\(\s*catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery\)/)
-  assert.match(panel, /Model\.sortCatalog\(filteredCatalog, catalogSort\)/)
+  assert.match(panel, /readonly property var sortedCatalog: Model\.sortCatalog\(catalog, catalogSort\)/)
+  assert.match(panel, /Model\.filterCatalog\(\s*sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery\)/)
   assert.match(details, /Qt\.Key_Escape/)
   assert.match(details, /Qt\.Key_Tab/)
   assert.match(details, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
@@ -3388,7 +3448,7 @@ test("the expanded search box grows the popup's clear (x) button once a term is 
   const control = expanded.slice(expanded.indexOf("id: searchControl"), expanded.indexOf("id: installedFilters"))
   // Same glyph, same trigger as the popup: the button exists only while
   // there is something to clear, and the field gives it room only then.
-  assert.match(control, /PanelActionButton \{\s*id: clearSearchButton[\s\S]*?visible: root\.searchQuery !== ""[\s\S]*?iconText: "󰅙"[\s\S]*?tooltipText: "Clear the search"/)
+  assert.match(control, /PanelActionButton \{\s*id: clearSearchButton[\s\S]*?visible: searchField\.text !== ""[\s\S]*?iconText: "󰅙"[\s\S]*?tooltipText: "Clear the search"/)
   assert.match(control, /id: clearSearchButton[\s\S]*?onClicked: \{\s*root\.clearSearch\(\)\s*root\.returnFocusToList\(\)\s*\}/)
   assert.match(control, /id: searchField[\s\S]*?anchors\.right: clearSearchButton\.visible \? clearSearchButton\.left : parent\.right\s*anchors\.rightMargin: clearSearchButton\.visible \? Style\.space\(4\) : 0/)
   // One clearing path for the button, Escape, and "Clear filters" alike.

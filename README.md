@@ -317,6 +317,18 @@ cache is missing or stale, projected down to the fields this panel uses with
 copy — a stale storefront beats an apparently empty one. The refresh button
 forces a re-fetch.
 
+The work per keystroke is kept small on purpose. Each entry's lowercased
+search text and its listing timestamp are derived once, on the worker thread,
+so the main thread does one substring test per entry rather than lowercasing
+four fields and parsing a date. The catalog is sorted once per sort mode and
+then filtered in that order, since filtering keeps the order it is given, so
+typing never re-sorts two thousand entries. The search box itself is
+debounced: the lists follow it after a short pause rather than rebuilding
+every visible row or card once per letter, and clearing applies at once. And
+the Browse grid has no model until the tab has been shown, because a hidden
+`GridView` still builds the cards in its viewport — and fetches their
+previews — the moment the catalog lands.
+
 The catalog's `installCommand` is **read, never executed**: the url is parsed
 out of it, validated, and passed to the same argv array everything else uses.
 

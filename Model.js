@@ -856,6 +856,12 @@ function catalogEntries(doc, installedIds) {
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: hasOwnKey(installed, p.id)
     }
+    // Both derived once here, on the worker thread, rather than on every
+    // keystroke: a search lowercases four fields per entry and the Recently
+    // added sort parses a date per entry, and the grid re-filters all two
+    // thousand entries each time the query changes.
+    entry.searchText = catalogSearchText(entry)
+    entry.listedTimestamp = catalogTimestamp(entry)
     entry.installUrl = installUrlFor(entry)
     // A listing with no usable url cannot be installed from here whatever the
     // registry claims, so the flag follows the url rather than the other way.
@@ -942,7 +948,10 @@ function sortCatalog(entries, sort) {
     decorated.push({
       entry: entries[i],
       index: i,
-      timestamp: mode === CATALOG_SORT_RECENTLY_ADDED ? catalogTimestamp(entries[i]) : null
+      timestamp: mode !== CATALOG_SORT_RECENTLY_ADDED ? null
+        : (entries[i] && entries[i].listedTimestamp !== undefined
+          ? entries[i].listedTimestamp
+          : catalogTimestamp(entries[i]))
     })
   }
   decorated.sort(function(a, b) {
@@ -1003,26 +1012,39 @@ function catalogSortOptions() {
 // Author and tags join name and id here, unlike the installed-plugin search:
 // browsing is how you find something you cannot already name, so "solitaire"
 // or an author you follow both have to land.
+// The four searched fields, lowercased and joined once. Newlines separate
+// them: plainText strips every control character from each field, so a
+// needle can never match across the seam between two of them.
+function catalogSearchText(entry) {
+  if (!entry) return ""
+  return [entry.name, entry.id, entry.author, entry.description]
+    .map(function(value) { return String(value === null || value === undefined ? "" : value).toLowerCase() })
+    .join("\n")
+}
+
 function matchesCatalogQuery(entry, query) {
   var needle = String(query || "").trim().toLowerCase()
   if (needle === "") return true
   if (!entry) return false
-  return String(entry.name).toLowerCase().indexOf(needle) >= 0
-    || String(entry.id).toLowerCase().indexOf(needle) >= 0
-    || String(entry.author).toLowerCase().indexOf(needle) >= 0
-    || String(entry.description).toLowerCase().indexOf(needle) >= 0
+  var haystack = typeof entry.searchText === "string" ? entry.searchText : catalogSearchText(entry)
+  return haystack.indexOf(needle) >= 0
 }
 
+// Order-preserving: filtering a sorted list leaves it sorted, which is what
+// lets a surface sort the whole catalog once per sort mode and only filter
+// on each keystroke.
 function filterCatalog(entries, category, kind, availability, query) {
   var out = []
+  var needle = String(query || "").trim().toLowerCase()
+  var wantedKind = kind && kind !== ALL_CATALOG_KINDS ? catalogKindKey(kind) : ""
+  var wantedCategory = category && category !== ALL_CATEGORIES ? category : ""
   for (var i = 0; i < (entries || []).length; i++) {
     var entry = entries[i]
-    if (category && category !== ALL_CATEGORIES && entry.category !== category) continue
-    if (kind && kind !== ALL_CATALOG_KINDS
-        && catalogKindKey(entry.kind) !== catalogKindKey(kind)) continue
+    if (wantedCategory !== "" && entry.category !== wantedCategory) continue
+    if (wantedKind !== "" && catalogKindKey(entry.kind) !== wantedKind) continue
     if (availability === CATALOG_AVAILABILITY_AVAILABLE && !entry.installable) continue
     if (availability === CATALOG_AVAILABILITY_INSTALLED && !entry.installed) continue
-    if (!matchesCatalogQuery(entry, query)) continue
+    if (needle !== "" && !matchesCatalogQuery(entry, needle)) continue
     out.push(entry)
   }
   return out

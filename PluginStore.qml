@@ -231,14 +231,20 @@ Item {
 
     loadError = ""
     loadRetried = false
-    rows = Model.mergePlugins(
+    var merged = Model.mergePlugins(
       listEntries,
       Model.parseArray(sections.catalog) || [],
       Model.parseGitMap(sections.git),
       Model.parseManifestMeta(sections.manifest))
+    // The last report is replayed onto the fresh rows before they are
+    // assigned, not after: every assignment rebuilds every row on every
+    // surface, and the replay is the same rows with badges. It binds to the
+    // freshly loaded HEAD as before, so a stale report still says nothing.
+    if (pendingUpdateReport !== "")
+      merged = Model.applyUpdateReport(merged, Model.parseUpdateReport(pendingUpdateReport))
+    rows = merged
     rowsLoaded()
     finishOpenLoad()
-    if (pendingUpdateReport !== "") applyUpdateReport(pendingUpdateReport)
   }
 
   // ---- Update checks ------------------------------------------------------

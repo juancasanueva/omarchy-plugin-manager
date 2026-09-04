@@ -139,6 +139,8 @@ Item {
   // ---- Tabs -------------------------------------------------------------------
 
   property string activeTab: "installed"   // "installed" | "browse"
+  // Whether the Browse tab has been on screen yet; see the grid's model.
+  property bool browseVisited: false
   readonly property bool browsing: activeTab === "browse"
 
   property bool titleIconIntroArmed: false
@@ -242,12 +244,29 @@ Item {
     } else {
       selectedIndex = -1
     }
+    if (activeTab === "browse") browseVisited = true
   }
 
   // ---- Installed --------------------------------------------------------------
 
   property int selectedIndex: -1
-  readonly property string searchQuery: searchField.text
+  // What the lists filter on. It follows the search box after a short pause
+  // rather than on every keystroke: each change rebuilds every visible row or
+  // card, and a word typed at speed would rebuild them once per letter.
+  // Clearing applies at once, so Escape and the clear button feel immediate.
+  property string searchQuery: ""
+
+  Timer {
+    id: searchDebounce
+    interval: 150
+    repeat: false
+    onTriggered: root.searchQuery = searchField.text
+  }
+
+  function flushSearch() {
+    searchDebounce.stop()
+    searchQuery = searchField.text
+  }
 
   // The same three filters as the popup, with the same replay handlers:
   // Ui/Dropdown assigns its own value on a pick, which breaks the `value:`
@@ -320,9 +339,12 @@ Item {
   readonly property var catalogSortOptions: Model.catalogSortOptions()
   readonly property bool catalogFiltered: Model.catalogIsFiltering(
     categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
-  readonly property var filteredCatalog: Model.filterCatalog(
-    catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
-  readonly property var visibleCatalog: Model.sortCatalog(filteredCatalog, catalogSort)
+  // Sorted once per catalog and sort mode, then filtered in that order.
+  // Filtering keeps the order it is given, so a keystroke in the search box
+  // walks the entries once instead of re-sorting two thousand of them.
+  readonly property var sortedCatalog: Model.sortCatalog(catalog, catalogSort)
+  readonly property var visibleCatalog: Model.filterCatalog(
+    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
   readonly property var selectedEntry: browsing && selectedIndex >= 0 && selectedIndex < visibleCatalog.length
     ? visibleCatalog[selectedIndex]
     : null
@@ -826,7 +848,14 @@ Item {
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
 
-              onAccepted: root.returnFocusToList()
+              onTextChanged: {
+                if (text === "") root.flushSearch()
+                else searchDebounce.restart()
+              }
+              onAccepted: {
+                root.flushSearch()
+                root.returnFocusToList()
+              }
               Keys.onPressed: function(event) {
                 if (event.key !== Qt.Key_Escape) return
                 // Escape clears before it leaves: a search box that keeps a
@@ -843,7 +872,7 @@ Item {
               id: clearSearchButton
               anchors.right: parent.right
               anchors.verticalCenter: searchField.verticalCenter
-              visible: root.searchQuery !== ""
+              visible: searchField.text !== ""
               iconText: "󰅙"
               tooltipText: "Clear the search"
               foreground: root.foreground
@@ -1265,7 +1294,13 @@ Item {
             font.pixelSize: Style.font.caption
           }
 
-          model: root.visibleCatalog
+          // No model until Browse has been shown once. A GridView builds the
+          // delegates for its viewport whether or not it is visible, so the
+          // hidden grid used to build a screenful of cards — and fetch their
+          // previews — the moment the catalog landed, on every open that never
+          // left Installed. Once shown it stays warm: the cards survive a trip
+          // back to Installed, as they always did.
+          model: root.browseVisited ? root.visibleCatalog : []
 
           delegate: Item {
             required property int index

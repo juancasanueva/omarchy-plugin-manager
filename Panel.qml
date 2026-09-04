@@ -83,7 +83,23 @@ Panel {
   readonly property var kindOptions: Model.kindOptions(rows)
   property string statusFilter: "all"
   readonly property var statusOptions: Model.statusOptions()
-  readonly property string searchQuery: searchField.text
+  // What the lists filter on. It follows the search box after a short pause
+  // rather than on every keystroke: each change rebuilds every visible row or
+  // card, and a word typed at speed would rebuild them once per letter.
+  // Clearing applies at once, so Escape and the clear button feel immediate.
+  property string searchQuery: ""
+
+  Timer {
+    id: searchDebounce
+    interval: 150
+    repeat: false
+    onTriggered: root.searchQuery = searchField.text
+  }
+
+  function flushSearch() {
+    searchDebounce.stop()
+    searchQuery = searchField.text
+  }
 
   // A reload can remove the last plugin of a kind. Falling back immediately
   // keeps the filter visible and truthful instead of retaining a hidden value.
@@ -141,6 +157,9 @@ Panel {
   // is verified — and fetched afresh on the Browse tab's refresh.
 
   property string activeTab: "installed"   // "installed" | "browse"
+  // Whether the Browse tab has been on screen yet; see the grid's model.
+  property bool browseVisited: false
+  onActiveTabChanged: if (activeTab === "browse") browseVisited = true
   readonly property bool browsing: activeTab === "browse"
   readonly property var tabOptions: [
     { value: "installed", label: "Installed" },
@@ -165,9 +184,12 @@ Panel {
   readonly property var catalogSortOptions: Model.catalogSortOptions()
   readonly property bool catalogFiltered: Model.catalogIsFiltering(
     categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
-  readonly property var filteredCatalog: Model.filterCatalog(
-    catalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
-  readonly property var visibleCatalog: Model.sortCatalog(filteredCatalog, catalogSort)
+  // Sorted once per catalog and sort mode, then filtered in that order.
+  // Filtering keeps the order it is given, so a keystroke in the search box
+  // walks the entries once instead of re-sorting two thousand of them.
+  readonly property var sortedCatalog: Model.sortCatalog(catalog, catalogSort)
+  readonly property var visibleCatalog: Model.filterCatalog(
+    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
   readonly property var browseFilterHints: Model.browseFilterHints(
     { category: categoryFilter, kind: catalogKindFilter, availability: availabilityFilter, sort: catalogSort },
     { category: categoryOptions, kind: catalogKindOptions, availability: availabilityOptions, sort: catalogSortOptions })
@@ -1172,7 +1194,14 @@ Panel {
 
             // Enter hands the list back the keyboard with the results in
             // place, so you can type a name and arrow straight into it.
-            onAccepted: root.returnFocusToList()
+            onTextChanged: {
+              if (text === "") root.flushSearch()
+              else searchDebounce.restart()
+            }
+            onAccepted: {
+              root.flushSearch()
+              root.returnFocusToList()
+            }
             Keys.onPressed: function(event) {
               if (event.key !== Qt.Key_Escape) return
               // Escape clears before it leaves: a search box that keeps a
@@ -1187,7 +1216,7 @@ Panel {
             id: clearFiltersButton
             anchors.right: parent.right
             y: filterControls.filterRowHeight + Style.space(8)
-            visible: root.browsing ? root.catalogFiltered : root.searchQuery !== ""
+            visible: root.browsing ? (root.catalogFiltered || searchField.text !== "") : searchField.text !== ""
             iconText: "󰅙"
             tooltipText: root.browsing ? "Clear Browse filters" : "Clear the search"
             foreground: root.contentForeground
@@ -1502,7 +1531,13 @@ Panel {
           font.pixelSize: Style.font.caption
         }
 
-        model: root.visibleCatalog
+        // No model until Browse has been shown once. A GridView builds the
+        // delegates for its viewport whether or not it is visible, so the
+        // hidden grid used to build a screenful of cards — and fetch their
+        // previews — the moment the catalog landed, on every open that never
+        // left Installed. Once shown it stays warm: the cards survive a trip
+        // back to Installed, as they always did.
+        model: root.browseVisited ? root.visibleCatalog : []
 
         delegate: Item {
           required property int index
