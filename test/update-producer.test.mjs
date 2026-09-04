@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 function updateScript() {
-  const source = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const marker = "readonly property string updateScript:"
   const start = source.indexOf(marker)
   const end = source.indexOf("\n\n  Process {", start)
@@ -16,7 +16,7 @@ function updateScript() {
 }
 
 function loadScript() {
-  const source = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const processStart = source.indexOf("id: loadProc")
   const marker = "command: "
   const start = source.indexOf(marker, processStart)
@@ -44,7 +44,7 @@ function runProducer(environment) {
 }
 
 function panelFunctions(root, loadProc, updateProc, names) {
-  const source = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const extract = name => {
     const start = source.indexOf(`function ${name}(`)
     assert.notEqual(start, -1, name)
@@ -81,7 +81,7 @@ function refreshSchedulerHarness() {
     freshUpdateCycleQueued: false,
     loading: false,
     checkingUpdates: false,
-    revokeReleaseNavigation() {}
+    reloadStarted() {}
   }
   Object.assign(root, panelFunctions(root, loadProc, updateProc, [
     "loadProcessSettled", "updateProcessSettled", "reload", "checkUpdates",
@@ -271,7 +271,7 @@ test("queued post-update cycle reaches fresh HEAD-bound evidence without a manua
 })
 
 test("successful update queues the fresh cycle and update entry points enforce settled processes", () => {
-  const source = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const clear = source.indexOf('if (kind === "update") {', source.indexOf("id: actionProc"))
   const fresh = source.indexOf(
     'if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()', clear)
@@ -280,12 +280,16 @@ test("successful update queues the fresh cycle and update entry points enforce s
   assert.equal(source.split(
     'if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()').length - 1, 1)
 
-  const start = source.indexOf("function startUpdate(row)")
+  const start = source.indexOf("function canStartUpdate(row)")
   const end = source.indexOf("\n  }", start)
   const body = source.slice(start, end)
   assert.match(body, /!root\.loadProcessSettled\(\)/)
   assert.match(body, /!root\.updateProcessSettled\(\)/)
-  assert.match(source, /updateEnabled: root\.updateActionsEnabled/)
+  assert.match(source, /if \(!canStartUpdate\(row\)\) return/)
+  for (const surface of ["../Panel.qml", "../Expanded.qml"]) {
+    const surfaceSource = readFileSync(new URL(surface, import.meta.url), "utf8")
+    assert.match(surfaceSource, /updateEnabled: root\.updateActionsEnabled/)
+  }
   assert.equal(source.split("onRunningChanged: if (!running) root.drainFreshUpdateCycle()").length - 1, 2)
 
   const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
