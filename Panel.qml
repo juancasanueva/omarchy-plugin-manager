@@ -603,19 +603,8 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(620))
 
-    // The height the panel would like: fixed chrome plus however tall the
-    // full list would be. fittedContentHeight clamps that to what the screen
-    // allows, and because the list is anchored between the header and the
-    // hints rather than given a height of its own, the clamp comes out of the
-    // list instead of pushing the bottom of the panel off screen.
-    // The cap keeps this a popup rather than a full-height column: with
-    // forty-odd plugins the list would otherwise grow to the screen edge
-    // every time. Past the cap the list scrolls, which it was built to do.
-    contentHeight: panel.fittedContentHeight(
-      header.implicitHeight
-        + (root.browsing ? Style.space(600) : listColumn.implicitHeight)
-        + hintBar.implicitHeight + Style.space(20),
-      Style.space(600))
+    // Fill the available height while preserving the host's bar gap and screen margins.
+    contentHeight: panel.cappedContentHeight(panel.availableCardHeight)
 
     PanelKeyCatcher {
       id: keyCatcher

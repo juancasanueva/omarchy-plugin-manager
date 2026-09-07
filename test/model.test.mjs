@@ -2541,6 +2541,20 @@ test("repository and Release actions route browser ownership through Panel", () 
   }
 })
 
+test("compact panel height uses full available geometry independent of content", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const surface = panel.match(/KeyboardPanel \{\s*id: panel\b([\s\S]*?)PanelKeyCatcher \{/)
+  assert.ok(surface, "compact KeyboardPanel surface must exist")
+  assert.match(surface[1], /^\s*contentHeight: panel\.cappedContentHeight\(panel\.availableCardHeight\)\s*$/m)
+})
+
+test("compact panel keeps its existing fitted width", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const surface = panel.match(/KeyboardPanel \{\s*id: panel\b([\s\S]*?)PanelKeyCatcher \{/)
+  assert.ok(surface, "compact KeyboardPanel surface must exist")
+  assert.match(surface[1], /^\s*contentWidth: panel\.fittedContentWidth\(Style\.space\(620\)\)\s*$/m)
+})
+
 test("the Installed tab has no url field: plugins are added from Browse only", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 
