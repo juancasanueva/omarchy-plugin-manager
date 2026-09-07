@@ -129,18 +129,34 @@ Rectangle {
 
     // The name gets the line to itself, so a long one elides against the row's
     // full width rather than against whatever the metadata beside it left over.
-    // The one thing allowed beside it is the verified pill, and the name
-    // yields to that rather than pushing it off the row.
+    // The state mark and verified pill share the line, and the name yields
+    // to both rather than pushing them off the row.
     Row {
       id: nameLine
       width: parent.width
       spacing: Style.space(8)
 
+      // Match the expanded list: orange when behind, green only when confirmed
+      // current, and no mark when the update state is unknown.
+      Text {
+        id: stateMark
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.hasUpdate || root.upToDate
+        text: root.hasUpdate ? "󰜷" : "󰸞"
+        color: root.hasUpdate ? "#f28c28" : "#5fb865"
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+      }
+
       Text {
         id: name
         // Never rich text: AutoText would fetch what a crafted string points at.
         textFormat: Text.PlainText
-        width: Math.min(implicitWidth, nameLine.width - (verifiedPill.visible ? verifiedPill.width + nameLine.spacing : 0))
+        anchors.verticalCenter: parent.verticalCenter
+        width: Math.min(implicitWidth, nameLine.width - (stateMark.visible ? stateMark.width + nameLine.spacing : 0) - (verifiedPill.visible ? verifiedPill.width + nameLine.spacing : 0))
         text: root.row ? root.row.name : ""
         color: root.foreground
         font.family: root.fontFamily

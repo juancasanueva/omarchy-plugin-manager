@@ -2728,7 +2728,7 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   assert.match(pill, /color: Color\.accent/)
   assert.match(pill, /textFormat: Text\.PlainText/)
   // The name yields to the pill instead of eliding it off the row.
-  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - \(verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0\)\)/)
+  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - \(stateMark\.visible \? stateMark\.width \+ nameLine\.spacing : 0\) - \(verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0\)\)/)
 })
 
 test("the header refresh button is display-sized and spins instead of greying while refreshing", () => {
@@ -3792,6 +3792,51 @@ test("the expanded panel flips its content like a card when switching tabs", () 
     assert.match(face, /transform: Rotation \{[\s\S]*?axis \{ x: 0; y: 1; z: 0 \}[\s\S]*?angle: root\.contentFlipAngle/, id)
     assert.match(face, /scale: root\.contentFlipScale/, id)
     assert.match(face, /layer\.enabled: root\.contentFlipping/, id)
+  }
+})
+
+test("the small panel row marks updatable plugins and leaves unknown states unmarked", () => {
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const start = row.indexOf("id: stateMark")
+  const nameStart = row.indexOf("id: name\n")
+  assert.ok(start > row.indexOf("id: nameLine") && start < nameStart, "the mark leads the name inside nameLine")
+  const mark = row.slice(start, nameStart)
+  assert.match(row, /readonly property bool hasUpdate: row \? row\.behind === true : false/)
+  assert.match(row, /readonly property bool upToDate: Model\.upToDate\(row\)/)
+  assert.match(mark, /visible: root\.hasUpdate \|\| root\.upToDate/)
+  assert.match(mark, /text: root\.hasUpdate \? "󰜷" : "󰸞"/)
+  assert.match(mark, /color: root\.hasUpdate \? "#f28c28" : "#5fb865"/)
+  assert.match(mark, /textFormat: Text\.PlainText/)
+  assert.match(mark, /font\.family: root\.fontFamily/)
+  assert.match(mark, /font\.pixelSize: Style\.font\.title/)
+  assert.match(mark, /font\.bold: true/)
+
+  // Exercise the shipped visibility binding, not an unchecked => current guess.
+  const visible = new Function("root", `return ${mark.match(/visible: ([^\n]+)/)[1]}`)
+  for (const [data, expected] of [
+    [{ updatable: true, updateChecked: true, behind: true }, true],
+    [{ updatable: true, updateChecked: true, behind: false }, true],
+    [{ updatable: true, updateChecked: false, behind: false }, false],
+    [{ updatable: true }, false],
+    [{ updatable: false, updateChecked: false, behind: false }, false],
+    [null, false]
+  ]) {
+    assert.equal(visible({ hasUpdate: data ? data.behind === true : false, upToDate: Model.upToDate(data) }), expected)
+  }
+
+  // Both visible adornments reserve their own spacing; neither displaces the name vertically.
+  const name = row.slice(nameStart, row.indexOf("id: verifiedPill"))
+  assert.match(mark, /anchors\.verticalCenter: parent\.verticalCenter/)
+  assert.match(name, /anchors\.verticalCenter: parent\.verticalCenter/)
+  assert.match(name, /elide: Text\.ElideRight/)
+  const width = new Function("implicitWidth", "nameLine", "stateMark", "verifiedPill", `return ${name.match(/width: ([^\n]+)/)[1]}`)
+  for (const markVisible of [false, true]) {
+    for (const pillVisible of [false, true]) {
+      const available = 200 - (markVisible ? 28 : 0) - (pillVisible ? 68 : 0)
+      for (const naturalWidth of [40, 300]) {
+        assert.equal(width(naturalWidth, { width: 200, spacing: 8 }, { visible: markVisible, width: 20 }, { visible: pillVisible, width: 60 }), Math.min(naturalWidth, available))
+      }
+    }
   }
 })
 
