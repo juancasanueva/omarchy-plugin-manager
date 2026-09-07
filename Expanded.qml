@@ -520,8 +520,11 @@ Item {
           if (root.confirming || root.placing) return
           var text = event.text
           if (event.key === Qt.Key_Escape) {
-            if (root.detailsOpen) root.closeDetails()
-            else root.dismiss()
+            root.dismiss()
+            event.accepted = true
+          }
+          else if (event.key === Qt.Key_Backspace && root.browsing && root.detailsOpen && !searchField.activeFocus) {
+            root.closeDetails()
             event.accepted = true
           }
           else if (text === "1") { root.switchTab("installed"); event.accepted = true }
@@ -1041,7 +1044,7 @@ Item {
                   { key: "1", text: "INSTALLED", active: !root.browsing },
                   { key: "2", text: "BROWSE", active: root.browsing }
                 ].concat(root.browsing && root.detailsOpen
-                  ? [{ key: "esc", text: "BACK", active: false }]
+                  ? [{ key: "backspace", text: "BACK", active: false }]
                   : Model.actionHints(root.browsing).concat([{ key: "esc", text: "CLOSE", active: false }]))
                 delegate: hintDelegate
               }

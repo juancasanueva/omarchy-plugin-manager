@@ -3625,7 +3625,7 @@ test("the expanded panel carries the Installed filters, their keys, and the hint
   assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
   // The tab keys lead the right-hand group, with the current tab lit, so
   // the bar also says where you are.
-  assert.match(hints, /id: actionHints[\s\S]*?model: \[\s*\{ key: "1", text: "INSTALLED", active: !root\.browsing \},\s*\{ key: "2", text: "BROWSE", active: root\.browsing \}\s*\]\.concat\(root\.browsing && root\.detailsOpen\s*\? \[\{ key: "esc", text: "BACK", active: false \}\]\s*: Model\.actionHints\(root\.browsing\)\.concat\(\[\{ key: "esc", text: "CLOSE", active: false \}\]\)\)/)
+  assert.match(hints, /id: actionHints[\s\S]*?model: \[\s*\{ key: "1", text: "INSTALLED", active: !root\.browsing \},\s*\{ key: "2", text: "BROWSE", active: root\.browsing \}\s*\]\.concat\(root\.browsing && root\.detailsOpen\s*\? \[\{ key: "backspace", text: "BACK", active: false \}\]\s*: Model\.actionHints\(root\.browsing\)\.concat\(\[\{ key: "esc", text: "CLOSE", active: false \}\]\)\)/)
   assert.match(hints, /color: hint\.modelData\.active \? root\.foreground : root\.secondaryForeground/)
 })
 
@@ -3908,6 +3908,62 @@ test("the store reloads when shell.json changes under it", () => {
   assert.match(store, /Timer \{\s*id: configReload\s*interval: 1000\s*repeat: false\s*onTriggered: root\.reload\(\)/)
 })
 
+function expandedKeyHarness(state = {}) {
+  const source = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+    .replace("Keys.onPressed: function(event)", "function expandedKey(event)")
+  const calls = []
+  const root = { browsing: true, detailsOpen: true, confirming: false, placing: false,
+    closeDetails: () => calls.push("back"), dismiss: () => calls.push("dismiss"),
+    switchTab: tab => calls.push(tab), ...state }
+  const searchField = { activeFocus: false }
+  const Qt = { Key_Backspace: "Backspace", Key_Escape: "Escape" }
+  const press = Function("root", "searchField", "Qt",
+    `${qmlFunction(source, "expandedKey")}; return expandedKey`)(root, searchField, Qt)
+  return { calls, searchField, press }
+}
+
+test("expanded Browse details Backspace returns only outside search and modals", () => {
+  for (const browsing of [true, false]) for (const detailsOpen of [true, false]) {
+    for (const activeFocus of [false, true]) for (const modal of [null, "confirming", "placing"]) {
+      const { calls, searchField, press } = expandedKeyHarness({ browsing, detailsOpen,
+        confirming: modal === "confirming", placing: modal === "placing" })
+      searchField.activeFocus = activeFocus
+      const event = { key: "Backspace", text: "\b", accepted: false }
+      press(event)
+      const backs = browsing && detailsOpen && !activeFocus && !modal
+      const context = JSON.stringify({ browsing, detailsOpen, activeFocus, modal })
+      assert.deepEqual(calls, backs ? ["back"] : [], context)
+      assert.equal(event.accepted, Boolean(backs), context)
+    }
+  }
+})
+
+test("expanded Escape dismisses listings and Browse details without backing out", () => {
+  for (const browsing of [true, false]) for (const detailsOpen of [true, false]) {
+    for (const modal of [null, "confirming", "placing"]) {
+      const { calls, press } = expandedKeyHarness({ browsing, detailsOpen,
+        confirming: modal === "confirming", placing: modal === "placing" })
+      const event = { key: "Escape", text: "", accepted: false }
+      press(event)
+      assert.deepEqual(calls, modal ? [] : ["dismiss"])
+      assert.equal(event.accepted, !modal)
+    }
+  }
+})
+
+test("expanded tab shortcuts remain available in Browse details except under modals", () => {
+  for (const detailsOpen of [true, false]) for (const modal of [null, "confirming", "placing"]) {
+    for (const [text, tab] of [["1", "installed"], ["2", "browse"]]) {
+      const { calls, press } = expandedKeyHarness({ detailsOpen,
+        confirming: modal === "confirming", placing: modal === "placing" })
+      const event = { key: text, text, accepted: false }
+      press(event)
+      assert.deepEqual(calls, modal ? [] : [tab])
+      assert.equal(event.accepted, !modal)
+    }
+  }
+})
+
 test("Browse details are a third face of the flip, not a dialog", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   // Opening turns toward the page, closing turns back; the grid and the page
@@ -3932,7 +3988,7 @@ test("Browse details are a third face of the flip, not a dialog", () => {
   // The hint bar says the one way out.
   const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
   assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
-  assert.match(hints, /id: actionHints[\s\S]*?root\.browsing && root\.detailsOpen\s*\? \[\{ key: "esc", text: "BACK", active: false \}\]/)
+  assert.match(hints, /id: actionHints[\s\S]*?root\.browsing && root\.detailsOpen\s*\? \[\{ key: "backspace", text: "BACK", active: false \}\]/)
 })
 
 test("CatalogDetailsPane shows the cover on the left and the listing on the right", () => {
@@ -4211,8 +4267,8 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /ActionConfirmDialog \{[\s\S]*?opened: root\.confirming/)
   assert.match(expanded, /ChoiceDialog \{[\s\S]*?opened: root\.placing/)
 
-  // Keys: Esc backs out of details before it closes the window.
-  assert.match(expanded, /Keys\.onPressed: function\(event\) \{[\s\S]*?event\.key === Qt\.Key_Escape[\s\S]*?root\.detailsOpen[\s\S]*?root\.dismiss\(\)/)
+  // Keys: Escape dismisses; Backspace returns from Browse details.
+  assert.match(expanded, /Keys\.onPressed: function\(event\) \{[\s\S]*?event\.key === Qt\.Key_Escape\) \{\s*root\.dismiss\(\)\s*event\.accepted = true/)
 
   // Never rich text, anywhere on this surface either.
   for (const file of ["Expanded.qml", "InstalledDetails.qml", "InstalledListRow.qml", "CatalogDetailsPane.qml"]) {

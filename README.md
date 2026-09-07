@@ -74,8 +74,8 @@ whether installation will ask for a bar section — followed by the installation
 warning and the repository and Release buttons. A plugin you do not have yet
 gets an **Install** button here; the confirmation overlays the page, and the
 page stays open once the install lands so you can see the `installed` pill
-arrive. The filter row hides while the page is up, `Esc` or **Back** returns
-you to the grid.
+arrive. The filter row hides while the page is up. `Backspace` or **Back**
+returns you to the grid; `Esc` closes the expanded panel.
 
 Both tabs share one search box and, on this surface, it wears a caption like
 the dropdowns beside it and grows an `x` the moment there is something to
@@ -399,10 +399,12 @@ url cannot become a command. Urls are also validated against `https://`,
 | `r` | Re-read the plugin list or re-fetch the active Browse catalog |
 | `Esc` | Clear the search, then leave the field, then close the panel |
 
-In Browse details, `Tab`, `Shift+Tab`, and the arrow keys move between actions;
-`Enter` activates the selected action and `Esc` returns to the card grid. The
-expanded panel answers the same keys, with `1` and `2` written into its hint
-bar.
+In the popup's Browse details, `Tab`, `Shift+Tab`, and the arrow keys move
+between actions; `Enter` activates the selected action and `Esc` returns to
+the card grid. In the expanded panel's Browse details, `Backspace` or **Back**
+returns to the grid, while `Esc` closes the panel. `Backspace` still edits text
+when search has focus, and open dialogs retain their keys. The expanded hint
+bar shows `[BACKSPACE] BACK` alongside the `1` and `2` tab shortcuts.
 
 ## Install
 
