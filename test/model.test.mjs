@@ -892,7 +892,7 @@ test("updateReview is one click only when the remote is the reviewed snapshot", 
   assert.equal(Model.updateNeedsConfirmation(null), true)
 })
 
-test("updateConfirmMessage names what nobody reviewed and links the diff only when it is a web page", () => {
+test("updateConfirmMessage keeps the warning without URL prose", () => {
   const verified = "2d9321902aa0176d47dcdb21d76884bca6a34f73"
   const ahead = "f2477cbe21a7270fdd489ce408b5dc74aa1a763f"
   const compare = `https://github.com/acme/thing/compare/${verified}...${ahead}`
@@ -900,7 +900,9 @@ test("updateConfirmMessage names what nobody reviewed and links the diff only wh
   assert.match(unreviewed, /^Update Thing\?\n\n/)
   assert.match(unreviewed, /reviewed this plugin at 2d93219\. Its repository is now at f2477cb, and nobody has reviewed/)
   assert.match(unreviewed, /Plugins run unsandboxed inside omarchy-shell\./)
-  assert.ok(unreviewed.endsWith("The changes: " + compare))
+  assert.ok(unreviewed.endsWith("Update only if you are willing to run code you have not looked at."))
+  assert.doesNotMatch(unreviewed, /https:|The changes:/)
+  assert.equal(Model.updateConfirmMessage.length, 2)
 
   const unlisted = Model.updateConfirmMessage("Thing", { kind: "unlisted", verifiedCommit: "", remoteSha: ahead }, "")
   assert.match(unlisted, /not listed on the marketplace, so nothing about the new commit \(f2477cb\) has been reviewed/)
@@ -910,6 +912,178 @@ test("updateConfirmMessage names what nobody reviewed and links the diff only wh
   assert.match(unknown, /catalog is not loaded/)
   assert.doesNotMatch(unknown, /javascript:/)
   assert.match(Model.updateConfirmMessage("Thing", null, ""), /catalog is not loaded/)
+})
+
+// Same brace-balanced extraction idiom as update-producer.test.mjs; no QML runtime.
+function qmlFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`)
+  assert.notEqual(start, -1, name)
+  const brace = source.indexOf("{", start)
+  let depth = 0
+  for (let i = brace; i < source.length; i++) {
+    if (source[i] === "{") depth++
+    else if (source[i] === "}" && --depth === 0) return source.slice(start, i + 1)
+  }
+  assert.fail(`Unterminated QML function ${name}`)
+}
+
+test("confirmation comparison is update-only, live, and cleared by cancellation", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const expression = store.match(/readonly property string confirmCompareUrl:\s*([^\n]+)\n\s*([^\n]+)/)
+  assert.ok(expression, "store exposes comparison separately")
+  const row = { id: "thing", behind: true, localSha: "a".repeat(40), remoteSha: "b".repeat(40), remote: "https://github.com/Acme/Thing.git" }
+  const state = { rows: [row], pendingKind: "update", pendingId: row.id,
+    pendingLabel: "Thing", pendingUrl: "", pendingPlacementNeeded: false, pendingReview: {} }
+  const url = Function("Model", "state", `with (state) { return (${expression[1]} ${expression[2]}) }`)
+  assert.equal(url(Model, state), `https://github.com/Acme/Thing/compare/${row.localSha}...${row.remoteSha}`)
+  for (const kind of ["add", "remove", "disable", "place", ""]) {
+    state.pendingKind = kind
+    assert.equal(url(Model, state), "")
+  }
+  state.pendingKind = "update"
+  for (const change of [{ remote: "https://evil.test/a/b" }, { remoteSha: "invalid" }, { behind: false }, { id: "missing" }]) {
+    state.rows = [{ ...row, ...change }]
+    assert.equal(url(Model, state), "")
+  }
+  state.rows = [row]
+  Function("state", `with (state) { ${qmlFunction(store, "cancelPending")}; cancelPending() }`)(state)
+  assert.equal(url(Model, state), "")
+  assert.equal(state.pendingReview, null)
+})
+
+test("confirmation policy retains verified fast path and rechecks pending updates", () => {
+  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const row = { id: "thing", name: "Thing", behind: true, remoteSha: "b".repeat(40) }
+  const calls = []
+  const state = { rows: [row], pendingKind: "", pendingId: "", pendingLabel: "", pendingUrl: "",
+    pendingReview: null, pendingPlacementNeeded: false, catalogLoaded: true,
+    verifiedCommitsById: { thing: row.remoteSha }, canStartUpdate: target => target?.behind === true,
+    runUpdate: target => calls.push(target.id) }
+  const names = ["startUpdate", "confirmPending", "cancelPending"]
+  Object.assign(state, Function("Model", "state", `with (state) {
+    ${names.map(name => qmlFunction(source, name)).join("\n")}
+    return {${names.join(",")}}
+  }`)(Model, state))
+  state.startUpdate(row)
+  assert.deepEqual(calls, [row.id])
+  assert.equal(state.pendingKind, "")
+  state.catalogLoaded = false
+  state.startUpdate(row)
+  assert.equal(state.pendingKind, "update")
+  assert.equal(calls.length, 1)
+  state.rows = []
+  state.confirmPending()
+  assert.equal(calls.length, 1, "vanished row must not update")
+  state.rows = [row]
+  state.startUpdate(row)
+  state.confirmPending()
+  assert.deepEqual(calls, [row.id, row.id])
+  assert.equal(state.pendingKind, "")
+})
+
+test("action confirmation keyboard skips absent action and isolates present action", () => {
+  const dialog = readFileSync(new URL("../ActionConfirmDialog.qml", import.meta.url), "utf8")
+  const Qt = Object.fromEntries(["Escape", "Left", "Right", "Tab", "Backtab", "Return", "Enter"].map(key => [`Key_${key}`, key]))
+  const calls = []
+  const root = { opened: true, actionVisible: false, selectedIndex: 1,
+    canceled: () => calls.push("cancel"), confirmed: () => calls.push("confirm"), actionRequested: () => calls.push("action") }
+  const names = ["pick", "resetSelection", "handleKey"]
+  Object.assign(root, Function("root", "Qt", `${names.map(name => qmlFunction(dialog, name)).join("\n")}\nreturn {${names.join(",")}}`)(root, Qt))
+  const key = key => root.handleKey({ key })
+  for (const direction of ["Left", "Right", "Tab", "Backtab"]) {
+    root.resetSelection()
+    key(direction)
+    assert.equal(root.selectedIndex, 0)
+    key(direction)
+    assert.equal(root.selectedIndex, 1)
+  }
+  key("Return")
+  root.actionVisible = true
+  key("Tab")
+  assert.equal(root.selectedIndex, 2)
+  key("Enter")
+  root.pick(2) // Mouse and keyboard share the same isolated dispatch.
+  assert.deepEqual(calls, ["confirm", "action", "action"])
+  assert.equal(root.opened, true)
+  key("Right")
+  assert.equal(root.selectedIndex, 0)
+  key("Backtab")
+  assert.equal(root.selectedIndex, 2)
+  key("Left")
+  assert.equal(root.selectedIndex, 1)
+  key("Escape")
+  root.pick(0)
+  assert.deepEqual(calls.slice(-2), ["cancel", "cancel"])
+  root.opened = false
+  assert.equal(key("Return"), false)
+  root.opened = true
+  root.selectedIndex = 2
+  root.resetSelection()
+  assert.equal(root.selectedIndex, 1, "reopening defaults to confirm")
+  assert.match(dialog, /onOpenedChanged: if \(opened\) root\.resetSelection\(\)/)
+  root.actionVisible = false
+  root.selectedIndex = 2
+  const visibilityHandler = dialog.match(/onActionVisibleChanged: ([^\n]+)/)[1]
+  Function("root", `with (root) { ${visibilityHandler} }`)(root)
+  assert.equal(root.selectedIndex, 1, "disappearing action restores a reachable answer")
+  root.pick(2)
+  assert.equal(calls.length, 5, "hidden action never dispatches")
+  assert.equal(key("Space"), false)
+  assert.match(dialog, /wrapMode: Text\.WrapAtWordBoundaryOrAnywhere/)
+  assert.equal((dialog.match(/Text \{/g) || []).length, (dialog.match(/textFormat: Text\.PlainText/g) || []).length)
+})
+
+test("action confirmation scrolls long messages while keeping both button layouts visible", () => {
+  const dialog = readFileSync(new URL("../ActionConfirmDialog.qml", import.meta.url), "utf8")
+  const viewport = dialog.match(/Flickable \{([\s\S]*?)\n\s*Item \{/)
+  assert.ok(viewport, "message needs a scrollable viewport separate from buttons")
+  assert.match(viewport[1], /clip: true/)
+  assert.match(viewport[1], /flickableDirection: Flickable\.VerticalFlick/)
+  assert.match(viewport[1], /contentHeight: messageText\.implicitHeight/)
+  assert.match(viewport[1], /contentWidth: width/)
+  assert.match(viewport[1], /Text \{\s*id: messageText\s*width: messageScroll\.width\s*text: root\.message/)
+  assert.match(viewport[1], /wrapMode: Text\.WrapAtWordBoundaryOrAnywhere/)
+  assert.doesNotMatch(viewport[1], /elide:|maximumLineCount:|\.slice\(|\.substring\(/)
+  assert.match(dialog, /height: content\.implicitHeight \+ contentTopInset \+ contentBottomInset/)
+  assert.match(dialog, /spacing: Style\.space\(20\)/)
+  assert.match(dialog, /height: Style\.space\(root\.actionVisible \? 78 : 34\)/)
+  const expression = viewport[1].match(/height: (Math\.min[\s\S]*?)\n\s*clip:/)[1]
+  const height = Function("root", "Style", "card", "buttons", "content", "contentHeight", `return (${expression})`)
+  for (const scale of [1, 1.5]) for (const paneHeight of [300, 480, 900]) {
+    for (const actionVisible of [false, true]) for (const textHeight of [20, 20000]) {
+      const Style = { space: value => value * scale }
+      const card = { contentTopInset: 19 * scale, contentBottomInset: 19 * scale }
+      const buttons = { height: Style.space(actionVisible ? 78 : 34) }
+      const content = { spacing: Style.space(20) }
+      const reserved = card.contentTopInset + card.contentBottomInset + buttons.height + content.spacing
+      const available = paneHeight - Style.space(32) - reserved
+      const actual = height({ height: paneHeight }, Style, card, buttons, content, textHeight)
+      assert.equal(actual, Math.min(textHeight, available))
+      assert.ok(actual + reserved <= paneHeight - Style.space(32), "buttons fit inside the pane")
+      assert.equal(textHeight > actual, textHeight === 20000, "only overflowing messages scroll")
+      assert.equal(height({ height: 50 }, Style, card, buttons, content, textHeight), 0,
+        "impossibly small panes never create a negative viewport")
+    }
+  }
+})
+
+test("both confirmation panes route View changes without answering the question", () => {
+  for (const file of ["Panel.qml", "Expanded.qml"]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+    const start = source.indexOf("ActionConfirmDialog {")
+    assert.notEqual(start, -1, file)
+    const dialog = source.slice(start, source.indexOf("ChoiceDialog {", start))
+    assert.match(dialog, /actionVisible: store\.confirmCompareUrl !== ""/)
+    assert.match(dialog, /actionText: "View changes"/)
+    const handler = dialog.match(/onActionRequested: ([^\n]+)/)[1]
+    const calls = []
+    const store = { confirmCompareUrl: `https://github.com/Acme/Thing/compare/${"a".repeat(40)}...${"b".repeat(40)}` }
+    Function("root", "store", handler)({ requestGithubNavigation: (...args) => calls.push(args) }, store)
+    assert.deepEqual(calls, [[[], store.confirmCompareUrl]])
+    assert.match(dialog, /z: 10/)
+    assert.match(dialog, /if \(opened\) forceActiveFocus\(\)/)
+    assert.match(dialog, /confirm\.handleKey\(event\)/)
+  }
 })
 
 test("the store gates Update on the reviewed snapshot and asks otherwise", () => {
@@ -924,7 +1098,7 @@ test("the store gates Update on the reviewed snapshot and asks otherwise", () =>
   assert.match(start, /pendingReview = review\s*pendingKind = "update"/)
   // Confirmed updates are re-gated, by id, against the live rows.
   assert.match(store, /if \(pendingKind === "update"\) \{[\s\S]*?Model\.findRow\(rows, pendingId\)\s*cancelPending\(\)\s*if \(canStartUpdate\(target\)\) runUpdate\(target\)/)
-  assert.match(store, /if \(pendingKind === "update"\)\s*return Model\.updateConfirmMessage\(pendingLabel, pendingReview,/)
+  assert.match(store, /if \(pendingKind === "update"\)\s*return Model\.updateConfirmMessage\(pendingLabel, pendingReview\)/)
   assert.match(store, /pendingReview = null/)
   // Only the run path carries --yes, and it is reached only through the gate.
   assert.equal(store.split('"omarchy", "plugin", "update", row.id, "--yes"').length - 1, 1)
@@ -2789,7 +2963,7 @@ test("plugin details lead with the same preview walk the Browse card uses", () =
 
   // One WebP verdict for the whole panel: details report undecodable sources
   // to the same flag the grid does.
-  const detailsSection = panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ConfirmDialog {"))
+  const detailsSection = panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ActionConfirmDialog {"))
   assert.match(detailsSection, /previewsEnabled: root\.previewsSupported/)
   assert.match(detailsSection, /onPreviewUndecodable: root\.previewsSupported = false/)
 })
@@ -2893,8 +3067,8 @@ test("Browse details and filters wire keyboard interaction through guarded modal
   assert.match(restore, /Model\.browseModalFocusOwner\(root\.detailsOpen, root\.confirming, root\.placing\) === "list"/)
   assert.match(restore, /keyCatcher\.forceActiveFocus\(\)/)
   const modalSections = [
-    panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ConfirmDialog {")),
-    panel.slice(panel.indexOf("ConfirmDialog {"), panel.indexOf("ChoiceDialog {")),
+    panel.slice(panel.indexOf("PluginDetails {"), panel.indexOf("ActionConfirmDialog {")),
+    panel.slice(panel.indexOf("ActionConfirmDialog {"), panel.indexOf("ChoiceDialog {")),
     panel.slice(panel.indexOf("ChoiceDialog {"))
   ]
   for (const section of modalSections)
@@ -4034,7 +4208,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /CatalogCard \{/)
   assert.doesNotMatch(expanded, /PluginDetails \{/)
   assert.match(expanded, /CatalogDetailsPane \{\s*id: browseDetailsPane/)
-  assert.match(expanded, /ConfirmDialog \{[\s\S]*?opened: root\.confirming/)
+  assert.match(expanded, /ActionConfirmDialog \{[\s\S]*?opened: root\.confirming/)
   assert.match(expanded, /ChoiceDialog \{[\s\S]*?opened: root\.placing/)
 
   // Keys: Esc backs out of details before it closes the window.

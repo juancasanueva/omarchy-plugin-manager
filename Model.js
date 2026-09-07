@@ -1660,7 +1660,7 @@ function shortSha(sha) {
 
 // The question, as the confirmation dialog puts it. Every branch ends on the
 // same sentence the install dialog uses, because the risk is the same one.
-function updateConfirmMessage(label, review, compareUrl) {
+function updateConfirmMessage(label, review) {
   var kind = review ? review.kind : UPDATE_UNKNOWN
   var head = "Update " + label + "?\n\n"
   var why
@@ -1678,8 +1678,6 @@ function updateConfirmMessage(label, review, compareUrl) {
       + " could not be checked against its reviewed snapshot."
   }
   var tail = "\n\nPlugins run unsandboxed inside omarchy-shell. Update only if you are willing to run code you have not looked at."
-  var link = browsableUrl(compareUrl)
-  if (link !== "") tail += "\n\nThe changes: " + link
   return head + why + tail
 }
 

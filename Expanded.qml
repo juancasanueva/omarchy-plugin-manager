@@ -1409,12 +1409,15 @@ Item {
           onPreviewUndecodable: root.previewsSupported = false
         }
 
-        ConfirmDialog {
+        ActionConfirmDialog {
           id: confirm
           anchors.fill: parent
           z: 10
           opened: root.confirming
           message: root.confirmMessage
+          actionText: "View changes"
+          actionVisible: store.confirmCompareUrl !== ""
+          onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
           confirmText: Model.actionVerb(root.pendingKind) === "Action"
             ? "Add"
             : Model.actionVerb(root.pendingKind)

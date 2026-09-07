@@ -135,6 +135,9 @@ Item {
   readonly property string placementMessage:
     "Where in the bar should " + pendingLabel + " go?"
 
+  readonly property string confirmCompareUrl: pendingKind === "update"
+    ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
+
   readonly property string confirmMessage: {
     if (pendingKind === "add")
       return "Clone " + pendingLabel + "?\n\n"
@@ -148,8 +151,7 @@ Item {
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
     if (pendingKind === "update")
-      return Model.updateConfirmMessage(pendingLabel, pendingReview,
-        Model.updateCompareUrl(Model.findRow(rows, pendingId)))
+      return Model.updateConfirmMessage(pendingLabel, pendingReview)
     if (pendingKind === "disable")
       return "Disable " + pendingLabel + "?\n\n"
         + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
