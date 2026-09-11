@@ -156,8 +156,8 @@ uses, and every control narrows both lists at once:
   same question; each row still names its own kind.
 - **Status filter** (`t`) — **All**, **Enabled**, **Disabled**, or **Update**.
   Enabled/Disabled read the same on/off state shown by each row's switch;
-  Update shows checkouts whose background check confirmed a different remote
-  commit.
+  Update shows all detected upstream changes, including unverified ones, plus
+  differing marketplace-verified snapshots for the installed GitHub origin.
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
@@ -174,34 +174,27 @@ When nothing matches, the message names whichever controls excluded everything
 
 ### Knowing what needs updating
 
-Rows with an update carry an accent badge — `1.0.0 → 1.2.0` when the versions
-differ, or just `update` when they do not. The header counts them, so you know
-before scrolling; the bar's puzzle icon marks the same confirmed state with a
-small blue dot. When the current origin is a valid GitHub repository and both
-commits are known, the badge always has GitHub's exact commit comparison as its
-fallback. If the remote manifest names a different version, clicking the badge
-checks published Releases named `v<remoteVersion>` and then `<remoteVersion>`.
-The first match opens; two 404s, a rate limit, timeout, malformed response, or
-other probe failure opens the exact comparison instead. The API result proves
-only that the displayed target version has a published Release; navigation is
-still built locally and never trusts a response-provided URL. Same-version
-updates skip Release lookup and keep the tooltip **View changes on GitHub**.
+**Availability is not permission to install.** Update badges, the header count,
+the Update filter, and the bar's blue dot include every checkout with detected
+upstream changes, even when it is unverified or absent from the marketplace.
+A differing verified snapshot also remains discoverable without a branch report;
+a checkout meeting both conditions is counted once.
 
-**The signal is commits, not version strings.** Authors do not reliably bump
-`manifest.json`: of the two checkouts that were genuinely behind when this was
-built, both reported the *same* version at each end. A version comparison would
-have shown nothing for either. The catalog is no better — it publishes the
-version at the commit the registry last validated, which can lag a repository
-by several releases.
+- **Upstream changes — not verified** means the observed branch tip does not
+  match an authorized verification snapshot. Being at an older verified SHA does
+  not make the checkout current. Without a differing verified target, Update is disabled.
+- **Verified snapshot … available** names the only installable candidate. If
+  upstream is newer and unreviewed, Update still requests only this verified SHA.
+  A differing SHA is not proof of ancestry: the helper must prove fast-forward eligibility.
+- **No upstream changes** requires a matching checkout-bound branch report.
+  **Upstream check unavailable** means missing, failed, or stale evidence, not current.
 
-So the check compares your checkout's `HEAD` against the remote's, using one
-branch `git ls-remote` per repository. Nothing is cloned, and no background tag
-or Release lookup runs. For a checkout that is behind, the remote manifest is
-read at that exact branch commit so a later click can look up the version it
-actually names. The check runs in the background *after* the rows are on screen,
-so the panel never waits on the network to show you what you already have. A
-remote it cannot reach is reported as unknown rather than as up to date — being
-quietly told nothing is how a stale plugin sits there looking current.
+The badge and details' Changes link compare the exact upstream commits when
+upstream changes are detected; otherwise they compare the verified-only candidate.
+Their labels identify which comparison opens. Report versions describe upstream,
+never the separately named verified target. Cached catalog metadata may display a
+candidate; execution always requires fresh exact-repository/SHA authorization.
+There is no upstream-SHA fallback and no confirmation override.
 
 ### The actions
 
@@ -223,19 +216,71 @@ quietly told nothing is how a stale plugin sits there looking current.
   dimmed and fixed on — a row with no control at all reads as something that
   failed to render. Disabling this panel closes the window you are clicking
   in, so that one confirms and hands you the command to undo it.
-- **Update** — for a plugin that is a git checkout with an origin remote, runs
-  `omarchy plugin update <id> --yes`. A checkout with no origin has nothing to
-  fast-forward from, so it gets no button rather than one that can only fail.
-  Omarchy's own command shows the diff and asks before it pulls; `--yes` skips
-  that, so the review happens here instead. The marketplace reviews one exact
-  commit per plugin, and the update is one click only when the remote commit
-  *is* that reviewed snapshot. Anything else — a repository that has moved
-  past its reviewed commit, a plugin the marketplace does not list, or a
-  catalog that has not loaded yet — puts up a confirmation that says exactly
-  what nobody has reviewed, with a link to the diff on GitHub when the remote
-  is there.
+- **Update** — invokes the bundled Python helper with the displayed repository,
+  full verified SHA, id, and expected installed HEAD. It installs only that
+  snapshot, never `origin HEAD`, another branch, or a fallback commit. The host
+  `omarchy plugin update` command is deliberately not used.
 - **Remove** — for anything under `~/.config/omarchy/plugins`, runs
   `omarchy plugin remove <id> --yes` behind a confirmation.
+
+### Pinned-update transaction and recovery
+
+The helper reads `https://plugins.omarchy.org/catalog.json` directly over HTTPS,
+without redirects or cached fallback, before fetching and again before
+publication. Browse reads the same canonical URL, but through its own cache;
+execution never consults that cache and rejects every redirect response.
+A unique community listing must still be verified at exactly the
+requested repository and full SHA. HTTPS and `git@github.com:` / `ssh://git@github.com/`
+origins compare canonically; network Git always uses canonical HTTPS. Repository
+moves, revoked verification, malformed metadata, or unavailable objects refuse
+rather than silently choosing another target.
+
+Staging lives in a private 0700 transaction under
+`~/.config/omarchy/plugin-manager-updates/txn-<random>/`, outside plugin discovery
+and on the same filesystem. The helper uses isolated, hook-free Git, checks the
+snapshot tree and manifest id, and runs the host validator **before** exchanging
+the installed directory with the staged checkout using Linux `RENAME_EXCHANGE`.
+There is no missing-directory gap. Files and directory entries are fsynced;
+only successful publication triggers the host `rescanPlugins` IPC operation.
+
+| Prerequisite | Refusal behavior |
+|---|---|
+| Actual account home, owned non-symlink directories, no group/other write access | No alternate HOME, worktree, or path fallback |
+| Ordinary SHA-1 checkout with one origin and standard core/branch configuration | Includes, other config sections, external object stores/worktrees, symlinks and hardlinks are refused; local Git config is never executed |
+| Clean tracked files and index | Dirty, staged, untracked, ignored files and special index flags are refused; never stash, reset or delete user changes |
+| Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
+| Bounded work | 120-second transaction; 8 MiB/5,000-entry catalog; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
+| Same filesystem with atomic exchange support | Refuse rather than use two renames |
+
+The replacement retains a fresh `.git`, canonical origin and detached HEAD.
+It is a shallow clone (depth 256) with no tracking branch, so the host's own
+`omarchy plugin update <id>` no longer works for that checkout afterwards: later
+updates for it go through this panel's pinned update only. To return to the
+host flow, remove the plugin and add it again.
+Local branches, tags, reflogs, hooks and configuration are **not migrated**;
+they remain in the original checkout at the transaction's `checkout/` backup.
+Inspect `request.json`, `prepared.json` (directory device/inode identities),
+`published.json` and `result.json` to distinguish staging from publication.
+A crash between exchange and journaling requires checking those identities and
+both HEADs; do not assume the backup name alone proves which tree it contains.
+There is no automatic recovery or rollback that could overwrite later edits.
+The advisory lock serializes helper requests, not arbitrary same-user writers;
+final rechecks do not make concurrent external edits race-free.
+Keep backups until reviewed, and recover manually only after preserving the
+current checkout. At 32 retained transactions, further updates refuse until
+those transaction directories are reviewed and moved out of this state directory.
+
+Once clicked, the finite worker runs independently of the QML observer. Closing
+the window is **not cancellation**, including during a manager self-update.
+The already-loaded Python worker retains no dependency on reopening its helper
+source after exchange. Its bounded notification and transaction records outlive
+the window. A rescan failure reports **updated; reload failed**, not unchanged. A refusal
+reports **unchanged; update refused** followed by the helper's reason (for
+example a dirty checkout or a revoked verification), and the same reason is
+written to `refused.json` in the transaction directory when one was opened.
+If the observer loses the result, inspect the retained transaction; do not retry
+blindly. Live Quickshell hot-reload/self-update behavior still needs runtime
+validation; disposable transaction tests do not prove desktop integration.
 
 ## The Browse tab
 
@@ -316,7 +361,7 @@ placement is the half that would be dropped.
 
 ### Where the catalog comes from
 
-`https://omarchyplugins.com/catalog.json`, the same file the website renders
+`https://plugins.omarchy.org/catalog.json`, the same file the website renders
 from, generated by
 [HANCORE-linux/omarchy-plugin-marketplace](https://github.com/HANCORE-linux/omarchy-plugin-marketplace)
 (MIT). It is read from the cache when the panel opens and fetched when that
@@ -425,12 +470,11 @@ omarchy plugin remove io.github.juancasanueva.plugin-manager --yes
 ```
 
 That deletes `~/.config/omarchy/plugins/io.github.juancasanueva.plugin-manager`
-and takes the widget out of your bar. Nothing is left behind: the only other
-thing this plugin writes is a catalog cache, which you can drop with
-
-```bash
-rm -rf ~/.cache/omarchy-plugin-manager
-```
+and takes the widget out of your bar. The catalog cache at
+`~/.cache/omarchy-plugin-manager/` and transactions/backups under
+`~/.config/omarchy/plugin-manager-updates/` survive removal. An already accepted
+finite update also continues through finalization. Review retained transactions
+before removing or moving them; the manager never automatically deletes backups.
 
 To take it off the bar without uninstalling it, use the panel's own disable
 button, or:
@@ -441,15 +485,20 @@ omarchy plugin disable io.github.juancasanueva.plugin-manager
 
 ## Requirements
 
-Everything this plugin runs is already part of a standard Omarchy install. It
-shells out to `omarchy` and `omarchy-shell` for every action it takes, plus:
+No dependencies are installed automatically. Enable/disable/install/remove use
+the host commands; pinned updates additionally require system Python 3 (stdlib
+only), Linux `/proc`, `flock`, and libc/filesystem `renameat2` exchange support.
+A fixed `/usr/bin/env -i` argv supplies only PATH and WAYLAND_DISPLAY, then
+executes `/usr/bin/python3 -I -S`; helper subprocesses use their own clean environment.
+This uses Quickshell's supported command list instead of a map-to-hash environment binding.
 
 | Command | Used for |
 |---------|----------|
-| `git` | reading each checkout's origin and comparing `HEAD` against the remote |
+| `git` | discovery and isolated exact-SHA fetch/ancestry/checkout |
 | `jq` | parsing plugin manifests and projecting the marketplace catalog |
 | `curl` | fetching the catalog and remote manifests |
-| `notify-send` | reporting an install's outcome, since the panel is torn down by one |
+| `notify-send` | reporting install and pinned-update outcomes outside the panel |
+| `python3`, `omarchy-plugin-validate`, `qs` | bounded update transaction, staged validation, and post-publication rescan |
 | `bash`, coreutils | the loading and install scripts |
 | `omarchy-launch-browser` | opening repository links in your chosen browser |
 
@@ -459,12 +508,11 @@ back to repository `preview.png` files and accent tiles.
 
 ### What it writes
 
-Nothing, directly. Every change to your configuration goes through the
-`omarchy plugin` commands, and only on an explicit click: enabling or
-disabling a plugin edits `~/.config/omarchy/shell.json` through
-`omarchy plugin enable`/`disable`, and installing or removing one goes through
-`omarchy plugin add`/`remove`. Its own cache lives in
-`~/.cache/omarchy-plugin-manager/`.
+Only on an explicit action: enabling/disabling edits shell configuration via
+host commands, and installation/removal uses host commands. Pinned updates
+write private staging, transaction records and retained original checkouts,
+and atomically exchange one plugin directory. They do not edit shell.json.
+The Browse cache remains at `~/.cache/omarchy-plugin-manager/`.
 
 ## Develop
 

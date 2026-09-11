@@ -184,6 +184,8 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       clonedFrom: plainText(item.clonedFrom),
       sourceDir: sourceDir,
       remote: gitManaged ? plainText(gitInfo.remote) : "",
+      // Authorization never reconstructs an origin from display sanitization.
+      updateOrigin: gitManaged ? String(gitInfo.remote || "") : "",
       exactTag: gitManaged ? plainText(gitInfo.exactTag) : "",
       headSha: gitManaged ? normalizeGitObjectId(gitInfo.headSha) : "",
       gitManaged: gitManaged,
@@ -651,7 +653,7 @@ function actionGerund(kind) {
 // We read the install command, we never execute it — the install url is parsed
 // out and validated, then run through the same argv array the Installed tab uses.
 
-var CATALOG_URL = "https://omarchyplugins.com/catalog.json"
+var CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
 var MARKETPLACE_STATS_URL = "https://api.omarchyplugins.com/v1/stats"
 var CATALOG_ASSET_BASE = "https://omarchyplugins.com/"
 
@@ -777,19 +779,6 @@ function catalogStarsById(entries) {
   return stars
 }
 
-// The marketplace's reviewed commit per plugin id, for the update gate below.
-// Same null-prototype discipline as the other id maps.
-function catalogVerifiedCommitsById(entries) {
-  var commits = Object.create(null)
-  for (var i = 0; i < (entries || []).length; i++) {
-    var entry = entries[i]
-    if (!entry || !entry.id) continue
-    var sha = normalizeGitObjectId(entry.verifiedCommit)
-    if (sha !== "") commits[String(entry.id)] = sha
-  }
-  return commits
-}
-
 function rowStarLabel(row, starsById) {
   if (!row || !row.id || !hasOwnKey(starsById, row.id)) return ""
   return starLabel(starsById[String(row.id)])
@@ -830,6 +819,11 @@ function catalogEntries(doc, installedIds) {
   if (!doc || !Array.isArray(doc.plugins)) return []
   var installed = installedIds || {}
   var out = []
+  var ids = Object.create(null)
+  for (var n = 0; n < doc.plugins.length; n++) {
+    var rawId = doc.plugins[n] && doc.plugins[n].id
+    if (typeof rawId === "string") ids[rawId] = (ids[rawId] || 0) + 1
+  }
 
   for (var i = 0; i < doc.plugins.length; i++) {
     var p = doc.plugins[i]
@@ -868,6 +862,7 @@ function catalogEntries(doc, installedIds) {
       // The one commit the marketplace actually reviewed. Verification is a
       // statement about this snapshot, not about the branch it came from.
       verifiedCommit: normalizeGitObjectId(p.verificationCommit),
+      updateSnapshot: ids[p.id] === 1 ? catalogUpdateSnapshot(p) : null,
       branch: String(p.listingValidatedBranch || ""),
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: hasOwnKey(installed, p.id)
@@ -1622,63 +1617,75 @@ function applyUpdateReport(rows, report) {
   return out
 }
 
-// ---- The update gate ------------------------------------------------------
-//
-// Omarchy's own `plugin update` shows the diff and asks before it pulls. This
-// panel runs it with `--yes`, so that review has to happen here instead. The
-// marketplace reviews one exact commit per plugin, and an update is only as
-// trusted as that snapshot: pulling to the reviewed commit is one click, and
-// pulling past it — or pulling a plugin the marketplace has never seen — is
-// a question, put in words that say what nobody has looked at.
-//
-// `verifiedCommits` is null while the catalog is not loaded, which is its
-// own answer: unknown is not verified.
-var UPDATE_VERIFIED = "verified"
-var UPDATE_UNREVIEWED = "unreviewed"
-var UPDATE_UNLISTED = "unlisted"
-var UPDATE_UNKNOWN = "unknown"
-var UPDATE_NONE = "none"
-
-function updateReview(row, verifiedCommits) {
-  var remoteSha = normalizeGitObjectId(row && row.remoteSha)
-  var review = { kind: UPDATE_NONE, verifiedCommit: "", remoteSha: remoteSha }
-  if (!row || row.behind !== true || remoteSha === "") return review
-  if (!verifiedCommits) { review.kind = UPDATE_UNKNOWN; return review }
-  if (!hasOwnKey(verifiedCommits, row.id)) { review.kind = UPDATE_UNLISTED; return review }
-  review.verifiedCommit = normalizeGitObjectId(verifiedCommits[String(row.id)])
-  review.kind = review.verifiedCommit === remoteSha ? UPDATE_VERIFIED : UPDATE_UNREVIEWED
-  return review
+// Pinned updates use raw catalog fields, never install commands or web links.
+// This is display/request eligibility only; the helper reauthorizes over HTTPS.
+function canonicalUpdateRepository(value) {
+  if (typeof value !== "string") return ""
+  var match = /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(value)
+  if (!match || match[1].length > 39 || match[2].length > 100
+      || match[2] === "." || match[2] === ".." || /\s/.test(value)) return ""
+  return "https://github.com/" + match[1].toLowerCase() + "/" + match[2].toLowerCase()
 }
 
-function updateNeedsConfirmation(review) {
-  return !review || review.kind !== UPDATE_VERIFIED
+function catalogUpdateSnapshot(entry) {
+  if (!entry || typeof entry.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.id)
+      || entry.id.indexOf("..") >= 0 || entry.id.indexOf("omarchy.") === 0
+      || entry.verificationStatus !== "verified" || entry.sourceType !== "community") return null
+  var repo = canonicalUpdateRepository(entry.repo)
+  var sha = typeof entry.verificationCommit === "string" && entry.verificationCommit.length === 40
+    && /^[0-9a-fA-F]{40}$/.test(entry.verificationCommit)
+    ? entry.verificationCommit.toLowerCase() : ""
+  return repo !== "" && sha !== "" ? { id: entry.id, repository: repo, verifiedCommit: sha } : null
 }
+
+function pinnedRequest(row, entries) {
+  if (!row || row.firstParty || !row.gitManaged || !/^[0-9a-fA-F]{40}$/.test(String(row.headSha || ""))) return null
+  var found = null, count = 0
+  for (var i = 0; i < (entries || []).length; i++) {
+    if (entries[i].id === row.id) { found = entries[i].updateSnapshot; count++ }
+  }
+  if (count !== 1 || !found || found.id !== row.id
+      || canonicalUpdateRepository(row.updateOrigin) !== found.repository) return null
+  return { schemaVersion: 1, id: row.id, repository: found.repository,
+    verifiedCommit: found.verifiedCommit, expectedLocalHead: row.headSha.toLowerCase() }
+}
+
+function applyPinnedUpdates(rows, entries) {
+  var out = []
+  for (var i = 0; i < (rows || []).length; i++) {
+    var row = rows[i], copy = {}, request = pinnedRequest(row, entries)
+    for (var key in row) copy[key] = row[key]
+    // Keep report SHA/version/freshness fields exclusively upstream-owned.
+    // `behind` is the compatibility view consumed by existing badges and filters.
+    copy.upstreamBehind = row.updateChecked === true && row.localSha !== row.remoteSha
+    copy.verifiedTargetSha = request ? request.verifiedCommit : ""
+    copy.pinnedEligible = !!request && request.expectedLocalHead !== request.verifiedCommit
+    copy.behind = copy.upstreamBehind || copy.pinnedEligible
+    out.push(copy)
+  }
+  return out
+}
+
+function updateStatus(row) {
+  if (!row || !row.updatable) return ""
+  var upstream = row.upstreamBehind
+    ? "Upstream changes — " + (row.remoteSha === row.verifiedTargetSha ? "verified snapshot" : "not verified")
+    : (row.updateChecked === true ? "No upstream changes" : "Upstream check unavailable")
+  return upstream + (row.pinnedEligible
+    ? "; Verified snapshot " + shortSha(row.verifiedTargetSha) + " available" : "")
+}
+
+function pinnedUpdateTooltip(row) {
+  var status = updateStatus(row)
+  if (row && row.pinnedEligible) return status + ". Install verified snapshot "
+    + shortSha(row.verifiedTargetSha) + " — rechecked before publication"
+  return status + ". Update disabled; no newer matching verified snapshot"
+}
+
+// ---- Update presentation ---------------------------------------------------
 
 function shortSha(sha) {
   return normalizeGitObjectId(sha).slice(0, 7)
-}
-
-// The question, as the confirmation dialog puts it. Every branch ends on the
-// same sentence the install dialog uses, because the risk is the same one.
-function updateConfirmMessage(label, review) {
-  var kind = review ? review.kind : UPDATE_UNKNOWN
-  var head = "Update " + label + "?\n\n"
-  var why
-  if (kind === UPDATE_UNREVIEWED) {
-    why = "The marketplace reviewed this plugin at " + shortSha(review.verifiedCommit)
-      + ". Its repository is now at " + shortSha(review.remoteSha)
-      + ", and nobody has reviewed what changed in between."
-  } else if (kind === UPDATE_UNLISTED) {
-    why = "This plugin is not listed on the marketplace, so nothing about the new commit"
-      + (review && review.remoteSha ? " (" + shortSha(review.remoteSha) + ")" : "")
-      + " has been reviewed."
-  } else {
-    why = "The marketplace catalog is not loaded, so the new commit"
-      + (review && review.remoteSha ? " (" + shortSha(review.remoteSha) + ")" : "")
-      + " could not be checked against its reviewed snapshot."
-  }
-  var tail = "\n\nPlugins run unsandboxed inside omarchy-shell. Update only if you are willing to run code you have not looked at."
-  return head + why + tail
 }
 
 // What the row's badge should say. The version arrow when the numbers differ,
@@ -1694,8 +1701,11 @@ function updateBadge(row) {
 function updateCompareUrl(row) {
   if (!row || row.behind !== true) return ""
 
-  var localSha = normalizeGitObjectId(row.localSha)
-  var remoteSha = normalizeGitObjectId(row.remoteSha)
+  // Prefer the detected upstream comparison; with no upstream changes, expose
+  // the verified-only candidate without inventing a branch report.
+  var verifiedOnly = row.pinnedEligible === true && row.upstreamBehind !== true
+  var localSha = normalizeGitObjectId(verifiedOnly ? row.headSha : row.localSha)
+  var remoteSha = normalizeGitObjectId(verifiedOnly ? row.verifiedTargetSha : row.remoteSha)
   if (localSha === "" || remoteSha === "" || localSha === remoteSha) return ""
 
   // As with version tags, only the checkout's current origin is authoritative.
@@ -1704,8 +1714,17 @@ function updateCompareUrl(row) {
   return "https://github.com/" + slug + "/compare/" + localSha + "..." + remoteSha
 }
 
+function updateCompareLabel(row) {
+  if (updateCompareUrl(row) === "") return ""
+  var verifiedOnly = row.pinnedEligible === true && row.upstreamBehind !== true
+  return "Compare " + (verifiedOnly ? "verified snapshot " : "upstream ")
+    + shortSha(verifiedOnly ? row.headSha : row.localSha) + " → "
+    + shortSha(verifiedOnly ? row.verifiedTargetSha : row.remoteSha) + " on GitHub"
+}
+
 function updateReleaseCandidates(row) {
-  if (!row || row.versionChanged !== true || updateCompareUrl(row) === "") return []
+  if (!row || (row.pinnedEligible === true && row.upstreamBehind !== true)
+      || row.versionChanged !== true || updateCompareUrl(row) === "") return []
   return githubReleaseCandidates(row.remote, row.remoteVersion)
 }
 

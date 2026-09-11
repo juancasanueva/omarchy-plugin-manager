@@ -54,12 +54,7 @@ Item {
   readonly property string repoLabel: Model.repoShortLabel(repoUrl)
   readonly property string versionText: Model.versionLabel(row)
 
-  readonly property string updateText: {
-    if (!row || !row.updatable) return ""
-    if (hasUpdate) return "Update available"
-    if (row.updateChecked === true) return "Up to date"
-    return "Not checked"
-  }
+  readonly property string updateText: Model.updateStatus(row)
 
   // Label/value pairs, in the order a reader wants them: who, which version,
   // what it plugs into, where it came from, then the two things that change.
@@ -74,6 +69,8 @@ Item {
     rows.push({ label: "Source", value: row.group === "built-in" ? "Built-in" : "Installed" })
     if (repoLabel !== "") rows.push({ label: "Repository", value: repoLabel, link: repoUrl })
     if (updateText !== "") rows.push({ label: "Update", value: updateText })
+    var compareUrl = Model.updateCompareUrl(row)
+    if (compareUrl !== "") rows.push({ label: "Changes", value: Model.updateCompareLabel(row), link: compareUrl })
     rows.push({ label: "Status", value: row.enabled ? "Enabled" : "Disabled" })
     return rows
   }
@@ -206,17 +203,12 @@ Item {
           text: root.updating ? "Updating…" : (root.hasUpdate ? "Update" : "Update")
           iconText: root.updating ? "" : "󰑐"
           iconSpinning: root.updating
-          tooltipText: {
-            if (!root.row) return "Update this checkout"
-            if (root.hasUpdate) return "Update available — pull from " + root.row.remote
-            if (root.row.updateChecked === true) return "Up to date with " + root.row.remote
-            return root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
-          }
+          tooltipText: Model.pinnedUpdateTooltip(root.row)
           bordered: true
           foreground: root.hasUpdate ? Color.accent : root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate
+          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && root.row.pinnedEligible === true
           opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
           onClicked: root.updateRequested()
         }

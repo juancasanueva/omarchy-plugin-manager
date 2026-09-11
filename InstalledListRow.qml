@@ -165,6 +165,17 @@ Rectangle {
       }
     }
 
+    Text {
+      textFormat: Text.PlainText
+      width: parent.width
+      visible: !!root.row && root.row.behind === true
+      text: Model.updateStatus(root.row)
+      color: root.secondaryForeground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+
     // Two lines at most: the pane on the right shows the whole description,
     // so the row only needs enough to tell one plugin from the next.
     Text {

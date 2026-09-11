@@ -68,7 +68,6 @@ Rectangle {
   readonly property var versionReleaseCandidates: Model.versionReleaseCandidates(row)
   readonly property string versionFallbackUrl: Model.versionFallbackUrl(row)
   readonly property string compareUrl: Model.updateCompareUrl(row)
-  readonly property var updateReleaseCandidates: Model.updateReleaseCandidates(row)
 
   function openRepo() {
     if (repoUrl === "") return
@@ -82,7 +81,7 @@ Rectangle {
 
   function openComparison() {
     if (compareUrl === "") return
-    githubNavigationRequested(updateReleaseCandidates, compareUrl)
+    githubNavigationRequested([], compareUrl)
   }
 
   height: Math.round(details.implicitHeight + Style.space(16))
@@ -218,6 +217,17 @@ Rectangle {
       font.italic: !Model.hasDescription(root.row)
       wrapMode: Text.WordWrap
       verticalAlignment: Text.AlignTop
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      width: parent.width
+      visible: root.hasUpdate
+      text: Model.updateStatus(root.row)
+      color: root.secondaryForeground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
     }
 
     // Who wrote it, what it plugs into, and which version is on disk — the
@@ -380,9 +390,7 @@ Rectangle {
 
       PanelToolTip {
         visible: updateBadgeMouse.containsMouse
-        text: root.updateReleaseCandidates.length > 0
-          ? "Open " + root.row.remoteVersion + " on GitHub"
-          : "View changes on GitHub"
+        text: Model.updateCompareLabel(root.row)
         fontFamily: root.fontFamily
       }
     }
@@ -447,17 +455,12 @@ Rectangle {
       // pull runs and a spinning copy takes its place.
       iconText: root.updating ? "" : "󰑐"
       fontSize: Style.font.iconLarge
-      tooltipText: {
-        if (!root.row) return "Update this checkout"
-        if (root.hasUpdate) return "Update available — pull from " + root.row.remote
-        if (root.row.updateChecked === true) return "Up to date with " + root.row.remote
-        return root.row.remote !== "" ? "Update from " + root.row.remote : "Update this checkout"
-      }
+      tooltipText: Model.pinnedUpdateTooltip(root.row)
       foreground: root.hasUpdate ? Color.accent : root.foreground
       fontFamily: root.fontFamily
       // Nothing to pull is nothing to click: a confirmed up-to-date checkout
       // gets no button to press and therefore no spin to watch.
-      enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate
+      enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && root.row.pinnedEligible === true
       opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
       onClicked: root.updateRequested()
 

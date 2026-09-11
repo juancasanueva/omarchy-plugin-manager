@@ -65,7 +65,6 @@ Item {
   property var catalog: []
   readonly property var verifiedIds: Model.verifiedIdSet(catalog)
   readonly property var starsById: Model.catalogStarsById(catalog)
-  readonly property var verifiedCommitsById: Model.catalogVerifiedCommitsById(catalog)
   property bool catalogLoading: false
   property bool catalogLoaded: false
   property string catalogError: ""
@@ -111,9 +110,6 @@ Item {
   property string pendingLabel: ""
   property string pendingUrl: ""
   property bool pendingVerified: false
-  // For an update: what the marketplace has and has not reviewed (see
-  // Model.updateReview), so the dialog can say exactly what is unreviewed.
-  property var pendingReview: null
   readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
 
   // Enabling a bar widget is a different question from the yes/no ones above:
@@ -135,8 +131,8 @@ Item {
   readonly property string placementMessage:
     "Where in the bar should " + pendingLabel + " go?"
 
-  readonly property string confirmCompareUrl: pendingKind === "update"
-    ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
+  // Kept for the shared confirmation component; updates never enter a dialog.
+  readonly property string confirmCompareUrl: ""
 
   readonly property string confirmMessage: {
     if (pendingKind === "add")
@@ -150,8 +146,6 @@ Item {
         + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
-    if (pendingKind === "update")
-      return Model.updateConfirmMessage(pendingLabel, pendingReview)
     if (pendingKind === "disable")
       return "Disable " + pendingLabel + "?\n\n"
         + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
@@ -181,6 +175,8 @@ Item {
     if (!stampedState.changed) return
     catalog = stampedState.entries
   }
+
+  onCatalogChanged: rows = Model.applyPinnedUpdates(rows, catalog)
 
   // ---- Loading ------------------------------------------------------------
 
@@ -251,7 +247,7 @@ Item {
     // freshly loaded HEAD as before, so a stale report still says nothing.
     if (pendingUpdateReport !== "")
       merged = Model.applyUpdateReport(merged, Model.parseUpdateReport(pendingUpdateReport))
-    rows = merged
+    rows = Model.applyPinnedUpdates(merged, catalog)
     rowsLoaded()
     finishOpenLoad()
   }
@@ -289,7 +285,7 @@ Item {
     checkingUpdates = false
     pendingUpdateReport = raw
     if (rows.length === 0) return
-    rows = Model.applyUpdateReport(rows, Model.parseUpdateReport(raw))
+    rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, Model.parseUpdateReport(raw)), catalog)
   }
 
   // ---- Catalog ------------------------------------------------------------
@@ -491,7 +487,6 @@ Item {
     pendingLabel = ""
     pendingUrl = ""
     pendingPlacementNeeded = false
-    pendingReview = null
   }
 
   // Confirmation answered. A bar widget still owes us one more answer, and it
@@ -503,15 +498,6 @@ Item {
       var row = Model.findRow(rows, pendingId)
       cancelPending()
       if (row) startDisable(row)
-      return
-    }
-    if (pendingKind === "update") {
-      // Re-gated: the list may have reloaded, or the check re-run, while the
-      // question was on screen. A row that is no longer behind has nothing
-      // to pull, and one that vanished must not be looked up by index.
-      var target = Model.findRow(rows, pendingId)
-      cancelPending()
-      if (canStartUpdate(target)) runUpdate(target)
       return
     }
     if (pendingKind === "add") {
@@ -537,40 +523,79 @@ Item {
     launchAdd(url, id, section, label)
   }
 
-  // An update is a fast-forward of a checkout the user already chose to
-  // trust, and it destroys nothing — but `--yes` skips the diff that
-  // `omarchy plugin update` would otherwise show, so the review happens
-  // here. Pulling to the commit the marketplace reviewed is one click;
-  // anything else asks first (see Model.updateReview). The gate is public so
-  // a surface can decide whether a click is even a request before it retires
-  // anything of its own on the strength of it.
+  // All entry points bind the displayed tuple, even programmatic callers.
+  // Cached catalog data chooses the request, never authorizes publication.
   function canStartUpdate(row) {
-    if (!row || !row.updatable || Model.upToDate(row) || busy
+    if (!row || row.pinnedEligible !== true || busy || pinnedProc.running
         || !root.loadProcessSettled() || !root.updateProcessSettled()) return false
-    return true
+    var current = Model.findRow(rows, row.id)
+    var request = Model.pinnedRequest(row, catalogLoaded ? catalog : null)
+    return !!current && !!request && current.headSha === row.headSha
+      && current.updateOrigin === row.updateOrigin && row.verifiedTargetSha === request.verifiedCommit
   }
 
   function startUpdate(row) {
     if (!canStartUpdate(row)) return
-    var review = Model.updateReview(row, catalogLoaded ? verifiedCommitsById : null)
-    if (!Model.updateNeedsConfirmation(review)) {
-      runUpdate(row)
-      return
-    }
-    pendingId = row.id
-    pendingLabel = row.name
-    pendingUrl = ""
-    pendingReview = review
-    pendingKind = "update"
+    runUpdate(row)
   }
 
+  readonly property string pinnedHelperPath:
+    decodeURIComponent(Qt.resolvedUrl("helpers/pinned_update.py").toString().replace(/^file:\/\//, ""))
+  property string pinnedOutput: ""
+  property bool pinnedExited: false
+  property bool pinnedOverflow: false
+
   function runUpdate(row) {
+    if (!canStartUpdate(row) || actionProc.running) return
+    var request = Model.pinnedRequest(row, catalogLoaded ? catalog : null)
     busyRowId = row.id
-    runAction("update", row.name, ["omarchy", "plugin", "update", row.id, "--yes"])
+    busyId = row.name
+    busyKind = "update"
+    pinnedOutput = ""
+    pinnedExited = false
+    pinnedOverflow = false
+    setStatus("Installing the verified snapshot; closing this window does not cancel it", false)
+    // Process.command is QStringList; avoid the environment property's
+    // QVariantHash binding, which this installed QML toolchain cannot type.
+    pinnedProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
+      "WAYLAND_DISPLAY=" + String(Quickshell.env("WAYLAND_DISPLAY") || ""),
+      "/usr/bin/python3", "-I", "-S", pinnedHelperPath, JSON.stringify(request)]
+    pinnedProc.running = true
+  }
+
+  function finishPinnedUpdate() {
+    if (!pinnedExited || busyKind !== "update") return
+    var outcome = "outcome unknown; inspect retained transactions"
+    var reason = ""
+    try {
+      var result = JSON.parse(pinnedOutput)
+      var allowed = ["updated", "updated; reload failed", "updated; finalization failed",
+        "unchanged; update refused", "unchanged; request refused"]
+      if (!pinnedOverflow && result && allowed.indexOf(result.status) >= 0) {
+        outcome = result.status
+        // The helper's own static prose; still bounded to printable ASCII here.
+        if (typeof result.reason === "string")
+          reason = result.reason.replace(/[^\x20-\x7e]/g, "").slice(0, 200)
+      }
+    } catch (error) {}
+    var changed = outcome.indexOf("updated") === 0
+    var label = busyId
+    busyKind = ""
+    busyId = ""
+    busyRowId = ""
+    pinnedOutput = ""
+    setStatus(outcome.indexOf("unchanged") === 0 && reason !== "" ? outcome + ": " + reason : outcome,
+              outcome !== "updated")
+    if (changed) {
+      pendingUpdateReport = ""
+      rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, {}), null)
+      root.requestFreshUpdateCycle()
+    } else root.reload()
+    root.actionFinished("update", label, outcome === "updated" ? 0 : 1)
   }
 
   function runAction(kind, label, command) {
-    if (busy || actionProc.running) return
+    if (kind === "update" || busy || actionProc.running) return
     busyKind = kind
     busyId = label
     setStatus("", false)
@@ -881,6 +906,28 @@ Item {
     }
   }
 
+  // The Python worker is independent of this observer's lifecycle. Destruction
+  // may kill the observer; the bounded worker keeps its journal and finalizes.
+  Process {
+    id: pinnedProc
+    clearEnvironment: true
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.pinnedOutput.length + chunk.length > 4096) {
+          root.pinnedOverflow = true
+          root.pinnedOutput = ""
+        } else if (!root.pinnedOverflow) root.pinnedOutput += chunk
+      }
+    }
+    stderr: SplitParser { splitMarker: ""; onRead: function(chunk) {} }
+    onExited: function(exitCode) {
+      root.pinnedExited = true
+      // Drain final raw chunks before interpreting the one bounded result.
+      Qt.callLater(root.finishPinnedUpdate)
+    }
+  }
+
   Process {
     id: actionProc
     stdout: StdioCollector { waitForEnd: true }
@@ -909,19 +956,11 @@ Item {
 
       if (exitCode === 0) {
         root.setStatus(Model.successMessage(kind, label), false)
-        if (kind === "update") {
-          // The successful pull invalidates the old report immediately. Load
-          // and the fresh check may finish in either order; HEAD equality makes
-          // both orders deterministic without serializing the processes.
-          root.pendingUpdateReport = ""
-          root.rows = Model.applyUpdateReport(root.rows, {})
-        }
       } else {
         root.setStatus(Model.failureMessage(kind, root.actionStderr, exitCode), true)
       }
 
-      if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()
-      else root.reload()
+      root.reload()
       root.actionFinished(kind, label, exitCode)
     }
   }

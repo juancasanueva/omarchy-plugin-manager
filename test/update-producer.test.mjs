@@ -272,13 +272,22 @@ test("queued post-update cycle reaches fresh HEAD-bound evidence without a manua
 
 test("successful update queues the fresh cycle and update entry points enforce settled processes", () => {
   const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const clear = source.indexOf('if (kind === "update") {', source.indexOf("id: actionProc"))
-  const fresh = source.indexOf(
-    'if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()', clear)
-  assert.notEqual(clear, -1)
-  assert.ok(fresh > clear)
-  assert.equal(source.split(
-    'if (exitCode === 0 && kind === "update") root.requestFreshUpdateCycle()').length - 1, 1)
+  const modelSource = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
+  const Model = Function(`${modelSource}; return {applyPinnedUpdates, applyUpdateReport}`)()
+  const begin = source.indexOf("function finishPinnedUpdate()")
+  const bodyEnd = source.indexOf("\n  }", begin) + 4
+  for (const outcome of ["updated", "updated; reload failed", "updated; finalization failed", "unchanged; update refused", "invalid"]) {
+    let refreshes = 0, reloads = 0
+    const root = { pinnedExited: true, busyKind: "update", busyId: "Thing", busyRowId: "thing",
+      pinnedOutput: JSON.stringify({ status: outcome, backup: "" }), pinnedOverflow: false,
+      pendingUpdateReport: "old", rows: [], setStatus(text, error) { this.status = text; this.error = error },
+      requestFreshUpdateCycle() { refreshes++ }, reload() { reloads++ }, actionFinished() {} }
+    Function("root", "Model", `with(root) { ${source.slice(begin, bodyEnd)}; finishPinnedUpdate() }`)(root, Model)
+    assert.equal(root.busyKind, "")
+    assert.equal(refreshes, outcome.startsWith("updated") ? 1 : 0)
+    assert.equal(reloads, outcome.startsWith("updated") ? 0 : 1)
+    assert.equal(root.error, outcome !== "updated")
+  }
 
   const start = source.indexOf("function canStartUpdate(row)")
   const end = source.indexOf("\n  }", start)

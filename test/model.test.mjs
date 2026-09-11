@@ -29,8 +29,8 @@ const Model = new Function(
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
-    parseUpdateReport, applyUpdateReport, updateBadge, updateCompareUrl,
-    catalogVerifiedCommitsById, updateReview, updateNeedsConfirmation, updateConfirmMessage,
+    parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip,
+    updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
     githubNavigationRequest, releaseProbeCommand,
@@ -46,6 +46,195 @@ const Model = new Function(
     catalogNeedsPlacement, browseModalFocusOwner, catalogPlacementConfirmationNote
   }`
 )()
+
+test("Browse reads the canonical catalog endpoint; execution reauthorizes separately", () => {
+  const endpoint = Function(source + "; return CATALOG_URL")()
+  assert.equal(endpoint, "https://plugins.omarchy.org/catalog.json")
+  // Python's offline subprocess contract separately pins the same endpoint
+  // and rejects even valid JSON returned with a redirect status.
+})
+
+test("pinned update eligibility binds raw repo, verified status, unique id and full SHA", () => {
+  const pinned = Function(source + "; return { pinnedRequest, applyPinnedUpdates }")()
+  const base = "a".repeat(40), target = "b".repeat(40)
+  const raw = { id: "acme.plugin", repo: "https://github.com/acme/plugin",
+    sourceType: "community", verificationStatus: "verified", verificationCommit: target }
+  const rows = [{ id: raw.id, gitManaged: true, updatable: true, headSha: base,
+    updateOrigin: "git@github.com:acme/plugin.git", remote: raw.repo,
+    localSha: base, remoteSha: "c".repeat(40), updateChecked: true, behind: true,
+    localVersion: "1.0", remoteVersion: "2.0", versionChanged: true }]
+  const entries = plugins => Model.catalogEntries({ plugins }, {})
+  const request = pinned.pinnedRequest(rows[0], entries([raw]))
+  assert.deepEqual(request, { schemaVersion: 1, id: raw.id, repository: raw.repo,
+    verifiedCommit: target, expectedLocalHead: base })
+  const projected = pinned.applyPinnedUpdates(rows, entries([raw]))[0]
+  assert.equal(projected.remoteSha, rows[0].remoteSha, "upstream evidence is not the update target")
+  assert.equal(projected.verifiedTargetSha, target)
+  assert.equal(projected.behind, true)
+  assert.equal(projected.versionChanged, true, "version information still describes upstream")
+  assert.equal(pinned.applyPinnedUpdates([{ ...rows[0], headSha: target }], entries([raw]))[0].pinnedEligible, false)
+  for (const change of [{ verificationStatus: "unverified" }, { verificationCommit: "b".repeat(64) },
+    { repo: raw.repo + "?x" }, { repo: "https://github.com/other/plugin" },
+    { id: "acme.<plugin>" }, { sourceType: "builtin" }]) {
+    assert.equal(pinned.pinnedRequest(rows[0], entries([{ ...raw, ...change }])), null)
+  }
+  assert.equal(pinned.pinnedRequest(rows[0], entries([raw, raw])), null)
+  assert.equal(pinned.pinnedRequest({ ...rows[0], updateOrigin: "", clonedFrom: raw.repo }, entries([raw])), null)
+  assert.equal(pinned.pinnedRequest(rows[0], null), null)
+  assert.equal(pinned.applyPinnedUpdates(rows, null)[0].behind, true)
+})
+
+function upstreamFixture(verified = "a".repeat(40)) {
+  const head = "a".repeat(40), tip = "c".repeat(40)
+  const row = { id: "acme.plugin", name: "Plugin", sourceDir: "/plugins/acme", updatable: true,
+    gitManaged: true, headSha: head, localVersion: "1.0", remote: "https://github.com/acme/plugin",
+    updateOrigin: "https://github.com/acme/plugin" }
+  const catalog = Model.catalogEntries({ plugins: [{ id: row.id, repo: row.remote,
+    sourceType: "community", verificationStatus: "verified", verificationCommit: verified }] }, {})
+  const report = { [row.sourceDir]: { localSha: head, remoteSha: tip,
+    localVersion: "1.0", remoteVersion: "2.0" } }
+  return { row, catalog, report, head, tip }
+}
+
+test("all detected upstream changes survive verification projection and remain discoverable", () => {
+  const { row, catalog, report, head, tip } = upstreamFixture()
+  const upstream = Model.applyUpdateReport([row], report)[0]
+  for (const entries of [catalog, [], Model.catalogEntries({ plugins: [{ id: row.id,
+    repo: row.remote, sourceType: "community", verificationStatus: "unverified" }] }, {})]) {
+    const projected = Model.applyPinnedUpdates([upstream], entries)[0]
+    for (const key of ["localSha", "remoteSha", "localVersion", "remoteVersion", "updateChecked", "versionChanged"])
+      assert.equal(projected[key], upstream[key], key)
+    assert.equal(projected.upstreamBehind, true)
+    assert.equal(projected.pinnedEligible, false)
+    assert.equal(Model.countBehind([projected]), 1)
+    assert.equal(Model.filterRows([projected], "all", "update", "").length, 1)
+    assert.equal(Model.upToDate(projected), false)
+    assert.match(Model.pinnedUpdateTooltip(projected), /Upstream changes — not verified/)
+    assert.match(Model.pinnedUpdateTooltip(projected), /disabled/i)
+    assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${tip}`)
+  }
+})
+
+test("verified-only discovery never fabricates branch evidence or survives catalog removal", () => {
+  const target = "b".repeat(40)
+  const { row, catalog, head } = upstreamFixture(target)
+  const unknown = Model.applyUpdateReport([row], {})[0]
+  const projected = Model.applyPinnedUpdates([unknown], catalog)[0]
+  assert.equal(projected.pinnedEligible, true)
+  assert.equal(Model.countBehind([projected]), 1)
+  assert.equal(Model.filterRows([projected], "all", "update", "").length, 1)
+  assert.equal(projected.updateChecked, false)
+  assert.equal(projected.remoteSha, "")
+  assert.equal(projected.localSha, "")
+  assert.equal(projected.upstreamBehind, false)
+  assert.equal(projected.verifiedTargetSha, target)
+  assert.match(Model.pinnedUpdateTooltip(projected), /Upstream check unavailable/)
+  assert.match(Model.pinnedUpdateTooltip(projected), /Verified snapshot bbbbbbb available/)
+  assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${target}`)
+  assert.deepEqual(Model.updateReleaseCandidates(projected), [])
+  const revoked = Model.applyPinnedUpdates([projected], [])[0]
+  assert.equal(revoked.behind, false)
+  assert.equal(revoked.verifiedTargetSha, "")
+  assert.equal(Model.upToDate(revoked), false)
+})
+
+test("stale and failed reports stay unknown even at the verified snapshot", () => {
+  const { row, catalog, report } = upstreamFixture()
+  const previous = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog)
+  for (const failed of [{}, { [row.sourceDir]: { ...report[row.sourceDir], remoteSha: "" } },
+    { [row.sourceDir]: { ...report[row.sourceDir], localSha: "b".repeat(40) } }]) {
+    const fresh = Model.applyPinnedUpdates(Model.applyUpdateReport(previous, failed), catalog)[0]
+    assert.equal(fresh.updateChecked, false)
+    assert.equal(fresh.behind, false)
+    assert.equal(fresh.remoteSha, "")
+    assert.equal(Model.upToDate(fresh), false)
+    assert.equal(Model.updateCompareUrl(fresh), "")
+    assert.match(Model.pinnedUpdateTooltip(fresh), /Upstream check unavailable/)
+  }
+})
+
+test("catalog, installed load and branch report converge in all arrival orders", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const { row, catalog, report, head, tip } = upstreamFixture()
+  const rawLoad = `===list===\n${JSON.stringify([{ id: row.id }])}\n===catalog===\n`
+    + `${JSON.stringify([{ id: row.id, sourceDir: row.sourceDir }])}\n===git===\n`
+    + `${JSON.stringify({ path: row.sourceDir, remote: row.remote, headSha: head, exactTag: "" })}`
+    + "\n===manifest===\n[]"
+  const rawReport = JSON.stringify({ path: row.sourceDir, ...report[row.sourceDir] })
+  for (const order of ["CLR", "CRL", "LCR", "LRC", "RCL", "RLC"]) {
+    const state = { rows: [], catalog: [], loading: false, loadError: "", loadRetried: false,
+      pendingUpdateReport: "", checkingUpdates: false, rowsLoaded() {}, finishOpenLoad() {} }
+    const api = Function("Model", "state", `with (state) {
+      ${qmlFunction(store, "applyLoad")}; ${qmlFunction(store, "applyUpdateReport")};
+      return { applyLoad, applyUpdateReport }
+    }`)(Model, state)
+    for (const event of order) {
+      if (event === "L") api.applyLoad(rawLoad)
+      if (event === "R") api.applyUpdateReport(rawReport)
+      if (event === "C") {
+        state.catalog = catalog
+        state.rows = Model.applyPinnedUpdates(state.rows, state.catalog)
+      }
+    }
+    const projected = state.rows[0]
+    assert.equal(projected.remoteSha, tip, order)
+    assert.equal(projected.verifiedTargetSha, head, order)
+    assert.equal(projected.pinnedEligible, false, order)
+    assert.equal(Model.countBehind(state.rows), 1, order)
+    api.applyLoad(rawLoad.replace(head, "d".repeat(40)))
+    assert.equal(state.rows[0].updateChecked, false, "old HEAD report cannot attach to reload")
+    assert.equal(state.rows[0].upstreamBehind, false)
+  }
+})
+
+test("row and detail presentation name upstream and verified comparisons independently", () => {
+  const presentation = Function(source + "; return { updateStatus, updateCompareLabel }")()
+  const { row, catalog, report, head, tip } = upstreamFixture("b".repeat(40))
+  const projected = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog)[0]
+  assert.match(presentation.updateStatus(projected), /Upstream changes — not verified/)
+  assert.match(presentation.updateStatus(projected), /Verified snapshot bbbbbbb available/)
+  assert.equal(Model.pinnedRequest(projected, catalog).verifiedCommit, "b".repeat(40))
+  assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${tip}`)
+  assert.match(presentation.updateCompareLabel(projected), /upstream.*aaaaaaa.*ccccccc/i)
+  const onlyVerified = Model.applyPinnedUpdates(Model.applyUpdateReport([row], {}), catalog)[0]
+  assert.match(presentation.updateCompareLabel(onlyVerified), /verified.*aaaaaaa.*bbbbbbb/i)
+  const current = Model.applyPinnedUpdates(Model.applyUpdateReport([row], {
+    [row.sourceDir]: { ...report[row.sourceDir], remoteSha: head }
+  }), upstreamFixture().catalog)[0]
+  assert.equal(presentation.updateStatus(current), "No upstream changes")
+  assert.equal(Model.upToDate(current), true)
+  const reviewedTip = Model.applyPinnedUpdates([projected], upstreamFixture(tip).catalog)[0]
+  assert.doesNotMatch(presentation.updateStatus(reviewedTip), /not verified/)
+  for (const file of ["PluginRow.qml", "InstalledListRow.qml", "InstalledDetails.qml"]) {
+    const qml = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+    assert.match(qml, /Model\.updateStatus\(/, file)
+    if (file !== "InstalledListRow.qml") {
+      assert.match(qml, /Model\.updateCompareLabel\(/, file)
+      assert.match(qml, /root\.row\.pinnedEligible === true/, file)
+      const gate = qml.match(/enabled: (root\.actionsEnabled && root\.updateEnabled[^\n]+)/)[1]
+      for (const candidate of [projected, Model.applyPinnedUpdates([projected], [])[0]]) {
+        const root = { row: candidate, actionsEnabled: true, updateEnabled: true,
+          upToDate: Model.upToDate(candidate) }
+        assert.equal(Function("root", `return ${gate}`)(root), candidate.pinnedEligible, file)
+      }
+      if (file === "PluginRow.qml") {
+        let opened
+        Function("compareUrl", "githubNavigationRequested", `${qmlFunction(qml, "openComparison")}; openComparison()`)(
+          Model.updateCompareUrl(projected), (candidates, url) => { opened = { candidates, url } })
+        assert.deepEqual(opened, { candidates: [], url: Model.updateCompareUrl(projected) })
+      } else {
+        const fields = qml.replace("readonly property var fieldRows:", "function fieldRows()")
+        const state = { row: projected, versionText: "", repoLabel: "", updateText: presentation.updateStatus(projected) }
+        const values = Function("Model", "state", `with (state) {
+          ${qmlFunction(fields, "fieldRows")}; return fieldRows()
+        }`)({ ...Model, ...presentation }, state)
+        assert.deepEqual(values.find(field => field.label === "Changes"), {
+          label: "Changes", value: presentation.updateCompareLabel(projected), link: Model.updateCompareUrl(projected)
+        })
+      }
+    }
+  }
+})
 
 const CATALOG_DOWNLOAD_LIMIT = 8 * 1024 * 1024
 const STATS_DOWNLOAD_LIMIT = 1024 * 1024
@@ -860,58 +1049,6 @@ test("catalogEntries keeps the marketplace's reviewed commit, normalized, and dr
   assert.equal(entries.find(e => e.id === "a.one").verifiedCommit, "2d9321902aa0176d47dcdb21d76884bca6a34f73")
   assert.equal(entries.find(e => e.id === "a.two").verifiedCommit, "")
   assert.equal(entries.find(e => e.id === "a.three").verifiedCommit, "")
-  const byId = Model.catalogVerifiedCommitsById(entries)
-  assert.deepEqual(Object.keys(byId), ["a.one"])
-  assert.equal(Object.getPrototypeOf(byId), null)
-  assert.equal(Model.catalogVerifiedCommitsById([{ id: "__proto__", verifiedCommit: "2d9321902aa0176d47dcdb21d76884bca6a34f73" }]).__proto__,
-    "2d9321902aa0176d47dcdb21d76884bca6a34f73")
-})
-
-test("updateReview is one click only when the remote is the reviewed snapshot", () => {
-  const verified = "2d9321902aa0176d47dcdb21d76884bca6a34f73"
-  const ahead = "f2477cbe21a7270fdd489ce408b5dc74aa1a763f"
-  const commits = Object.assign(Object.create(null), { "a.one": verified })
-  const behind = (remoteSha, id = "a.one") => ({ id, behind: true, updateChecked: true, remoteSha })
-
-  assert.equal(Model.updateReview(behind(verified), commits).kind, "verified")
-  assert.equal(Model.updateNeedsConfirmation(Model.updateReview(behind(verified), commits)), false)
-
-  const unreviewed = Model.updateReview(behind(ahead), commits)
-  assert.equal(unreviewed.kind, "unreviewed")
-  assert.equal(unreviewed.verifiedCommit, verified)
-  assert.equal(unreviewed.remoteSha, ahead)
-  assert.equal(Model.updateNeedsConfirmation(unreviewed), true)
-
-  assert.equal(Model.updateReview(behind(ahead, "b.two"), commits).kind, "unlisted")
-  // No catalog is not "not listed": it is not known, and unknown asks.
-  assert.equal(Model.updateReview(behind(ahead), null).kind, "unknown")
-  // Nothing to pull, or a remote the check could not name, is no question.
-  assert.equal(Model.updateReview({ id: "a.one", behind: false, remoteSha: ahead }, commits).kind, "none")
-  assert.equal(Model.updateReview({ id: "a.one", behind: true, remoteSha: "" }, commits).kind, "none")
-  assert.equal(Model.updateReview({ id: "a.one", behind: true, remoteSha: "junk" }, commits).kind, "none")
-  assert.equal(Model.updateNeedsConfirmation(null), true)
-})
-
-test("updateConfirmMessage keeps the warning without URL prose", () => {
-  const verified = "2d9321902aa0176d47dcdb21d76884bca6a34f73"
-  const ahead = "f2477cbe21a7270fdd489ce408b5dc74aa1a763f"
-  const compare = `https://github.com/acme/thing/compare/${verified}...${ahead}`
-  const unreviewed = Model.updateConfirmMessage("Thing", { kind: "unreviewed", verifiedCommit: verified, remoteSha: ahead }, compare)
-  assert.match(unreviewed, /^Update Thing\?\n\n/)
-  assert.match(unreviewed, /reviewed this plugin at 2d93219\. Its repository is now at f2477cb, and nobody has reviewed/)
-  assert.match(unreviewed, /Plugins run unsandboxed inside omarchy-shell\./)
-  assert.ok(unreviewed.endsWith("Update only if you are willing to run code you have not looked at."))
-  assert.doesNotMatch(unreviewed, /https:|The changes:/)
-  assert.equal(Model.updateConfirmMessage.length, 2)
-
-  const unlisted = Model.updateConfirmMessage("Thing", { kind: "unlisted", verifiedCommit: "", remoteSha: ahead }, "")
-  assert.match(unlisted, /not listed on the marketplace, so nothing about the new commit \(f2477cb\) has been reviewed/)
-  assert.doesNotMatch(unlisted, /The changes:/)
-
-  const unknown = Model.updateConfirmMessage("Thing", { kind: "unknown", verifiedCommit: "", remoteSha: ahead }, "javascript:alert(1)")
-  assert.match(unknown, /catalog is not loaded/)
-  assert.doesNotMatch(unknown, /javascript:/)
-  assert.match(Model.updateConfirmMessage("Thing", null, ""), /catalog is not loaded/)
 })
 
 // Same brace-balanced extraction idiom as update-producer.test.mjs; no QML runtime.
@@ -927,58 +1064,58 @@ function qmlFunction(source, name) {
   assert.fail(`Unterminated QML function ${name}`)
 }
 
-test("confirmation comparison is update-only, live, and cleared by cancellation", () => {
+test("confirmation cannot supply an unreviewed update bypass", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const expression = store.match(/readonly property string confirmCompareUrl:\s*([^\n]+)\n\s*([^\n]+)/)
-  assert.ok(expression, "store exposes comparison separately")
-  const row = { id: "thing", behind: true, localSha: "a".repeat(40), remoteSha: "b".repeat(40), remote: "https://github.com/Acme/Thing.git" }
-  const state = { rows: [row], pendingKind: "update", pendingId: row.id,
-    pendingLabel: "Thing", pendingUrl: "", pendingPlacementNeeded: false, pendingReview: {} }
-  const url = Function("Model", "state", `with (state) { return (${expression[1]} ${expression[2]}) }`)
-  assert.equal(url(Model, state), `https://github.com/Acme/Thing/compare/${row.localSha}...${row.remoteSha}`)
-  for (const kind of ["add", "remove", "disable", "place", ""]) {
-    state.pendingKind = kind
-    assert.equal(url(Model, state), "")
-  }
-  state.pendingKind = "update"
-  for (const change of [{ remote: "https://evil.test/a/b" }, { remoteSha: "invalid" }, { behind: false }, { id: "missing" }]) {
-    state.rows = [{ ...row, ...change }]
-    assert.equal(url(Model, state), "")
-  }
-  state.rows = [row]
-  Function("state", `with (state) { ${qmlFunction(store, "cancelPending")}; cancelPending() }`)(state)
-  assert.equal(url(Model, state), "")
-  assert.equal(state.pendingReview, null)
+  const state = { pendingKind: "update", pendingId: "thing", calls: 0,
+    runUpdate() { this.calls++ }, runAction() { this.calls++ } }
+  Function("state", `with (state) { ${qmlFunction(store, "confirmPending")}; confirmPending() }`)(state)
+  assert.equal(state.calls, 0)
+  assert.match(store, /readonly property string confirmCompareUrl: ""/)
 })
 
-test("confirmation policy retains verified fast path and rechecks pending updates", () => {
-  const source = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const row = { id: "thing", name: "Thing", behind: true, remoteSha: "b".repeat(40) }
-  const calls = []
-  const state = { rows: [row], pendingKind: "", pendingId: "", pendingLabel: "", pendingUrl: "",
-    pendingReview: null, pendingPlacementNeeded: false, catalogLoaded: true,
-    verifiedCommitsById: { thing: row.remoteSha }, canStartUpdate: target => target?.behind === true,
-    runUpdate: target => calls.push(target.id) }
-  const names = ["startUpdate", "confirmPending", "cancelPending"]
-  Object.assign(state, Function("Model", "state", `with (state) {
-    ${names.map(name => qmlFunction(source, name)).join("\n")}
-    return {${names.join(",")}}
-  }`)(Model, state))
-  state.startUpdate(row)
-  assert.deepEqual(calls, [row.id])
-  assert.equal(state.pendingKind, "")
-  state.catalogLoaded = false
-  state.startUpdate(row)
-  assert.equal(state.pendingKind, "update")
-  assert.equal(calls.length, 1)
-  state.rows = []
-  state.confirmPending()
-  assert.equal(calls.length, 1, "vanished row must not update")
-  state.rows = [row]
-  state.startUpdate(row)
-  state.confirmPending()
-  assert.deepEqual(calls, [row.id, row.id])
-  assert.equal(state.pendingKind, "")
+test("both update entry points require the displayed tuple and settled processes", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const model = Function(source + "; return { pinnedRequest, findRow }")()
+  const target = "b".repeat(40), base = "a".repeat(40)
+  const row = { id: "thing", name: "Thing", headSha: base, remoteSha: "c".repeat(40), verifiedTargetSha: target,
+    gitManaged: true, pinnedEligible: true, updateOrigin: "https://github.com/acme/plugin" }
+  const catalog = [{ id: row.id, updateSnapshot: { id: row.id, repository: row.updateOrigin, verifiedCommit: target } }]
+  const pinnedProc = { running: false }, actionProc = { running: false }
+  const state = { rows: [row], catalog, catalogLoaded: true, busy: false,
+    busyKind: "", busyId: "", busyRowId: "", pinnedOutput: "", pinnedExited: false,
+    pinnedOverflow: false, pinnedHelperPath: "/plugin/helpers/pinned_update.py",
+    setStatus() {}, loadProcessSettled: () => true, updateProcessSettled: () => true }
+  state.root = state
+  const names = ["canStartUpdate", "startUpdate", "runUpdate"]
+  Object.assign(state, Function("Model", "state", "pinnedProc", "actionProc", "Quickshell", `with (state) {
+    ${names.map(name => qmlFunction(store, name)).join("\n")}; return {${names.join(",")}}
+  }`)(model, state, pinnedProc, actionProc, { env: key => key === "WAYLAND_DISPLAY" ? "wayland-23" : "" }))
+  state.runUpdate(row)
+  assert.deepEqual(pinnedProc.command.slice(0, 9), ["/usr/bin/env", "-i", "--",
+    "PATH=/usr/bin:/bin", "WAYLAND_DISPLAY=wayland-23", "/usr/bin/python3", "-I", "-S", state.pinnedHelperPath])
+  assert.equal(JSON.parse(pinnedProc.command[9]).verifiedCommit, target)
+  const environmentProbe = spawnSync(pinnedProc.command[0], pinnedProc.command.slice(1, 8).concat([
+    "-c", "import os,json; print(json.dumps(dict(os.environ)))"
+  ]), { env: { PINNED_UNWANTED: "discard" }, encoding: "utf8", timeout: 2000, maxBuffer: 4096 })
+  assert.equal(environmentProbe.status, 0, environmentProbe.stderr)
+  const environment = JSON.parse(environmentProbe.stdout)
+  assert.equal(environment.PATH, "/usr/bin:/bin")
+  assert.equal(environment.WAYLAND_DISPLAY, "wayland-23")
+  assert.equal(environment.PINNED_UNWANTED, undefined)
+  for (const change of [{ catalogLoaded: false }, { catalog: [] }, { busy: true },
+    { rows: [] }, { loadProcessSettled: () => false }, { updateProcessSettled: () => false }]) {
+    const saved = { ...state }
+    Object.assign(state, change)
+    pinnedProc.running = false
+    state.runUpdate(row)
+    assert.equal(pinnedProc.running, false)
+    Object.assign(state, saved)
+  }
+  pinnedProc.running = false
+  state.runUpdate({ ...row, verifiedTargetSha: "c".repeat(40) })
+  assert.equal(pinnedProc.running, false, "stale display cannot silently retarget")
+  state.runUpdate({ ...row, pinnedEligible: false })
+  assert.equal(pinnedProc.running, false, "upstream availability does not authorize execution")
 })
 
 test("action confirmation keyboard skips absent action and isolates present action", () => {
@@ -1086,22 +1223,14 @@ test("both confirmation panes route View changes without answering the question"
   }
 })
 
-test("the store gates Update on the reviewed snapshot and asks otherwise", () => {
+test("pinned updates use a dedicated bounded process, not the host HEAD updater", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(store, /readonly property var verifiedCommitsById: Model\.catalogVerifiedCommitsById\(catalog\)/)
-  assert.match(store, /verificationCommit\}\]\}/)
-  assert.match(store, /projection_schema=2;/)
-  const start = store.slice(store.indexOf("function startUpdate(row)"), store.indexOf("function runUpdate(row)"))
-  assert.match(start, /if \(!canStartUpdate\(row\)\) return/)
-  assert.match(start, /Model\.updateReview\(row, catalogLoaded \? verifiedCommitsById : null\)/)
-  assert.match(start, /if \(!Model\.updateNeedsConfirmation\(review\)\) \{\s*runUpdate\(row\)\s*return\s*\}/)
-  assert.match(start, /pendingReview = review\s*pendingKind = "update"/)
-  // Confirmed updates are re-gated, by id, against the live rows.
-  assert.match(store, /if \(pendingKind === "update"\) \{[\s\S]*?Model\.findRow\(rows, pendingId\)\s*cancelPending\(\)\s*if \(canStartUpdate\(target\)\) runUpdate\(target\)/)
-  assert.match(store, /if \(pendingKind === "update"\)\s*return Model\.updateConfirmMessage\(pendingLabel, pendingReview\)/)
-  assert.match(store, /pendingReview = null/)
-  // Only the run path carries --yes, and it is reached only through the gate.
-  assert.equal(store.split('"omarchy", "plugin", "update", row.id, "--yes"').length - 1, 1)
+  assert.doesNotMatch(store, /"omarchy", "plugin", "update"|pendingKind = "update"/)
+  const process = store.slice(store.indexOf("id: pinnedProc"), store.indexOf("id: actionProc"))
+  assert.match(process, /clearEnvironment: true/)
+  assert.match(process, /splitMarker: ""/)
+  assert.doesNotMatch(process, /StdioCollector/)
+  assert.match(store, /Qt.resolvedUrl\("helpers\/pinned_update.py"\)/)
 })
 
 test("markInstalled copies keep the derived search text and timestamp", () => {
@@ -2842,7 +2971,7 @@ test("a row's update button spins while that row is being updated", () => {
   // the panel reads it through an alias.
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   assert.match(store, /property string busyRowId: ""/)
-  assert.match(store, /function startUpdate\(row\) \{[\s\S]*?busyRowId = row\.id[\s\S]*?runAction\("update"/)
+  assert.match(store, /function runUpdate\(row\) \{[\s\S]*?busyRowId = row\.id[\s\S]*?pinnedProc\.running = true/)
   assert.match(store, /root\.busyId = ""\s+root\.busyRowId = ""/)
   assert.match(panel, /property alias busyRowId: store\.busyRowId/)
   assert.equal(panel.split('updating: root.busyKind === "update" && root.busyRowId === modelData.id').length - 1, 1)
@@ -2877,7 +3006,7 @@ test("an up-to-date row's update button is disabled and never spins", () => {
   // Enter on a selected row goes through the same gate, which the store owns
   // so both windows refuse the same rows.
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(store, /function canStartUpdate\(row\) \{\s+if \(!row \|\| !row\.updatable \|\| Model\.upToDate\(row\) \|\| busy/)
+  assert.match(store, /function canStartUpdate\(row\) \{\s+if \(!row \|\| row\.pinnedEligible !== true \|\| busy/)
   assert.match(panel, /function startUpdate\(row\) \{\s+if \(!store\.canStartUpdate\(row\)\) return\s+revokeReleaseNavigation\(\)\s+store\.startUpdate\(row\)/)
 })
 
