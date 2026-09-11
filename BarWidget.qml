@@ -1,7 +1,9 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "PopupBridge.js" as PopupBridge
 
 // Bar entry for the plugin manager: one puzzle-piece icon that opens the
 // panel listing every plugin the shell discovered.
@@ -28,6 +30,14 @@ BarWidget {
   // The loaded panel owns update evidence and the process that produces it.
   // Project its confirmed count instead of starting another check for the bar.
   readonly property int updateCount: panelLoader.item ? panelLoader.item.behindCount : 0
+
+  // The output this bar instance draws on, so the expanded window can hand
+  // back to the popup on the same monitor (see PopupBridge.js).
+  readonly property string screenName: root.QsWindow.window && root.QsWindow.window.screen
+    ? String(root.QsWindow.window.screen.name || "") : ""
+
+  Component.onCompleted: PopupBridge.register(root)
+  Component.onDestruction: PopupBridge.unregister(root)
 
   function open() {
     if (panelLoader.item) panelLoader.item.open()

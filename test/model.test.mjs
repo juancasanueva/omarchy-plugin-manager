@@ -4504,7 +4504,11 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /function open\(payloadJson\) \{[\s\S]*?activeTab = Model\.expandedTabFromPayload\(payloadJson\)[\s\S]*?opened = true[\s\S]*?initialLoad\.restart\(\)/)
   assert.match(expanded, /function close\(\) \{[\s\S]*?opened = false/)
   assert.match(expanded, /function dismiss\(\) \{\s*if \(shell && typeof shell\.hide === "function"\) shell\.hide\(pluginId\)\s*else close\(\)\s*\}/)
-  assert.match(expanded, /function collapse\(\) \{\s*dismiss\(\)\s*if \(shell && shell\.bar && typeof shell\.bar\.summonBarWidget === "function"\) shell\.bar\.summonBarWidget\(pluginId\)\s*\}/)
+  // A panel plugin's scoped shell has no bar and summon() routes here, so the
+  // way back crosses to the bar widget through the shared PopupBridge library.
+  assert.match(expanded, /import "PopupBridge\.js" as PopupBridge/)
+  assert.match(expanded, /function collapse\(\) \{\s*var screenName = targetScreenName\s*dismiss\(\)\s*PopupBridge\.openPopup\(screenName\)\s*\}/)
+  assert.doesNotMatch(expanded, /summonBarWidget/)
 
   // Chrome: title, tabs, refresh, and the way back to the popup.
   assert.match(expanded, /iconText: "󰊔"/)
@@ -4583,3 +4587,34 @@ test("InstalledDetails shows a row's facts and the same four actions as its row"
   assert.match(details, /text: "Remove"[\s\S]*?accent: Color\.urgent/)
 })
 
+
+test("PopupBridge hands the expanded window back to the popup on its own output", async () => {
+  const source = readFileSync(new URL("../PopupBridge.js", import.meta.url), "utf8")
+  assert.match(source, /^\.pragma library$/m)
+  const bridge = Function(source.replace(/^\.pragma library$/m, "") + "; return { register, unregister, openPopup }")()
+  const opened = []
+  const left = { screenName: "DP-1", open: () => opened.push("DP-1") }
+  const right = { screenName: "HDMI-A-1", open: () => opened.push("HDMI-A-1") }
+  assert.equal(bridge.openPopup("DP-1"), false, "nothing registered yet")
+  bridge.register(left)
+  bridge.register(right)
+  bridge.register(right)
+  assert.equal(bridge.openPopup("HDMI-A-1"), true)
+  assert.equal(bridge.openPopup("DP-1"), true)
+  // An output that no longer exists falls back to the first live widget.
+  assert.equal(bridge.openPopup("DP-9"), true)
+  assert.equal(bridge.openPopup(""), true)
+  assert.deepEqual(opened, ["HDMI-A-1", "DP-1", "DP-1", "DP-1"])
+  bridge.unregister(left)
+  bridge.unregister(left)
+  assert.equal(bridge.openPopup("DP-1"), true)
+  assert.equal(opened[opened.length - 1], "HDMI-A-1")
+  bridge.unregister(right)
+  assert.equal(bridge.openPopup("DP-1"), false)
+
+  const barWidget = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
+  assert.match(barWidget, /import "PopupBridge\.js" as PopupBridge/)
+  assert.match(barWidget, /readonly property string screenName: root\.QsWindow\.window && root\.QsWindow\.window\.screen/)
+  assert.match(barWidget, /Component\.onCompleted: PopupBridge\.register\(root\)/)
+  assert.match(barWidget, /Component\.onDestruction: PopupBridge\.unregister\(root\)/)
+})

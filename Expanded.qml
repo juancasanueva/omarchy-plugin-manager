@@ -4,6 +4,7 @@ import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "PopupBridge.js" as PopupBridge
 
 // The plugin manager with room: the same inventory and the same marketplace
 // as the popup, as a full-size overlay the shell summons on request.
@@ -99,12 +100,15 @@ Item {
     else close()
   }
 
-  // Back to the popup: hide this window, then ask the bar for its widget.
-  // The bar finds it by module name, so the routing change that sends
-  // summon() here does not get in the way.
+  // Back to the popup: hide this window, then open the popup on the output
+  // this window was summoned to. The scoped shell a panel plugin receives has
+  // no bar reference, and shell.summon routes this plugin to the panel
+  // loader, so the request crosses to the bar widget through PopupBridge.
+  // Same order as the popup's expand(): the two are never up together.
   function collapse() {
+    var screenName = targetScreenName
     dismiss()
-    if (shell && shell.bar && typeof shell.bar.summonBarWidget === "function") shell.bar.summonBarWidget(pluginId)
+    PopupBridge.openPopup(screenName)
   }
 
   // ---- Shared state, mirrored from the store ---------------------------------
