@@ -90,9 +90,12 @@ Rectangle {
           anchors.verticalCenter: parent.verticalCenter
           readonly property bool behind: root.row ? root.row.behind === true : false
           readonly property bool current: Model.upToDate(root.row)
+          // Orange only when a verified snapshot is installable; grey says the
+          // author moved but nothing reviewed is available yet.
+          readonly property bool installable: root.row ? root.row.pinnedEligible === true : false
           visible: behind || current
           text: behind ? "󰜷" : "󰸞"
-          color: behind ? "#f28c28" : "#5fb865"
+          color: behind ? (installable ? "#f28c28" : Color.muted) : "#5fb865"
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
           font.bold: true
@@ -165,15 +168,33 @@ Rectangle {
       }
     }
 
-    Text {
-      textFormat: Text.PlainText
+    Row {
       width: parent.width
       visible: !!root.row && root.row.behind === true
-      text: Model.updateStatus(root.row)
-      color: root.secondaryForeground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      wrapMode: Text.WordWrap
+      spacing: Style.space(6)
+      // Orange only when a verified snapshot is installable; grey says the
+      // author moved but nothing reviewed is available yet.
+      readonly property bool installable: !!root.row && root.row.pinnedEligible === true
+      readonly property color markColor: installable ? "#f28c28" : Color.muted
+
+      Text {
+        textFormat: Text.PlainText
+        text: "󰜷"
+        color: parent.markColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width - x
+        text: Model.updateStatus(root.row)
+        color: parent.installable ? parent.markColor : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
     }
 
     // Two lines at most: the pane on the right shows the whole description,

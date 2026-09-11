@@ -3992,7 +3992,12 @@ test("the small panel row marks updatable plugins and leaves unknown states unma
   assert.match(row, /readonly property bool upToDate: Model\.upToDate\(row\)/)
   assert.match(mark, /visible: root\.hasUpdate \|\| root\.upToDate/)
   assert.match(mark, /text: root\.hasUpdate \? "󰜷" : "󰸞"/)
-  assert.match(mark, /color: root\.hasUpdate \? "#f28c28" : "#5fb865"/)
+  // Orange is reserved for an installable verified snapshot; an upstream-only
+  // change shares the arrow but in the muted grey, so the mark alone says
+  // whether the Update button will do anything.
+  assert.match(row, /readonly property bool installable: row \? row\.pinnedEligible === true : false/)
+  assert.match(row, /readonly property color updateMarkColor: installable \? "#f28c28" : Color\.muted/)
+  assert.match(mark, /color: root\.hasUpdate \? root\.updateMarkColor : "#5fb865"/)
   assert.match(mark, /textFormat: Text\.PlainText/)
   assert.match(mark, /font\.family: root\.fontFamily/)
   assert.match(mark, /font\.pixelSize: Style\.font\.title/)
@@ -4047,7 +4052,8 @@ test("the expanded list row marks updatable plugins and shows their stars", () =
   // The bold check from the same Material set as the arrow, so the two
   // marks share a weight.
   assert.match(mark, /text: behind \? "󰜷" : "󰸞"/)
-  assert.match(mark, /color: behind \? "#f28c28" : "#5fb865"/)
+  assert.match(mark, /readonly property bool installable: root\.row \? root\.row\.pinnedEligible === true : false/)
+  assert.match(mark, /color: behind \? \(installable \? "#f28c28" : Color\.muted\) : "#5fb865"/)
   assert.match(mark, /font\.pixelSize: Style\.font\.title/)
   assert.match(mark, /textFormat: Text\.PlainText/)
   assert.doesNotMatch(row, /id: updateArrow/)

@@ -45,6 +45,11 @@ Rectangle {
 
   readonly property string badge: Model.sourceBadge(row)
   readonly property bool hasUpdate: row ? row.behind === true : false
+  // Two different facts share the arrow: something moved upstream, and a
+  // verified snapshot is actually installable. Orange is reserved for the
+  // second so the mark alone says whether the button will do anything.
+  readonly property bool installable: row ? row.pinnedEligible === true : false
+  readonly property color updateMarkColor: installable ? "#f28c28" : Color.muted
   readonly property bool upToDate: Model.upToDate(row)
 
   // Installed but switched off. For a bar widget that means it has no place
@@ -144,7 +149,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         visible: root.hasUpdate || root.upToDate
         text: root.hasUpdate ? "󰜷" : "󰸞"
-        color: root.hasUpdate ? "#f28c28" : "#5fb865"
+        color: root.hasUpdate ? root.updateMarkColor : "#5fb865"
         font.family: root.fontFamily
         font.pixelSize: Style.font.title
         font.bold: true
@@ -219,15 +224,29 @@ Rectangle {
       verticalAlignment: Text.AlignTop
     }
 
-    Text {
-      textFormat: Text.PlainText
+    Row {
       width: parent.width
       visible: root.hasUpdate
-      text: Model.updateStatus(root.row)
-      color: root.secondaryForeground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      wrapMode: Text.WordWrap
+      spacing: Style.space(6)
+
+      Text {
+        textFormat: Text.PlainText
+        text: "󰜷"
+        color: root.updateMarkColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width - x
+        text: Model.updateStatus(root.row)
+        color: root.installable ? root.updateMarkColor : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
     }
 
     // Who wrote it, what it plugs into, and which version is on disk — the
@@ -364,7 +383,9 @@ Rectangle {
       width: updateBadge.implicitWidth + Style.space(12)
       height: updateBadge.implicitHeight + Style.space(4)
       radius: height / 2
-      color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+      color: root.installable
+        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+        : Qt.rgba(Color.muted.r, Color.muted.g, Color.muted.b, 0.16)
 
       Text {
         id: updateBadge
@@ -372,7 +393,7 @@ Rectangle {
         textFormat: Text.PlainText
         anchors.centerIn: parent
         text: "󰚰 " + Model.updateBadge(root.row)
-        color: Color.accent
+        color: root.installable ? Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: updateBadgeMouse.containsMouse
@@ -456,7 +477,7 @@ Rectangle {
       iconText: root.updating ? "" : "󰑐"
       fontSize: Style.font.iconLarge
       tooltipText: Model.pinnedUpdateTooltip(root.row)
-      foreground: root.hasUpdate ? Color.accent : root.foreground
+      foreground: root.installable ? Color.accent : root.foreground
       fontFamily: root.fontFamily
       // Nothing to pull is nothing to click: a confirmed up-to-date checkout
       // gets no button to press and therefore no spin to watch.

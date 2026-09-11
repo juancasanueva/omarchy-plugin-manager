@@ -29,6 +29,7 @@ Item {
   signal githubNavigationRequested(var candidates, string fallbackUrl)
 
   readonly property bool hasUpdate: row ? row.behind === true : false
+  readonly property bool installable: row ? row.pinnedEligible === true : false
   readonly property bool upToDate: Model.upToDate(row)
   readonly property bool canEnable: Model.canEnable(row)
   readonly property bool canDisable: Model.canDisable(row)
@@ -205,7 +206,7 @@ Item {
           iconSpinning: root.updating
           tooltipText: Model.pinnedUpdateTooltip(root.row)
           bordered: true
-          foreground: root.hasUpdate ? Color.accent : root.foreground
+          foreground: root.installable ? Color.accent : root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && root.row.pinnedEligible === true
