@@ -749,37 +749,6 @@ Panel {
             font.bold: true
           }
 
-          Text {
-            id: subtitle
-            // Never rich text: AutoText would fetch what a crafted string points at.
-            textFormat: Text.PlainText
-            anchors.left: title.right
-            anchors.leftMargin: Style.space(10)
-            // Bounded on the right by whatever sits there, and elided rather
-            // than allowed to run under the tabs: with two icons in the
-            // header now, "3 to update" was the part that lost.
-            anchors.right: marketplaceLink.visible ? marketplaceLink.left : tabs.left
-            anchors.rightMargin: Style.space(10)
-            anchors.baseline: title.baseline
-            elide: Text.ElideRight
-            text: {
-              if (root.browsing) {
-                if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
-                if (root.catalog.length === 0) return ""
-                return "showing " + root.visibleCatalog.length + " of " + root.catalog.length
-              }
-              if (root.loading && root.rows.length === 0) return "reading…"
-              if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
-              // Tight separators: the expand icon took the slack this line
-              // used to have, and "to update" is the part that must survive.
-              var summary = root.installedTotal + " installed · " + root.rows.length + " total"
-              if (root.behindCount > 0) return summary + " · " + root.behindCount + " to update"
-              return summary
-            }
-            color: root.secondaryForeground
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.caption
-          }
 
           // The tabs keep one fixed spot on both tabs, so switching never
           // moves the button you just clicked out from under the pointer.
@@ -896,6 +865,35 @@ Panel {
               }
             }
           }
+        }
+
+        // The count line gets the whole width on its own row under the
+        // title: beside it, the tabs and two icons left it elided, and
+        // "to update" was the part that got cut.
+        Text {
+          id: subtitle
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          x: title.x
+          width: parent.width - x
+          visible: text !== ""
+          elide: Text.ElideRight
+          text: {
+            if (root.browsing) {
+              if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
+              if (root.catalog.length === 0) return ""
+              return "showing " + root.visibleCatalog.length + " of " + root.catalog.length
+            }
+            if (root.loading && root.rows.length === 0) return "reading…"
+            if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
+            // Tight separators keep the line short even on its own row.
+            var summary = root.installedTotal + " installed · " + root.rows.length + " total"
+            if (root.behindCount > 0) return summary + " · " + root.behindCount + " to update"
+            return summary
+          }
+          color: root.secondaryForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
         }
 
         PanelSeparator { foreground: root.contentForeground }

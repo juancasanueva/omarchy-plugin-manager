@@ -4391,8 +4391,14 @@ test("installing from the details page keeps the page open", () => {
   assert.match(expanded, /function askInstall\(entry\) \{\s*store\.askInstall\(entry\)\s*\}/)
 })
 
-test("the popup subtitle uses tight separators so it fits beside the expand icon", () => {
+test("the popup subtitle sits on its own full-width row under the title", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const sub = panel.slice(panel.indexOf("id: subtitle"), panel.indexOf("id: subtitle") + 400)
+  assert.match(sub, /x: title\.x/)
+  assert.match(sub, /width: parent\.width - x/)
+  assert.match(sub, /visible: text !== ""/)
+  assert.doesNotMatch(sub, /anchors\.baseline: title\.baseline/)
+  assert.doesNotMatch(sub, /anchors\.right: /)
   assert.match(panel, /var summary = root\.installedTotal \+ " installed · " \+ root\.rows\.length \+ " total"/)
   assert.match(panel, /return summary \+ " · " \+ root\.behindCount \+ " to update"/)
   assert.doesNotMatch(panel, /"  ·  "/)
@@ -4466,8 +4472,8 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.match(button, /onClicked: root\.expand\(\)/)
   // The tabs now sit left of two icons.
   assert.match(panel, /id: tabs\s*anchors\.right: expandButton\.left/)
-  // The count line yields to the tabs instead of running under them.
-  assert.match(panel, /id: subtitle[\s\S]*?anchors\.right: marketplaceLink\.visible \? marketplaceLink\.left : tabs\.left[\s\S]*?elide: Text\.ElideRight/)
+  // The count line lives on its own row now, so nothing yields to the tabs.
+  assert.doesNotMatch(panel, /id: subtitle[\s\S]{0,400}anchors\.right: marketplaceLink/)
   // Close first, then summon: the popup and the panel are never up together,
   // and a bar without a shell reference (tests, odd hosts) is a no-op.
   assert.match(panel, /function expand\(\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName \}\)\)\s*\}/)
