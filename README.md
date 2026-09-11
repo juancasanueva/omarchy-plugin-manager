@@ -186,6 +186,12 @@ a checkout meeting both conditions is counted once.
 - **Verified snapshot … available** names the only installable candidate. If
   upstream is newer and unreviewed, Update still requests only this verified SHA.
   A differing SHA is not proof of ancestry: the helper must prove fast-forward eligibility.
+- **Installed is ahead of verified snapshot …** means the installed commit
+  already contains the verified one, for example after updating through the
+  host command or another tool. Update is disabled because the helper would
+  refuse that downgrade. Ancestry comes from the checkout's most recent 128
+  commits, so an older verified commit beyond that window is still offered and
+  refused with a reason.
 - **No upstream changes** requires a matching checkout-bound branch report.
   **Upstream check unavailable** means missing, failed, or stale evidence, not current.
 

@@ -167,7 +167,14 @@ case "$command" in
       *) exit 1;;
     esac;;
   show-ref) [ "$id" = 03-exact-tag ] && [ "\${@: -1}" = refs/tags/v1.0.3 ];;
-  rev-list) [ "$id" = 03-exact-tag ] && printf '${heads["03-exact-tag"]}\\n';;
+  rev-list)
+    if [ "\${1:-}" = --max-count=128 ] && [ "\${2:-}" = HEAD ]; then
+      case "$id" in
+        01-valid-40) printf '${heads["01-valid-40"]}\\n${"c".repeat(40)}\\n';;
+        03-exact-tag) printf '${heads["03-exact-tag"]}\\n';;
+        *) exit 1;;
+      esac
+    else [ "$id" = 03-exact-tag ] && printf '${heads["03-exact-tag"]}\\n'; fi;;
   remote) printf 'https://github.com/acme/%s.git\\n' "$id";;
   *) exit 1;;
 esac
@@ -185,10 +192,14 @@ esac
     const records = gitSection.trim().split("\n").map(line => JSON.parse(line))
     const byId = Object.fromEntries(records.map(record => [record.path.split("/").at(-1), record]))
     for (const record of records)
-      assert.deepEqual(Object.keys(record).sort(), ["exactTag", "headSha", "path", "remote"])
+      assert.deepEqual(Object.keys(record).sort(), ["ancestors", "exactTag", "headSha", "path", "remote"])
     for (const [id, headSha] of Object.entries(heads)) assert.equal(byId[id].headSha, headSha)
     assert.equal(byId["06-absent"].headSha, "")
     assert.equal(byId["03-exact-tag"].exactTag, "v1.0.3")
+    assert.equal(byId["01-valid-40"].ancestors, `${heads["01-valid-40"]}\n${"c".repeat(40)}`)
+    assert.equal(byId["03-exact-tag"].ancestors, heads["03-exact-tag"])
+    for (const id of ["02-valid-64", "04-malformed", "05-hostile", "06-absent"])
+      assert.equal(byId[id].ancestors, "", id)
     for (const id of ["01-valid-40", "02-valid-64", "04-malformed", "05-hostile", "06-absent"])
       assert.equal(byId[id].exactTag, "")
   } finally {

@@ -675,8 +675,11 @@ Item {
       // JSON escaping keeps hostile path/remote bytes inside this one record;
       // they cannot forge another checkout or exact-tag field.
       + "  remote=$(git -C \"$path\" remote get-url origin 2>/dev/null); "
-      + "  jq -cn --arg path \"$path\" --arg remote \"$remote\" --arg exactTag \"$exact_tag\" --arg headSha \"$head\" "
-      + "    '{path: $path, remote: $remote, exactTag: $exactTag, headSha: $headSha}'; "
+      // The newest commits reachable from HEAD, so the panel can tell a
+      // verified snapshot the checkout already contains from one it lacks.
+      + "  ancestors=$(git -C \"$path\" rev-list --max-count=128 HEAD 2>/dev/null); "
+      + "  jq -cn --arg path \"$path\" --arg remote \"$remote\" --arg exactTag \"$exact_tag\" --arg headSha \"$head\" --arg ancestors \"$ancestors\" "
+      + "    '{path: $path, remote: $remote, exactTag: $exactTag, headSha: $headSha, ancestors: $ancestors}'; "
       + "done; "
       + "printf '\\n===manifest===\\n'; "
       // One jq over every manifest at once rather than one process per plugin.

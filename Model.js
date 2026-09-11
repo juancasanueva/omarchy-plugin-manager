@@ -75,18 +75,42 @@ function parseGitMap(raw) {
     }
     if (!record || Array.isArray(record) || typeof record !== "object") continue
     var keys = Object.keys(record).sort()
-    if (keys.join(",") !== "exactTag,headSha,path,remote") continue
+    if (keys.join(",") !== "ancestors,exactTag,headSha,path,remote") continue
     if (typeof record.path !== "string" || record.path === ""
         || typeof record.remote !== "string" || typeof record.exactTag !== "string"
-        || typeof record.headSha !== "string") continue
+        || typeof record.headSha !== "string" || typeof record.ancestors !== "string") continue
     var headSha = record.headSha === "" ? "" : normalizeGitObjectId(record.headSha)
     if (record.headSha !== "" && headSha === "") continue
     // Git ref names cannot contain controls. An impossible tag makes the
     // producer record malformed; it must not contribute provenance.
     if (/[\u0000-\u001f\u007f]/.test(record.exactTag)) continue
-    map[record.path] = { remote: record.remote, exactTag: record.exactTag, headSha: headSha }
+    // The most recent commits reachable from HEAD, newest first. One bad id
+    // or an oversized list rejects the whole record: a partial ancestry could
+    // hide a superseded snapshot for the wrong reason.
+    var ancestors = parseAncestorList(record.ancestors)
+    if (ancestors === null) continue
+    map[record.path] = { remote: record.remote, exactTag: record.exactTag, headSha: headSha, ancestors: ancestors }
   }
   return map
+}
+
+var MAX_ANCESTORS = 128
+
+// Newline-separated full object ids from `git rev-list --max-count`. Returns
+// null for anything the producer could not have emitted.
+function parseAncestorList(raw) {
+  if (typeof raw !== "string") return null
+  var lines = raw.split("\n")
+  var out = []
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\r$/, "")
+    if (line === "") continue
+    var id = normalizeGitObjectId(line)
+    if (id === "") return null
+    out.push(id)
+    if (out.length > MAX_ANCESTORS) return null
+  }
+  return out
 }
 
 // "<id>\t<author>\t<version>" per line, straight out of each manifest.json.
@@ -188,6 +212,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       updateOrigin: gitManaged ? String(gitInfo.remote || "") : "",
       exactTag: gitManaged ? plainText(gitInfo.exactTag) : "",
       headSha: gitManaged ? normalizeGitObjectId(gitInfo.headSha) : "",
+      ancestors: gitManaged && Array.isArray(gitInfo.ancestors) ? gitInfo.ancestors : [],
       gitManaged: gitManaged,
       // Built-ins live in /usr/share and are not ours to delete. Everything
       // under the user plugin directory — installed or cloned — is.
@@ -1659,7 +1684,14 @@ function applyPinnedUpdates(rows, entries) {
     // `behind` is the compatibility view consumed by existing badges and filters.
     copy.upstreamBehind = row.updateChecked === true && row.localSha !== row.remoteSha
     copy.verifiedTargetSha = request ? request.verifiedCommit : ""
-    copy.pinnedEligible = !!request && request.expectedLocalHead !== request.verifiedCommit
+    var differs = !!request && request.expectedLocalHead !== request.verifiedCommit
+    // A verified commit already reachable from the installed HEAD is a
+    // downgrade the helper refuses; offering it would be a button that can
+    // only fail. Ancestry is the checkout's most recent commits (see
+    // MAX_ANCESTORS), so an older snapshot beyond that window stays offered
+    // and is refused with a reason instead.
+    copy.verifiedSuperseded = differs && (row.ancestors || []).indexOf(request.verifiedCommit) >= 0
+    copy.pinnedEligible = differs && !copy.verifiedSuperseded
     copy.behind = copy.upstreamBehind || copy.pinnedEligible
     out.push(copy)
   }
@@ -1671,14 +1703,17 @@ function updateStatus(row) {
   var upstream = row.upstreamBehind
     ? "Upstream changes — " + (row.remoteSha === row.verifiedTargetSha ? "verified snapshot" : "not verified")
     : (row.updateChecked === true ? "No upstream changes" : "Upstream check unavailable")
-  return upstream + (row.pinnedEligible
-    ? "; Verified snapshot " + shortSha(row.verifiedTargetSha) + " available" : "")
+  if (row.pinnedEligible) return upstream + "; Verified snapshot " + shortSha(row.verifiedTargetSha) + " available"
+  if (row.verifiedSuperseded) return upstream + "; Installed is ahead of verified snapshot " + shortSha(row.verifiedTargetSha)
+  return upstream
 }
 
 function pinnedUpdateTooltip(row) {
   var status = updateStatus(row)
   if (row && row.pinnedEligible) return status + ". Install verified snapshot "
     + shortSha(row.verifiedTargetSha) + " — rechecked before publication"
+  if (row && row.verifiedSuperseded) return status + ". Update disabled; the installed commit already contains verified snapshot "
+    + shortSha(row.verifiedTargetSha)
   return status + ". Update disabled; no newer matching verified snapshot"
 }
 

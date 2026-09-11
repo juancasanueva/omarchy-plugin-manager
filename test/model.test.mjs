@@ -29,7 +29,7 @@ const Model = new Function(
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
-    parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip,
+    parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -138,6 +138,53 @@ test("verified-only discovery never fabricates branch evidence or survives catal
   assert.equal(Model.upToDate(revoked), false)
 })
 
+test("a verified snapshot already contained in the installed HEAD is never offered", () => {
+  const verified = "b".repeat(40)
+  const { row, catalog, head } = upstreamFixture(verified)
+  const atTip = { [row.sourceDir]: { localSha: head, remoteSha: head, localVersion: "1.0", remoteVersion: "" } }
+  const ahead = Model.applyUpdateReport([{ ...row, ancestors: [head, "d".repeat(40), verified] }], atTip)[0]
+  const projected = Model.applyPinnedUpdates([ahead], catalog)[0]
+  assert.equal(projected.verifiedSuperseded, true)
+  assert.equal(projected.pinnedEligible, false)
+  assert.equal(projected.behind, false)
+  assert.equal(projected.upstreamBehind, false)
+  assert.equal(projected.verifiedTargetSha, verified, "the target stays visible for the status line")
+  assert.equal(Model.countBehind([projected]), 0)
+  assert.equal(Model.filterRows([projected], "all", "update", "").length, 0)
+  assert.match(Model.updateStatus(projected), /^No upstream changes; Installed is ahead of verified snapshot bbbbbbb$/)
+  assert.match(Model.pinnedUpdateTooltip(projected), /Update disabled; the installed commit already contains verified snapshot bbbbbbb/)
+  assert.equal(Model.updateCompareUrl(projected), "")
+  assert.equal(Model.updateCompareLabel(projected), "")
+  assert.deepEqual(Model.updateReleaseCandidates(projected), [])
+
+  // The same target absent from the recent ancestry stays a candidate for
+  // the helper, which proves or refuses ancestry itself.
+  const unknown = Model.applyPinnedUpdates(
+    [Model.applyUpdateReport([{ ...row, ancestors: [head, "d".repeat(40)] }], atTip)[0]], catalog)[0]
+  assert.equal(unknown.verifiedSuperseded, false)
+  assert.equal(unknown.pinnedEligible, true)
+  assert.equal(unknown.behind, true)
+  assert.match(Model.updateStatus(unknown), /Verified snapshot bbbbbbb available/)
+  const missing = Model.applyPinnedUpdates([Model.applyUpdateReport([row], atTip)[0]], catalog)[0]
+  assert.equal(missing.pinnedEligible, true)
+
+  // Being exactly at the verified commit is neither eligible nor superseded.
+  const exact = Model.applyPinnedUpdates([{ ...ahead, headSha: verified, ancestors: [verified] }], catalog)[0]
+  assert.equal(exact.verifiedSuperseded, false)
+  assert.equal(exact.pinnedEligible, false)
+  assert.doesNotMatch(Model.updateStatus(exact), /ahead/)
+
+  // Detected upstream changes still surface on a superseded row.
+  const behindTip = { [row.sourceDir]: { localSha: head, remoteSha: "c".repeat(40), localVersion: "1.0", remoteVersion: "2.0" } }
+  const both = Model.applyPinnedUpdates(
+    [Model.applyUpdateReport([{ ...row, ancestors: [head, verified] }], behindTip)[0]], catalog)[0]
+  assert.equal(both.verifiedSuperseded, true)
+  assert.equal(both.pinnedEligible, false)
+  assert.equal(both.behind, true)
+  assert.match(Model.updateStatus(both), /^Upstream changes — not verified; Installed is ahead of verified snapshot bbbbbbb$/)
+  assert.equal(Model.updateCompareUrl(both), `${row.remote}/compare/${head}...${"c".repeat(40)}`)
+})
+
 test("stale and failed reports stay unknown even at the verified snapshot", () => {
   const { row, catalog, report } = upstreamFixture()
   const previous = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog)
@@ -158,7 +205,7 @@ test("catalog, installed load and branch report converge in all arrival orders",
   const { row, catalog, report, head, tip } = upstreamFixture()
   const rawLoad = `===list===\n${JSON.stringify([{ id: row.id }])}\n===catalog===\n`
     + `${JSON.stringify([{ id: row.id, sourceDir: row.sourceDir }])}\n===git===\n`
-    + `${JSON.stringify({ path: row.sourceDir, remote: row.remote, headSha: head, exactTag: "" })}`
+    + `${JSON.stringify({ path: row.sourceDir, remote: row.remote, headSha: head, exactTag: "", ancestors: head })}`
     + "\n===manifest===\n[]"
   const rawReport = JSON.stringify({ path: row.sourceDir, ...report[row.sourceDir] })
   for (const order of ["CLR", "CRL", "LCR", "LRC", "RCL", "RLC"]) {
@@ -352,40 +399,50 @@ test("plainText flattens control characters into spaces", () => {
 
 test("parseGitMap keeps JSON-framed remotes and exact local tags, including empty fields", () => {
   const map = Model.parseGitMap([
-    JSON.stringify({ path: "/plugins/prefixed", remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "A".repeat(40) }),
-    JSON.stringify({ path: "/plugins/plain", remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64) }),
-    JSON.stringify({ path: "/plugins/noremote", remote: "", exactTag: "", headSha: "" })
+    JSON.stringify({ path: "/plugins/prefixed", remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "A".repeat(40),
+      ancestors: "A".repeat(40) + "\n" + "c".repeat(40) + "\n" }),
+    JSON.stringify({ path: "/plugins/plain", remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64), ancestors: "" }),
+    JSON.stringify({ path: "/plugins/noremote", remote: "", exactTag: "", headSha: "", ancestors: "" })
   ].join("\n"))
   assert.deepEqual(map["/plugins/prefixed"], {
-    remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "a".repeat(40)
+    remote: "https://example.com/a.git", exactTag: "v1.0.3", headSha: "a".repeat(40),
+    ancestors: ["a".repeat(40), "c".repeat(40)]
   })
   assert.deepEqual(map["/plugins/plain"], {
-    remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64)
+    remote: "git@example.com:b.git", exactTag: "1.0.3", headSha: "b".repeat(64), ancestors: []
   })
-  assert.deepEqual(map["/plugins/noremote"], { remote: "", exactTag: "", headSha: "" })
+  assert.deepEqual(map["/plugins/noremote"], { remote: "", exactTag: "", headSha: "", ancestors: [] })
   assert.ok("noremote" in {} === false)
   assert.ok(Object.prototype.hasOwnProperty.call(map, "/plugins/noremote"))
 })
 
 test("parseGitMap skips malformed, non-object, and wrong-schema JSON records", () => {
-  const valid = JSON.stringify({ path: "/plugins/a", remote: "https://x/a.git", exactTag: "v1", headSha: "a".repeat(40) })
+  const valid = JSON.stringify({ path: "/plugins/a", remote: "https://x/a.git", exactTag: "v1", headSha: "a".repeat(40), ancestors: "" })
+  const git = fields => JSON.stringify({ remote: "https://x/r.git", exactTag: "", headSha: "a".repeat(40), ...fields })
   const records = [
+    JSON.stringify({ path: "/plugins/no-ancestors", remote: "https://x/a.git", exactTag: "v1", headSha: "a".repeat(40) }),
+    git({ path: "/plugins/ancestors-array", ancestors: ["a".repeat(40)] }),
+    git({ path: "/plugins/ancestors-too-many", ancestors: Array(129).fill("a".repeat(40)).join("\n") }),
+    git({ path: "/plugins/ancestors-nonhex", ancestors: "a".repeat(40) + "\n" + "g".repeat(40) }),
+    git({ path: "/plugins/ancestors-short", ancestors: "a".repeat(39) }),
     "not-json",
     "/plugins/legacy\thttps://github.com/owner/repo.git\tv1.0.0",
     "null",
     "[]",
     '"string"',
-    JSON.stringify({ path: "/plugins/missing", remote: "https://x/missing.git", exactTag: "v1" }),
-    JSON.stringify({ path: "/plugins/wrong-type", remote: 42, exactTag: "v1", headSha: "a".repeat(40) }),
-    JSON.stringify({ path: "/plugins/extra", remote: "https://x/extra.git", exactTag: "v1", headSha: "a".repeat(40), forged: true }),
-    JSON.stringify({ path: "/plugins/control", remote: "https://x/control.git", exactTag: "v1\u0001", headSha: "a".repeat(40) }),
-    JSON.stringify({ path: "/plugins/short-head", remote: "https://x/short.git", exactTag: "", headSha: "a".repeat(39) }),
-    JSON.stringify({ path: "/plugins/nonhex-head", remote: "https://x/nonhex.git", exactTag: "", headSha: "g".repeat(40) }),
-    JSON.stringify({ path: "/plugins/hostile-head", remote: "https://x/hostile.git", exactTag: "", headSha: "a".repeat(39) + "\nforged" }),
+    JSON.stringify({ path: "/plugins/missing", remote: "https://x/missing.git", exactTag: "v1", ancestors: "" }),
+    JSON.stringify({ path: "/plugins/wrong-type", remote: 42, exactTag: "v1", headSha: "a".repeat(40), ancestors: "" }),
+    JSON.stringify({ path: "/plugins/extra", remote: "https://x/extra.git", exactTag: "v1", headSha: "a".repeat(40), ancestors: "", forged: true }),
+    JSON.stringify({ path: "/plugins/control", remote: "https://x/control.git", exactTag: "v1\u0001", headSha: "a".repeat(40), ancestors: "" }),
+    JSON.stringify({ path: "/plugins/short-head", remote: "https://x/short.git", exactTag: "", headSha: "a".repeat(39), ancestors: "" }),
+    JSON.stringify({ path: "/plugins/nonhex-head", remote: "https://x/nonhex.git", exactTag: "", headSha: "g".repeat(40), ancestors: "" }),
+    JSON.stringify({ path: "/plugins/hostile-head", remote: "https://x/hostile.git", exactTag: "", headSha: "a".repeat(39) + "\nforged", ancestors: "" }),
     valid
   ]
   const map = Model.parseGitMap(records.join("\n"))
   assert.deepEqual(Object.keys(map), ["/plugins/a"])
+  const full = Array(128).fill("b".repeat(40)).join("\n")
+  assert.equal(Model.parseGitMap(git({ path: "/plugins/full", ancestors: full }))["/plugins/full"].ancestors.length, 128)
 })
 
 test("parseGitMap keeps hostile delimiters inside one JSON record", () => {
@@ -394,11 +451,11 @@ test("parseGitMap keeps hostile delimiters inside one JSON record", () => {
     + "/plugins/tsv-forgery\thttps://github.com/attacker/repo.git\tv9.9.9\n"
     + "{\"path\":\"/plugins/json-forgery\",\"remote\":\"https://github.com/attacker/repo\",\"exactTag\":\"v9.9.9\"}"
     + "\\quoted\"tail"
-  const record = JSON.stringify({ path, remote, exactTag: "v1.0.3", headSha: "a".repeat(40) })
+  const record = JSON.stringify({ path, remote, exactTag: "v1.0.3", headSha: "a".repeat(40), ancestors: "a".repeat(40) })
   const map = Model.parseGitMap(record)
 
   assert.deepEqual(Object.keys(map), [path])
-  assert.deepEqual(map[path], { remote, exactTag: "v1.0.3", headSha: "a".repeat(40) })
+  assert.deepEqual(map[path], { remote, exactTag: "v1.0.3", headSha: "a".repeat(40), ancestors: ["a".repeat(40)] })
   assert.equal(map["/plugins/path-forgery"], undefined)
   assert.equal(map["/plugins/tsv-forgery"], undefined)
   assert.equal(map["/plugins/json-forgery"], undefined)
@@ -415,7 +472,8 @@ const catalogEntries = [
   { id: "acme.dev", sourceDir: "/plugins/acme.dev", description: "Dev" }
 ]
 const gitMap = {
-  "/plugins/acme.weather": { remote: "https://example.com/weather.git", exactTag: "v2.0.1", headSha: "a".repeat(40) },
+  "/plugins/acme.weather": { remote: "https://example.com/weather.git", exactTag: "v2.0.1", headSha: "a".repeat(40),
+    ancestors: ["a".repeat(40), "9".repeat(40)] },
   "/plugins/acme.dev": { remote: "", exactTag: "", headSha: "b".repeat(64) }
 }
 
