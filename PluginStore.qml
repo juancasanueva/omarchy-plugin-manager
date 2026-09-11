@@ -156,13 +156,17 @@ Item {
   property string pendingLabel: ""
   property string pendingUrl: ""
   property bool pendingVerified: false
-  readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"
+  readonly property bool confirming: pendingKind !== "" && pendingKind !== "place" && pendingKind !== "move"
 
   // Enabling a bar widget is a different question from the yes/no ones above:
   // not "are you sure" but "where". It gets its own dialog rather than a
   // default section, because a widget dropped into a section the user did not
   // choose is a widget they have to go hunting for.
-  readonly property bool placing: pendingKind === "place"
+  readonly property bool placing: pendingKind === "place" || pendingKind === "move"
+
+  // The section a widget being moved sits in now, so the question can leave
+  // that one out. Held with the rest of the pending state.
+  property string pendingSection: ""
 
   // Whether the plugin being added takes a place in the bar. Read off the
   // registry listing, since the manifest that would say so is not on disk yet.
@@ -173,9 +177,11 @@ Item {
   // by the time the clone lands the surface no longer exists to be asked.
   property string pendingPlacement: ""
 
-  readonly property var placementChoices: Model.placementOptions()
-  readonly property string placementMessage:
-    "Where in the bar should " + pendingLabel + " go?"
+  readonly property var placementChoices: pendingKind === "move"
+    ? Model.moveOptions(pendingSection) : Model.placementOptions()
+  readonly property string placementMessage: pendingKind === "move"
+    ? "Move " + pendingLabel + " to which section of the bar?"
+    : "Where in the bar should " + pendingLabel + " go?"
 
   // Only an unreviewed update enters a dialog, and it offers the exact diff.
   readonly property string confirmCompareUrl: pendingKind === "update"
@@ -298,7 +304,8 @@ Item {
       listEntries,
       Model.parseArray(sections.catalog) || [],
       Model.parseGitMap(sections.git),
-      Model.parseManifestMeta(sections.manifest))
+      Model.parseManifestMeta(sections.manifest),
+      Model.parseLayoutSections(sections.layout))
     // The last report is replayed onto the fresh rows before they are
     // assigned, not after: every assignment rebuilds every row on every
     // surface, and the replay is the same rows with badges. It binds to the
@@ -518,11 +525,48 @@ Item {
     return true
   }
 
+  // A widget already in the bar can change section. It asks the same
+  // "where" question the enable switch does, minus the section it is in, and
+  // the move itself is the enable command with a section: the shell moves a
+  // placed widget rather than adding it twice (PluginRegistry.setEnabled).
+  function askMove(row) {
+    if (!Model.canMove(row) || busy) return false
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingSection = String(row.barSection || "")
+    pendingKind = "move"
+    return true
+  }
+
+  // The direct form, for a control that already names the target section.
+  // Detached like enable and disable: the layout rewrite rebuilds the bar's
+  // widgets, the popup among them, so the answer goes to a notification.
+  function startMoveTo(row, section) {
+    if (busy) return false
+    var command = Model.moveCommand(row, section)
+    if (command.length === 0) return false
+    runDetached(Model.successMessage("move", row.name), Model.moveNote(section), command)
+    return true
+  }
+
   function confirmPlacement(section) {
-    // Two questions share this dialog: where to put a plugin being installed,
-    // and where to put one already sitting in the list switched off.
+    // Three questions share this dialog: where to put a plugin being
+    // installed, where to put one already sitting in the list switched off,
+    // and where to move one that is already in the bar.
     if (pendingPlacementNeeded) {
       startAdd(section)
+      return
+    }
+    if (pendingKind === "move") {
+      var moving = Model.findRow(rows, pendingId)
+      var movingLabel = pendingLabel
+      cancelPending()
+      if (!moving) {
+        setStatus("Could not move " + movingLabel + ": it is no longer in the list", true)
+        return
+      }
+      startMoveTo(moving, section)
       return
     }
 
@@ -542,6 +586,7 @@ Item {
   function cancelPending() {
     pendingKind = ""
     pendingUnverifiedSha = ""
+    pendingSection = ""
     pendingId = ""
     pendingLabel = ""
     pendingUrl = ""
@@ -758,6 +803,14 @@ Item {
       + "  | jq -c --arg id io.github.juancasanueva.plugin-manager "
       + "    '[(.bar.layout // {} | .[]? | .[]?), (.plugins // [] | .[]?)] "
       + "     | map(select(type == \"object\" and (.id | tostring) == $id)) | first // empty' 2>/dev/null; "
+      // Which section every bar widget sits in, as one array on one line, so
+      // a row can say where it is and the move control can leave that out.
+      // Same bounded read; a layout jq cannot print is simply no layout.
+      + "printf '===layout===\\n'; "
+      + "head -c 1048577 -- \"$HOME/.config/omarchy/shell.json\" 2>/dev/null "
+      + "  | jq -c '[(.bar.layout // {}) | to_entries[] | .key as $section "
+      + "     | (.value | if type == \"array\" then .[] else empty end) "
+      + "     | {id: ((if type == \"object\" then .id else . end) | tostring), section: $section}]' 2>/dev/null; "
       + "printf '===list===\\n'; "
       + "omarchy plugin list --json; "
       + "printf '\\n===catalog===\\n'; "

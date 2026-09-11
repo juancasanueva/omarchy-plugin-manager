@@ -254,6 +254,17 @@ an upstream SHA and no confirmation that overrides a refusal.
   dimmed and fixed on — a row with no control at all reads as something that
   failed to render. Disabling this panel closes the window you are clicking
   in, so that one confirms and hands you the command to undo it.
+- **Move** — for a bar widget that is on the bar, changes which section it
+  sits in. The expanded panel's details pane shows the three sections as one
+  segmented control, Left | Center | Right, with the current one lit; clicking
+  another moves the widget there. The popup row has a single move icon that
+  opens the same placement question the enable switch asks, minus the section
+  the widget is already in. Either way the panel runs
+  `omarchy plugin enable <id> <section>`, which the shell treats as a move for
+  a widget that is already placed; nothing edits `shell.json` directly. The
+  current section is read from `shell.json` at load time, so the control only
+  changes once the shell has actually moved the widget, and a widget whose
+  section could not be read gets no control rather than a guess.
 - **Update** — invokes the bundled Python helper with the displayed repository,
   full target SHA, id, and expected installed HEAD. It installs only that
   commit, never `origin HEAD`, another branch, or a fallback commit. The host

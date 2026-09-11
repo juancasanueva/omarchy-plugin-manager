@@ -11,6 +11,7 @@ var SECTION_CATALOG = "===catalog==="
 var SECTION_GIT = "===git==="
 var SECTION_MANIFEST = "===manifest==="
 var SECTION_SETTINGS = "===settings===\n"
+var SECTION_LAYOUT = "===layout===\n"
 
 // The two lists the panel draws. What you installed is what you can act on;
 // the built-ins are the backdrop. Splitting them means the buttons in a
@@ -28,41 +29,49 @@ var STATUS_UPDATE = "update"
 
 // The loader emits four fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
-// This plugin's own shell.json entry travels ahead of them as an optional
-// fifth section, so an older loader still splits.
+// Two optional one-line sections travel ahead of them, so an older loader
+// still splits: this plugin's own shell.json entry, then the bar layout.
 //
-// The settings section is user-written text (the entry, printed by `jq -c` as
-// exactly one line), so the other markers are searched only after that line:
-// a value that happens to contain "===list===" stays inside the settings
-// slice, where the worst it can do is fail to parse, and cannot shift the
-// list, catalog, git or manifest slices.
+// Both are user-written text (printed by `jq -c` as exactly one line each),
+// so the fixed markers are searched only after those lines: a value that
+// happens to contain "===list===" stays inside its own slice, where the worst
+// it can do is fail to parse, and cannot shift the list, catalog, git or
+// manifest slices.
+//
+// One leading line: `marker`, then either one line of jq output or nothing at
+// all (the loader had nothing to print, so one of `next` follows at once).
+// Null is a line that never ends — a truncated stream.
+function takeLeadingLine(text, from, marker, next) {
+  if (text.indexOf(marker, from) !== from) return { value: "", from: from }
+  var start = from + marker.length
+  for (var i = 0; i < next.length; i++) {
+    if (text.indexOf(next[i], start) === start) return { value: "", from: start }
+  }
+  var lineEnd = text.indexOf("\n", start)
+  if (lineEnd < 0) return null
+  return { value: text.slice(start, lineEnd), from: lineEnd + 1 }
+}
+
 function splitSections(raw) {
   var text = String(raw || "")
-  var settings = ""
-  var from = 0
-  if (text.indexOf(SECTION_SETTINGS) === 0) {
-    var lineEnd = text.indexOf("\n", SECTION_SETTINGS.length)
-    // An absent entry prints nothing, so the list marker follows directly.
-    if (text.indexOf(SECTION_LIST, SECTION_SETTINGS.length) === SECTION_SETTINGS.length) {
-      from = SECTION_SETTINGS.length
-    } else {
-      if (lineEnd < 0) return null
-      settings = text.slice(SECTION_SETTINGS.length, lineEnd)
-      from = lineEnd + 1
-    }
-  }
+  var settings = takeLeadingLine(text, 0, SECTION_SETTINGS, [SECTION_LAYOUT, SECTION_LIST])
+  if (!settings) return null
+  var layout = takeLeadingLine(text, settings.from, SECTION_LAYOUT, [SECTION_LIST])
+  if (!layout) return null
+  var from = layout.from
   var atList = text.indexOf(SECTION_LIST, from)
   var atCatalog = text.indexOf(SECTION_CATALOG, from)
   var atGit = text.indexOf(SECTION_GIT, from)
   var atManifest = text.indexOf(SECTION_MANIFEST, from)
   if (atList < 0 || atCatalog < 0 || atGit < 0 || atManifest < 0) return null
   if (!(atList < atCatalog && atCatalog < atGit && atGit < atManifest)) return null
-  // Optional, but if it is there it leads: a settings marker anywhere after
+  // Optional, but if they are there they lead: either marker anywhere after
   // its own line is a corrupted stream, not a section.
-  if (text.indexOf(SECTION_SETTINGS, from) >= 0) return null
+  if (text.indexOf(SECTION_SETTINGS, from) >= 0 || text.indexOf(SECTION_LAYOUT, from) >= 0) return null
 
   return {
-    settings: settings,
+    settings: settings.value,
+    layout: layout.value,
     list: text.slice(atList + SECTION_LIST.length, atCatalog),
     catalog: text.slice(atCatalog + SECTION_CATALOG.length, atGit),
     git: text.slice(atGit + SECTION_GIT.length, atManifest),
@@ -111,6 +120,39 @@ function parseSelfEntry(raw) {
   for (var key in value) {
     if (!hasOwnKey(value, key) || key === "id" || key === "__proto__") continue
     out[key] = value[key]
+  }
+  return out
+}
+
+// The bar layout as the loader printed it: one JSON array of {id, section}
+// for every entry of bar.layout, or nothing when shell.json could not be
+// read. Display data only — it says which section each widget sits in, so the
+// move control can name where a widget is — so a malformed array degrades to
+// "section unknown" for every row, never to a failed load.
+var MAX_LAYOUT_BYTES = 65536
+var MAX_LAYOUT_ENTRIES = 512
+var LAYOUT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+function parseLayoutSections(raw) {
+  var out = Object.create(null)
+  var text = String(raw || "").trim()
+  if (text === "" || text.length > MAX_LAYOUT_BYTES) return out
+  var value
+  try {
+    value = JSON.parse(text)
+  } catch (error) {
+    return out
+  }
+  if (!Array.isArray(value)) return out
+  for (var i = 0; i < value.length && i < MAX_LAYOUT_ENTRIES; i++) {
+    var item = value[i]
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue
+    var id = typeof item.id === "string" ? item.id : ""
+    var section = typeof item.section === "string" ? item.section : ""
+    if (!LAYOUT_ID_PATTERN.test(id) || id.indexOf("..") >= 0) continue
+    if (BAR_SECTIONS.indexOf(section) < 0) continue
+    // The first placement wins: one widget, one section.
+    if (!(id in out)) out[id] = section
   }
   return out
 }
@@ -264,10 +306,11 @@ function toStringList(value) {
 // and which exact version tag (if any) is proven at HEAD, and `manifestMeta`
 // carries what only the manifest knows — who wrote it and what version is on
 // disk. One row per plugin, joined on id.
-function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
+function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta, layoutSections) {
   var catalog = indexById(catalogEntries)
   var git = gitMap || {}
   var manifests = manifestMeta || {}
+  var layout = layoutSections || {}
   var rows = []
 
   for (var i = 0; i < (listEntries || []).length; i++) {
@@ -292,6 +335,9 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta) {
       description: plainText(meta.description),
       kinds: toStringList(item.kinds && item.kinds.length ? item.kinds : meta.kinds),
       enabled: item.enabled === true,
+      // Which section of the bar the widget sits in, as shell.json says, or
+      // "" when it is not in the layout or the layout could not be read.
+      barSection: typeof layout[id] === "string" && BAR_SECTIONS.indexOf(layout[id]) >= 0 ? layout[id] : "",
       // A bar has no off, only a successor — the shell says so per plugin
       // rather than making every caller work it out from kinds again.
       canDisable: item.canDisable === true,
@@ -724,12 +770,47 @@ function enableCommand(row, section) {
   return command
 }
 
+// Moving is enabling with a section: `omarchy plugin enable <id> <section>`
+// hands the placement to the shell, which moves a widget that is already in
+// the bar rather than adding it a second time. Only a widget that takes a
+// place in a section can move, and only one whose current section the loader
+// could read: the control names where it is, so it has to know.
+function canMove(row) {
+  return !!row && String(row.id || "") !== "" && row.enabled === true
+    && needsPlacement(row) && BAR_SECTIONS.indexOf(String(row.barSection || "")) >= 0
+}
+
+// The choices for a widget already in the bar: everywhere but where it is.
+function moveOptions(currentSection) {
+  var options = placementOptions()
+  var out = []
+  for (var i = 0; i < options.length; i++) {
+    if (options[i].value !== String(currentSection || "")) out.push(options[i])
+  }
+  return out
+}
+
+// Checked against the fixed set here, like enableCommand, and against the
+// section the row is in: moving a widget to where it already sits is not a
+// command worth running.
+function moveCommand(row, section) {
+  if (!canMove(row)) return []
+  var target = String(section || "")
+  if (BAR_SECTIONS.indexOf(target) < 0 || target === row.barSection) return []
+  return ["omarchy", "plugin", "enable", String(row.id), target]
+}
+
+function moveNote(section) {
+  return "It is in the " + section + " section of the bar now."
+}
+
 function actionVerb(kind) {
   if (kind === "add") return "Add"
   if (kind === "update") return "Update"
   if (kind === "remove") return "Remove"
   if (kind === "enable") return "Enable"
   if (kind === "disable") return "Disable"
+  if (kind === "move") return "Move"
   return "Action"
 }
 
@@ -739,6 +820,7 @@ function successMessage(kind, label) {
   if (kind === "remove") return "Removed " + label
   if (kind === "enable") return "Enabled " + label
   if (kind === "disable") return "Disabled " + label
+  if (kind === "move") return "Moved " + label
   return "Done"
 }
 
@@ -758,6 +840,7 @@ function actionGerund(kind) {
   if (kind === "remove") return "Removing"
   if (kind === "enable") return "Enabling"
   if (kind === "disable") return "Disabling"
+  if (kind === "move") return "Moving"
   return "Working"
 }
 

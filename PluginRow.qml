@@ -40,6 +40,7 @@ Rectangle {
   signal removeRequested()
   signal enableRequested()
   signal disableRequested()
+  signal moveRequested()
   signal githubNavigationRequested(var candidates, string fallbackUrl)
   signal repositoryNavigationRequested(string url)
 
@@ -55,6 +56,10 @@ Rectangle {
   // Installed but switched off. For a bar widget that means it has no place
   // in the bar yet, which is the state the grey dot is reporting.
   readonly property bool canEnable: Model.canEnable(row)
+
+  // In the bar, and able to change section. One icon: the row has no room
+  // for three chips, and the "where" question already exists as a dialog.
+  readonly property bool canMove: Model.canMove(row)
 
   // Off the bar, still on disk. The inverse of enable, and the only way back
   // from one that turned out to be the wrong idea.
@@ -432,6 +437,20 @@ Rectangle {
     // and remove keep their positions, and the destructive one keeps the corner
     // it has always had.
     //
+    PanelActionButton {
+      id: moveButton
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.canMove
+      iconText: "󰓡"
+      fontSize: Style.font.iconLarge
+      tooltipText: "Move in the bar"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: root.actionsEnabled
+      opacity: enabled ? 1 : 0.4
+      onClicked: root.moveRequested()
+    }
+
     // `checked` is bound straight to the row, never flipped locally. Enabling a
     // bar widget asks where it goes first, and a knob that threw itself across
     // before that question was answered would be reporting a state the shell

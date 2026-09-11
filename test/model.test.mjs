@@ -43,6 +43,7 @@ const Model = new Function(
     normalizeGitUrl, isValidGitUrl, repoLabel, lastLine,
     actionVerb, actionGerund, successMessage, failureMessage,
     needsPlacement, canEnable, placementOptions, enableCommand, findRow,
+    parseLayoutSections, canMove, moveOptions, moveCommand, moveNote,
     canDisable, disableCommand, enableNote, disableNote,
     catalogNeedsPlacement, browseModalFocusOwner, catalogPlacementConfirmationNote
   }`
@@ -4475,7 +4476,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /property bool pendingPlacementNeeded: false/)
   assert.match(store, /readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"/)
   assert.match(store, /readonly property bool placing: pendingKind === "place"/)
-  assert.match(store, /readonly property var placementChoices: Model\.placementOptions\(\)/)
+  assert.match(store, /readonly property var placementChoices: pendingKind === "move"\s*\? Model\.moveOptions\(pendingSection\) : Model\.placementOptions\(\)/)
   assert.match(store, /readonly property string placementMessage:/)
   assert.match(store, /readonly property string confirmMessage: \{/)
   for (const fn of [
@@ -4973,6 +4974,174 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   const flip = panel.slice(panel.indexOf("function switchTab(tab)"), panel.indexOf("function applyPendingTab()"))
   assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
   assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; revokeReleaseNavigation\(\); return \}/)
+})
+
+// ---- Moving a bar widget between sections ---------------------------------
+
+test("parseLayoutSections keeps only well-formed placements and the first one per widget", () => {
+  const layout = Model.parseLayoutSections(JSON.stringify([
+    { id: "omarchy.clock", section: "left" },
+    { id: "acme.widget", section: "right" },
+    { id: "acme.widget", section: "center" },
+    { id: "bad id", section: "left" },
+    { id: "../escape", section: "left" },
+    { id: "acme.nowhere", section: "top" },
+    { id: 42, section: "left" },
+    { id: "acme.nosection" },
+    "acme.string",
+    null,
+    { id: "__proto__", section: "left" }
+  ]))
+  assert.deepEqual({ ...layout }, { "omarchy.clock": "left", "acme.widget": "right", "__proto__": "left" })
+  assert.equal(Object.getPrototypeOf(layout), null, "no prototype to pollute")
+  assert.equal(layout.constructor, undefined)
+  // Not an array, not JSON, oversized, empty: section unknown for every row.
+  for (const raw of ["", "   ", "{}", '{"id":"a","section":"left"}', "nope", "[", "x".repeat(70000)])
+    assert.deepEqual({ ...Model.parseLayoutSections(raw) }, {}, JSON.stringify(raw.slice(0, 12)))
+  const many = JSON.stringify(Array.from({ length: 600 }, (_, i) => ({ id: "acme.w" + i, section: "left" })))
+  assert.equal(Object.keys(Model.parseLayoutSections(many)).length, 512, "bounded entry count")
+})
+
+test("splitSections carries the layout line ahead of the fixed sections and bounds it to one line", () => {
+  const four = "===list===\n[]\n===catalog===\n[]\n===git===\n\n===manifest===\n"
+  const layout = JSON.stringify([{ id: "acme.widget", section: "right" }])
+  // Layout alone, settings alone, both, neither.
+  assert.equal(Model.splitSections("===layout===\n" + layout + "\n" + four).layout, layout)
+  assert.equal(Model.splitSections("===layout===\n" + layout + "\n" + four).settings, "")
+  const both = Model.splitSections('===settings===\n{"allowUnverifiedUpdates":true}\n===layout===\n' + layout + "\n" + four)
+  assert.equal(both.settings, '{"allowUnverifiedUpdates":true}')
+  assert.equal(both.layout, layout)
+  assert.deepEqual(Model.parseArray(both.list), [])
+  assert.equal(Model.splitSections(four).layout, "")
+  // The loader printed the marker but jq had nothing: the list follows at once.
+  const empty = Model.splitSections("===settings===\n===layout===\n" + four)
+  assert.equal(empty.settings, "")
+  assert.equal(empty.layout, "")
+  assert.deepEqual(Model.parseArray(empty.list), [])
+  // A marker inside a layout value cannot shift the fixed sections.
+  for (const marker of ["===list===", "===git===", "===catalog===", "===manifest===", "===settings===\n", "===layout===\n"]) {
+    const line = JSON.stringify([{ id: "acme.widget", section: "right", note: "x" + marker + "y" }])
+    const sections = Model.splitSections("===layout===\n" + line + "\n" + four)
+    assert.ok(sections, JSON.stringify(marker))
+    assert.equal(sections.layout, line, JSON.stringify(marker))
+    assert.deepEqual(Model.parseArray(sections.list), [], JSON.stringify(marker))
+    assert.deepEqual({ ...Model.parseLayoutSections(sections.layout) }, { "acme.widget": "right" }, JSON.stringify(marker))
+  }
+  // A layout line that never ends is a truncated stream; a layout marker after
+  // its own line is corruption; layout before settings is out of order.
+  assert.equal(Model.splitSections("===layout===\n" + layout), null)
+  assert.equal(Model.splitSections(four + "===layout===\n[]"), null)
+  assert.equal(Model.splitSections("===layout===\n" + layout + "\n===settings===\n{}\n" + four), null)
+})
+
+test("mergePlugins stamps each row with the section shell.json places it in", () => {
+  const layout = Model.parseLayoutSections(JSON.stringify([
+    { id: "acme.weather", section: "center" }, { id: "omarchy.clock", section: "left" }]))
+  const rows = Model.mergePlugins(listEntries, catalogEntries, gitMap, {}, layout)
+  const byId = Object.fromEntries(rows.map(r => [r.id, r]))
+  assert.equal(byId["acme.weather"].barSection, "center")
+  assert.equal(byId["omarchy.clock"].barSection, "left")
+  assert.equal(byId["acme.dev"].barSection, "")
+  // No layout at all, or a plain object with inherited keys, never invents one.
+  for (const row of Model.mergePlugins(listEntries, catalogEntries, gitMap)) assert.equal(row.barSection, "")
+  const constructorRow = Model.mergePlugins([{ id: "constructor", name: "c" }], [], {}, {}, {})[0]
+  assert.equal(constructorRow.barSection, "")
+})
+
+test("canMove, moveOptions and moveCommand only move a placed bar widget somewhere else", () => {
+  const placed = { id: "acme.widget", enabled: true, kinds: ["bar-widget"], barSection: "right" }
+  assert.equal(Model.canMove(placed), true)
+  assert.equal(Model.canMove({ ...placed, kinds: ["service", "bar-widget"] }), true)
+  assert.equal(Model.canMove({ ...placed, enabled: false }), false, "not on the bar")
+  assert.equal(Model.canMove({ ...placed, barSection: "" }), false, "section unknown")
+  assert.equal(Model.canMove({ ...placed, barSection: "top" }), false)
+  assert.equal(Model.canMove({ ...placed, kinds: ["service"] }), false, "takes no place")
+  assert.equal(Model.canMove({ ...placed, kinds: ["bar", "bar-widget"] }), false, "IS the bar")
+  assert.equal(Model.canMove({ ...placed, id: "" }), false)
+  assert.equal(Model.canMove(null), false)
+  // A built-in widget in the bar moves like any other; the shell owns the rule.
+  assert.equal(Model.canMove({ ...placed, id: "omarchy.clock", firstParty: true }), true)
+
+  assert.deepEqual(Model.moveOptions("right").map(o => o.value), ["left", "center"])
+  assert.deepEqual(Model.moveOptions("center").map(o => o.value), ["left", "right"])
+  assert.deepEqual(Model.moveOptions("").map(o => o.value), ["left", "center", "right"])
+
+  assert.deepEqual(Model.moveCommand(placed, "left"), ["omarchy", "plugin", "enable", "acme.widget", "left"])
+  assert.deepEqual(Model.moveCommand(placed, "right"), [], "already there")
+  assert.deepEqual(Model.moveCommand(placed, "Left"), [], "exact section names only")
+  assert.deepEqual(Model.moveCommand(placed, "--index"), [], "never an option")
+  assert.deepEqual(Model.moveCommand(placed, ""), [])
+  assert.deepEqual(Model.moveCommand({ ...placed, enabled: false }, "left"), [])
+  assert.equal(Model.moveNote("left"), "It is in the left section of the bar now.")
+  assert.equal(Model.successMessage("move", "Clock"), "Moved Clock")
+  assert.equal(Model.actionVerb("move"), "Move")
+  assert.equal(Model.actionGerund("move"), "Moving")
+})
+
+test("the store moves a widget through the placement question or straight from a named section", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  // The move rides the same dialog as placement, minus the current section,
+  // and is not a yes/no confirmation.
+  assert.match(store, /readonly property bool confirming: pendingKind !== "" && pendingKind !== "place" && pendingKind !== "move"/)
+  assert.match(store, /readonly property bool placing: pendingKind === "place" \|\| pendingKind === "move"/)
+  assert.match(store, /property string pendingSection: ""/)
+  assert.match(store, /readonly property var placementChoices: pendingKind === "move"\s*\? Model\.moveOptions\(pendingSection\) : Model\.placementOptions\(\)/)
+  assert.match(store, /"Move " \+ pendingLabel \+ " to which section of the bar\?"/)
+  assert.match(store, /function askMove\(row\) \{\s*if \(!Model\.canMove\(row\) \|\| busy\) return false[\s\S]*?pendingSection = String\(row\.barSection \|\| ""\)\s*pendingKind = "move"\s*return true/)
+  // Detached like enable: the layout rewrite tears the popup down.
+  assert.match(store, /function startMoveTo\(row, section\) \{\s*if \(busy\) return false\s*var command = Model\.moveCommand\(row, section\)\s*if \(command\.length === 0\) return false\s*runDetached\(Model\.successMessage\("move", row\.name\), Model\.moveNote\(section\), command\)/)
+  assert.match(store, /if \(pendingKind === "move"\) \{\s*var moving = Model\.findRow\(rows, pendingId\)[\s\S]*?cancelPending\(\)[\s\S]*?"Could not move " \+ movingLabel[\s\S]*?startMoveTo\(moving, section\)\s*return\s*\}/)
+  assert.match(store, /function cancelPending\(\) \{[\s\S]*?pendingSection = ""/)
+  // The layout section is read with the same bounded jq the settings use,
+  // and every row is stamped from it.
+  assert.match(store, /printf '===layout===\\\\n'; "\s*\+ "head -c 1048577 -- \\"\$HOME\/\.config\/omarchy\/shell\.json\\" 2>\/dev\/null "/)
+  assert.match(store, /Model\.parseManifestMeta\(sections\.manifest\),\s*Model\.parseLayoutSections\(sections\.layout\)\)/)
+  assert.doesNotMatch(store, /runAction\("move"/)
+})
+
+test("the details pane moves with a segmented control and the popup row with one icon", () => {
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+  assert.match(details, /signal moveRequested\(string section\)/)
+  assert.match(details, /readonly property bool canMove: Model\.canMove\(row\)/)
+  const group = details.slice(details.indexOf("id: sectionGroup") - 200, details.indexOf("id: sectionGroup") + 700)
+  assert.match(group, /visible: root\.canMove/)
+  assert.match(group, /ButtonGroup \{\s*id: sectionGroup/)
+  assert.match(group, /options: Model\.placementOptions\(\)/)
+  assert.match(group, /value: root\.row \? String\(root\.row\.barSection \|\| ""\) : ""/)
+  assert.match(group, /focusable: false/)
+  assert.match(group, /enabled: root\.actionsEnabled/)
+  assert.match(group, /onChanged: function\(value\) \{\s*if \(root\.row && value !== String\(root\.row\.barSection \|\| ""\)\) root\.moveRequested\(value\)/)
+  // Before Update in the toolbar, after the on/off switch.
+  assert.ok(details.indexOf("id: enabledSwitch") < details.indexOf("id: sectionGroup"), "after the switch")
+  assert.ok(details.indexOf("id: sectionGroup") < details.indexOf("id: updateButton"), "before update")
+
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  assert.match(row, /signal moveRequested\(\)/)
+  assert.match(row, /readonly property bool canMove: Model\.canMove\(row\)/)
+  const move = row.slice(row.indexOf("id: moveButton") - 40, row.indexOf("id: updateButton"))
+  assert.match(move, /PanelActionButton \{\s*id: moveButton/)
+  assert.match(move, /visible: root\.canMove/)
+  assert.match(move, /iconText: "󰓡"/)
+  assert.match(move, /tooltipText: "Move in the bar"/)
+  assert.match(move, /enabled: root\.actionsEnabled/)
+  assert.match(move, /onClicked: root\.moveRequested\(\)/)
+  // The compact row has no action cluster, so it gets no icon.
+  const compact = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
+  assert.doesNotMatch(compact, /moveRequested/)
+
+  // Both windows wire it: the popup asks, the details pane names the section.
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.match(panel, /function askMove\(row\) \{\s*if \(!store\.askMove\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
+  assert.equal(panel.split("onMoveRequested: {").length - 1, 2, "installed and built-in rows")
+  assert.match(panel, /onMoveRequested: \{\s*root\.selectedIndex = index\s*root\.askMove\(modelData\)/)
+  assert.match(panel, /onMoveRequested: \{\s*root\.selectedIndex = globalIndex\s*root\.askMove\(modelData\)/)
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  assert.match(expanded, /onMoveRequested: function\(section\) \{ store\.startMoveTo\(root\.selectedRow, section\) \}/)
+
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
+  assert.match(readme, /- \*\*Move\*\* — for a bar widget that is on the bar, changes which section it/)
+  assert.match(readme, /`omarchy plugin enable <id> <section>`, which the shell treats as a move for/)
+  assert.match(readme, /nothing edits `shell\.json` directly/)
 })
 
 test("the popup row hides its update button unless an update is installable or running", () => {

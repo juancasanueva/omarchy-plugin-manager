@@ -25,6 +25,8 @@ Item {
   signal removeRequested()
   signal enableRequested()
   signal disableRequested()
+  // A section name from the control below; the store checks it again.
+  signal moveRequested(string section)
   signal repositoryNavigationRequested(string url)
   signal githubNavigationRequested(var candidates, string fallbackUrl)
 
@@ -33,6 +35,7 @@ Item {
   readonly property bool upToDate: Model.upToDate(row)
   readonly property bool canEnable: Model.canEnable(row)
   readonly property bool canDisable: Model.canDisable(row)
+  readonly property bool canMove: Model.canMove(row)
   // The marketplace listing for this row, when the catalog has one: it lends
   // the pane its picture and its initials. Null is fine; the checkout's own
   // preview.png and the repository guess still apply.
@@ -194,6 +197,33 @@ Item {
                   : "Enable this plugin"
               }
               fontFamily: root.fontFamily
+            }
+          }
+        }
+
+        // Where a bar widget sits: the three sections as one segmented
+        // control, the current one lit. Clicking another moves it there. The
+        // shell does the moving, and the pane learns the new section from
+        // shell.json the way it learns every other fact here, so the chip
+        // only changes once the widget has actually moved.
+        Item {
+          visible: root.canMove
+          width: sectionGroup.implicitWidth
+          height: updateButton.height
+
+          ButtonGroup {
+            id: sectionGroup
+            anchors.verticalCenter: parent.verticalCenter
+            options: Model.placementOptions()
+            value: root.row ? String(root.row.barSection || "") : ""
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            focusable: false
+            enabled: root.actionsEnabled
+            opacity: enabled ? 1 : 0.4
+            onChanged: function(value) {
+              if (root.row && value !== String(root.row.barSection || "")) root.moveRequested(value)
             }
           }
         }

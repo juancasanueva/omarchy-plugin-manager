@@ -148,7 +148,7 @@ test("load producer emits strict checkout HEAD provenance without coupling exact
     // This plugin's own inline entry, among other widgets, is printed ahead of the list.
     writeFileSync(join(home, ".config", "omarchy", "shell.json"), JSON.stringify({ bar: { layout: {
       left: [{ id: "omarchy.clock" }],
-      right: [{ id: "io.github.juancasanueva.plugin-manager", allowUnverifiedUpdates: true }, { id: "other" }] } },
+      right: [{ id: "io.github.juancasanueva.plugin-manager", allowUnverifiedUpdates: true }, { id: "other" }, "bare.string"] } },
       plugins: [{ id: "io.github.juancasanueva.plugin-manager", stale: true }] }))
 
     executable(join(bin, "omarchy"), `#!/usr/bin/env bash
@@ -194,9 +194,19 @@ esac
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, "")
     assert.ok(result.stdout.startsWith("===settings===\n"), "settings lead the stream")
-    const settingsSection = result.stdout.split("===settings===\n")[1].split("===list===")[0]
+    const settingsSection = result.stdout.split("===settings===\n")[1].split("===layout===\n")[0]
     assert.deepEqual(JSON.parse(settingsSection), { id: "io.github.juancasanueva.plugin-manager", allowUnverifiedUpdates: true },
       "the layout entry wins over a stale plugins[] entry")
+    // Every bar entry with its section, on one line, whether the entry is an
+    // object or a bare id string; nothing from plugins[].
+    const layoutSection = result.stdout.split("===layout===\n")[1].split("===list===")[0]
+    assert.equal(layoutSection.trim().split("\n").length, 1, "one line")
+    assert.deepEqual(JSON.parse(layoutSection), [
+      { id: "omarchy.clock", section: "left" },
+      { id: "io.github.juancasanueva.plugin-manager", section: "right" },
+      { id: "other", section: "right" },
+      { id: "bare.string", section: "right" }
+    ])
     const gitSection = result.stdout.split("===git===\n")[1].split("\n===manifest===")[0]
     const records = gitSection.trim().split("\n").map(line => JSON.parse(line))
     const byId = Object.fromEntries(records.map(record => [record.path.split("/").at(-1), record]))

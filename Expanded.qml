@@ -1273,6 +1273,7 @@ Item {
             onRemoveRequested: store.askRemove(root.selectedRow)
             onEnableRequested: store.askEnable(root.selectedRow)
             onDisableRequested: store.askDisable(root.selectedRow)
+            onMoveRequested: function(section) { store.startMoveTo(root.selectedRow, section) }
             onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
             onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
             onPreviewUndecodable: root.previewsSupported = false
