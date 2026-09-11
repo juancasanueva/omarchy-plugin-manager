@@ -471,7 +471,11 @@ Rectangle {
     PanelActionButton {
       id: updateButton
       anchors.verticalCenter: parent.verticalCenter
-      visible: root.row ? root.row.updatable === true : false
+      // A disabled action button shows no tooltip, so a button that cannot
+      // install anything says nothing; the row's status line carries the
+      // reason. Shown only while an update is installable or running.
+      visible: root.updating || (!!root.row && root.row.updatable === true
+        && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true))
       // Same trick as the header's refresh: the glyph steps aside while the
       // pull runs and a spinning copy takes its place.
       iconText: root.updating ? "" : "󰑐"

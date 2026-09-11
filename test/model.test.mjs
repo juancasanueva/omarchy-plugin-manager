@@ -4974,3 +4974,16 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
   assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; revokeReleaseNavigation\(\); return \}/)
 })
+
+test("the popup row hides its update button unless an update is installable or running", () => {
+  // PanelActionButton disables its mouse area with the button, so a disabled
+  // update button shows no tooltip and says nothing; the row's status line
+  // carries the reason. The expanded details pane keeps its disabled button,
+  // whose Button component does show the tooltip.
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const button = row.slice(row.indexOf("id: updateButton"), row.indexOf("id: updateButton") + 900)
+  assert.match(button, /visible: root\.updating \|\| \(!!root\.row && root\.row\.updatable === true\s*&& \(root\.row\.pinnedEligible === true \|\| root\.row\.unverifiedEligible === true\)\)/)
+  const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
+  const detailsButton = details.slice(details.indexOf("id: updateButton"), details.indexOf("id: updateButton") + 400)
+  assert.match(detailsButton, /visible: root\.row \? root\.row\.updatable === true : false/)
+})
