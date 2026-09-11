@@ -1,2 +1,4 @@
 # Local agent/tooling caches
 .atl/
+.codegraph/
+__pycache__/
