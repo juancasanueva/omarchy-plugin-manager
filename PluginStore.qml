@@ -77,7 +77,7 @@ Item {
 
   // ---- In-flight action ---------------------------------------------------
 
-  property string busyKind: ""   // "add" | "update" | "remove"
+  property string busyKind: ""   // "install" | "update" | "remove"
   // Which row an update is running on, by id: busyId carries the label for
   // messages, and labels are not unique.
   property string busyRowId: ""
@@ -155,7 +155,9 @@ Item {
   property string pendingId: ""
   property string pendingLabel: ""
   property string pendingUrl: ""
-  property bool pendingVerified: false
+  // The one commit an open install question names, so the answer can be held
+  // to exactly that snapshot when the catalog has moved on underneath it.
+  property string pendingVerifiedCommit: ""
   readonly property bool confirming: pendingKind !== "" && pendingKind !== "place" && pendingKind !== "move"
 
   // Enabling a bar widget is a different question from the yes/no ones above:
@@ -188,13 +190,15 @@ Item {
     ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
 
   readonly property string confirmMessage: {
-    if (pendingKind === "add")
-      return "Clone " + pendingLabel + "?\n\n"
+    if (pendingKind === "install")
+      return "Install " + pendingLabel + "?\n\n"
         + pendingUrl + "\n\n"
-        // Stated as a review rather than a guarantee. A badge that reads as a
-        // safety promise is worse than no badge, because it retires the
-        // judgement the next sentence is asking for.
-        + (pendingVerified ? "The registry lists this plugin as verified, which is a review and not a guarantee. " : "")
+        // Exactly what lands on disk: the reviewed commit, not whatever the
+        // branch points at now. Stated as a review rather than a guarantee —
+        // a badge that reads as a safety promise is worse than no badge,
+        // because it retires the judgement the next sentence is asking for.
+        + "Only the marketplace-verified snapshot " + Model.shortSha(pendingVerifiedCommit)
+        + " is installed, never the repository's current tip. Verification is a review and not a guarantee. "
         + "Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code you are willing to run."
         + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
     if (pendingKind === "remove")
@@ -441,24 +445,6 @@ Item {
     + "fi; "
     + "notify-send -a 'Plugin Manager' \"$summary\" \"$detail\""
 
-  // Clone, then place — as one detached command.
-  //
-  // Detached is not an optimisation, it is the requirement. The moment the
-  // clone lands in ~/.config/omarchy/plugins the shell tears every plugin
-  // widget down and rebuilds it, the popup among them, and a Process owned by
-  // a destroyed surface cannot be relied on to finish. The placement would be
-  // the half that got dropped.
-  //
-  // What is given up is the status line, which nobody was going to read on a
-  // popup that no longer exists. The script reports through a desktop
-  // notification instead, which outlives all of this.
-  function launchAdd(url, id, section, label) {
-    // Positional arguments, never text spliced into the script, so no url can
-    // become a command.
-    Quickshell.execDetached(["bash", "-c", installScript, "install", url, id, section, label])
-    setStatus(Model.actionGerund("add") + " " + label + "…", false)
-  }
-
   // ---- Asking -------------------------------------------------------------
   //
   // Each ask returns whether the request was taken. A surface uses that to do
@@ -466,16 +452,23 @@ Item {
   // and only for a request that was real, so a click on a greyed button never
   // costs anything.
 
-  // Installing from the catalog runs the same argv array everywhere — the
-  // registry's own install command is read for its url and never executed.
+  // Installing from the catalog runs the bundled helper on one reviewed
+  // commit — the registry's own install command is read for its url, shown,
+  // and never executed. Only a listing with a verified snapshot is
+  // installable, so there is always a commit to name.
   function askInstall(entry) {
-    if (!entry || !entry.installable || busy) return false
-    pendingUrl = entry.installUrl
+    // Fail closed on the snapshot too: `installable` is derived from it,
+    // and the confirmation is about to name the commit it carries.
+    if (!entry || !entry.installable || !entry.updateSnapshot || busy) return false
+    // The url the question shows is the repository the request fetches, not
+    // the registry's free-text install command: a dialog that named a
+    // different place than the one being cloned would be worse than silent.
+    pendingUrl = String(entry.updateSnapshot.repository)
     pendingLabel = entry.name
     pendingId = entry.id
-    pendingVerified = entry.verified === true
+    pendingVerifiedCommit = String(entry.updateSnapshot.verifiedCommit)
     pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
-    pendingKind = "add"
+    pendingKind = "install"
     return true
   }
 
@@ -586,6 +579,7 @@ Item {
   function cancelPending() {
     pendingKind = ""
     pendingUnverifiedSha = ""
+    pendingVerifiedCommit = ""
     pendingSection = ""
     pendingId = ""
     pendingLabel = ""
@@ -617,7 +611,7 @@ Item {
       runUpdate(target)
       return
     }
-    if (pendingKind === "add") {
+    if (pendingKind === "install") {
       if (pendingId !== "" && pendingPlacementNeeded) {
         pendingKind = "place"
         return
@@ -629,15 +623,51 @@ Item {
     }
   }
 
-  // Clone, then place — as one detached command built from the answers
-  // collected above. The pending state is cleared first: by the time the
-  // clone lands the surface no longer exists to clear anything.
+  // Install, then place — one helper request built from the answers collected
+  // above. The pending state is cleared first: by the time the checkout lands
+  // the surface no longer exists to clear anything.
+  //
+  // Re-gated on the live catalog, exactly as an update is: the grid may have
+  // refetched while the question was on screen. Only the commit the dialog
+  // named is ever installed; a snapshot that moved is a no-op, never a
+  // substitute.
   function startAdd(section) {
-    var url = pendingUrl
-    var label = pendingLabel
     var id = pendingId
+    var label = pendingLabel
+    var commit = pendingVerifiedCommit
     cancelPending()
-    launchAdd(url, id, section, label)
+    var entry = Model.findRow(catalog, id)
+    var request = Model.installRequest(entry, section)
+    if (!request || request.verifiedCommit !== commit) {
+      setStatus("Could not install " + label + ": the verified snapshot changed", true)
+      return
+    }
+    launchInstall(request, label)
+  }
+
+  // Detached is not an optimisation, it is the requirement. The moment the
+  // checkout lands in ~/.config/omarchy/plugins the shell tears every plugin
+  // widget down and rebuilds it, the popup among them, and a Process owned by
+  // a destroyed surface cannot be relied on to finish. The helper forks an
+  // independent worker before it touches the plugin root, so publication and
+  // placement finish whatever happens to this observer; only the result can
+  // be lost, and a desktop notification covers that.
+  function launchInstall(request, label) {
+    if (busy || pinnedProc.running || actionProc.running) return
+    busyRowId = ""
+    busyId = label
+    busyKind = "install"
+    pinnedOutput = ""
+    pinnedExited = false
+    pinnedOverflow = false
+    setStatus("Installing the verified snapshot of " + label
+      + "; closing this window does not cancel it", false)
+    // Process.command is QStringList; avoid the environment property's
+    // QVariantHash binding, which this installed QML toolchain cannot type.
+    pinnedProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
+      "WAYLAND_DISPLAY=" + String(Quickshell.env("WAYLAND_DISPLAY") || ""),
+      "/usr/bin/python3", "-I", "-S", pinnedHelperPath, JSON.stringify(request)]
+    pinnedProc.running = true
   }
 
   // The commit an open unreviewed-update question names, so the answer can
@@ -708,14 +738,22 @@ Item {
     pinnedProc.running = true
   }
 
+  // Both helper shapes land here: the same bounded result, the same statuses
+  // read from a fixed list, and the same refusal to report anything the
+  // helper did not say. Only the words differ.
   function finishPinnedUpdate() {
-    if (!pinnedExited || busyKind !== "update") return
+    if (!pinnedExited || (busyKind !== "update" && busyKind !== "install")) return
+    var installing = busyKind === "install"
+    var done = installing ? "installed" : "updated"
     var outcome = "outcome unknown; inspect retained transactions"
     var reason = ""
     try {
       var result = JSON.parse(pinnedOutput)
-      var allowed = ["updated", "updated; reload failed", "updated; finalization failed",
-        "unchanged; update refused", "unchanged; request refused"]
+      var allowed = installing
+        ? ["installed", "installed; reload failed", "installed; enable failed",
+           "installed; finalization failed", "unchanged; install refused", "unchanged; request refused"]
+        : ["updated", "updated; reload failed", "updated; finalization failed",
+           "unchanged; update refused", "unchanged; request refused"]
       if (!pinnedOverflow && result && allowed.indexOf(result.status) >= 0) {
         outcome = result.status
         // The helper's own static prose; still bounded to printable ASCII here.
@@ -723,20 +761,23 @@ Item {
           reason = result.reason.replace(/[^\x20-\x7e]/g, "").slice(0, 200)
       }
     } catch (error) {}
-    var changed = outcome.indexOf("updated") === 0
+    var changed = outcome.indexOf(done) === 0
+    var kind = busyKind
     var label = busyId
     busyKind = ""
     busyId = ""
     busyRowId = ""
     pinnedOutput = ""
     setStatus(outcome.indexOf("unchanged") === 0 && reason !== "" ? outcome + ": " + reason : outcome,
-              outcome !== "updated")
+              outcome !== done)
     if (changed) {
-      pendingUpdateReport = ""
-      rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, {}), null, allowUnverifiedUpdates)
+      if (!installing) {
+        pendingUpdateReport = ""
+        rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, {}), null, allowUnverifiedUpdates)
+      }
       root.requestFreshUpdateCycle()
     } else root.reload()
-    root.actionFinished("update", label, outcome === "updated" ? 0 : 1)
+    root.actionFinished(kind, label, outcome === done ? 0 : 1)
   }
 
   function runAction(kind, label, command) {
@@ -864,45 +905,6 @@ Item {
     }
     onRunningChanged: if (!running) root.drainFreshUpdateCycle()
   }
-
-  // Clone, wait for the shell to notice, then place. Upstream's own
-  // `--enable` path cannot be used for this: it reads the section from an
-  // interactive `gum choose` that returns immediately under `--yes`, so it
-  // would land the widget in whatever section the author nominated. The panel
-  // asks first and passes the answer through here instead.
-  //
-  // Everything variable arrives as a positional argument, never spliced into
-  // the text: $1 url, $2 plugin id, $3 section (any of which may be empty).
-  readonly property string installScript: ""
-    // pipefail matters here: the error text is taken through `| tail -1`, and
-    // without it the pipeline would report tail's exit status — which always
-    // succeeds — and every failed install would be announced as a success.
-    + "set -u -o pipefail; "
-    + "url=\"$1\"; id=\"$2\"; section=\"$3\"; label=\"$4\"; "
-    + "note() { notify-send -a 'Plugin Manager' \"$1\" \"$2\"; }; "
-    // stderr is captured and stdout dropped, then reduced to its last line:
-    // the omarchy scripts put the reason there, and a notification body is no
-    // place for a git transcript.
-    + "if ! err=$(omarchy plugin add \"$url\" --yes 2>&1 >/dev/null | tail -1); then "
-    + "  note \"Could not install $label\" \"$err\"; exit 1; "
-    + "fi; "
-    // No id means the url field, which cannot know what it is about to clone.
-    // The plugin is added and left off; its row carries an Enable button.
-    + "if [ -z \"$id\" ]; then "
-    + "  note \"Added $label\" 'Enable it from the plugin manager.'; exit 0; "
-    + "fi; "
-    // The shell rescans asynchronously and `omarchy plugin enable` fails
-    // outright on an id it has not discovered yet — the same wait upstream
-    // does before its own enable.
-    + "for _ in $(seq 40); do "
-    + "  omarchy plugin list --json | jq -e --arg id \"$id\" 'any(.[]; .id == $id)' >/dev/null 2>&1 && break; "
-    + "  sleep 0.05; "
-    + "done; "
-    + "if ! err=$(omarchy plugin enable \"$id\" ${section:+\"$section\"} 2>&1 >/dev/null | tail -1); then "
-    + "  note \"Added $label, but could not enable it\" \"$err\"; exit 1; "
-    + "fi; "
-    + "if [ -n \"$section\" ]; then note \"Installed $label\" \"Placed in the $section section of the bar.\"; "
-    + "else note \"Installed $label\" 'Enabled.'; fi"
 
   // Fetch, join, shrink, cache. The catalog and its anonymous engagement stats
   // are separate Marketplace sources; jq joins hearts by plugin id while it

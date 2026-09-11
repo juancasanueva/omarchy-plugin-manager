@@ -805,7 +805,7 @@ function moveNote(section) {
 }
 
 function actionVerb(kind) {
-  if (kind === "add") return "Add"
+  if (kind === "install") return "Install"
   if (kind === "update") return "Update"
   if (kind === "remove") return "Remove"
   if (kind === "enable") return "Enable"
@@ -815,7 +815,7 @@ function actionVerb(kind) {
 }
 
 function successMessage(kind, label) {
-  if (kind === "add") return "Added " + label
+  if (kind === "install") return "Installed " + label
   if (kind === "update") return "Updated " + label
   if (kind === "remove") return "Removed " + label
   if (kind === "enable") return "Enabled " + label
@@ -835,7 +835,7 @@ function failureMessage(kind, stderrText, exitCode) {
 // "Updateing" is what naive suffixing gets you; the in-flight line reads too
 // often to leave it broken.
 function actionGerund(kind) {
-  if (kind === "add") return "Adding"
+  if (kind === "install") return "Installing"
   if (kind === "update") return "Updating"
   if (kind === "remove") return "Removing"
   if (kind === "enable") return "Enabling"
@@ -1015,6 +1015,24 @@ function installUrlFor(entry) {
   return isValidGitUrl(entry.repo) ? normalizeGitUrl(entry.repo) : ""
 }
 
+// Whether the panel can install a listing at all. It installs one exact
+// marketplace-verified commit through the pinned helper and nothing else, so a
+// listing with no unambiguous verified snapshot — unreviewed, duplicated id,
+// non-GitHub repository, no full SHA — has nothing exact to install and gets a
+// stated reason instead of a button that could only fail.
+//
+// The displayed url and the fetched repository must also be the same place.
+// `installCommand` is free text the registry supplies and `repo` is what the
+// verified snapshot is bound to; if they were allowed to disagree, a listing
+// could show an official url in the confirmation and install somebody else's
+// repository. Comparison is canonical, so a `.git` suffix, a trailing slash,
+// an ssh form or a different case are still the same repository.
+function catalogInstallable(entry, isInstalled) {
+  if (!entry || entry.installAvailable !== true || entry.installUrl === "" || isInstalled) return false
+  var snapshot = entry.updateSnapshot
+  return !!snapshot && canonicalUpdateRepository(entry.installUrl) === snapshot.repository
+}
+
 function catalogEntries(doc, installedIds) {
   if (!doc || !Array.isArray(doc.plugins)) return []
   var installed = installedIds || {}
@@ -1074,9 +1092,10 @@ function catalogEntries(doc, installedIds) {
     entry.searchText = catalogSearchText(entry)
     entry.listedTimestamp = catalogTimestamp(entry)
     entry.installUrl = installUrlFor(entry)
-    // A listing with no usable url cannot be installed from here whatever the
-    // registry claims, so the flag follows the url rather than the other way.
-    entry.installable = entry.installAvailable && entry.installUrl !== "" && !entry.installed
+    // A listing with no usable url, or no verified snapshot to install exactly,
+    // cannot be installed from here whatever the registry claims: the flag
+    // follows the evidence rather than the other way round.
+    entry.installable = catalogInstallable(entry, entry.installed)
     out.push(entry)
   }
 
@@ -1412,6 +1431,9 @@ function installBlockedReason(entry) {
   if (!entry) return ""
   if (entry.installNote !== "") return entry.installNote
   if (entry.installUrl === "") return "This listing has no usable clone url."
+  if (!entry.updateSnapshot) return "The marketplace has not verified a snapshot of this listing."
+  if (canonicalUpdateRepository(entry.installUrl) !== entry.updateSnapshot.repository)
+    return "This listing's install command names a repository its verified snapshot does not."
   return "This plugin cannot be installed from here."
 }
 
@@ -1427,7 +1449,7 @@ function markInstalled(entries, installedIds) {
     var copy = {}
     for (var key in entry) copy[key] = entry[key]
     copy.installed = isInstalled
-    copy.installable = entry.installAvailable && entry.installUrl !== "" && !isInstalled
+    copy.installable = catalogInstallable(entry, isInstalled)
     out.push(copy)
   }
   return out
@@ -1455,8 +1477,8 @@ function installStateDiffers(entries, installedIds) {
   for (var i = 0; i < (entries || []).length; i++) {
     var entry = entries[i]
     var isInstalled = hasOwnKey(installed, entry.id)
-    var installable = entry.installAvailable && entry.installUrl !== "" && !isInstalled
-    if (entry.installed !== isInstalled || entry.installable !== installable) return true
+    if (entry.installed !== isInstalled
+        || entry.installable !== catalogInstallable(entry, isInstalled)) return true
   }
   return false
 }
@@ -1494,7 +1516,7 @@ function browseModalFocusOwner(detailsOpen, confirming, placing) {
 
 function catalogPlacementConfirmationNote(needsPlacement) {
   return needsPlacement
-    ? "\n\nNext, choose its bar section. Cloning starts only after that choice."
+    ? "\n\nNext, choose its bar section. Installation starts only after that choice."
     : ""
 }
 
@@ -1848,6 +1870,25 @@ function pinnedRequest(row, entries) {
       || canonicalUpdateRepository(row.updateOrigin) !== found.repository) return null
   return { schemaVersion: 1, id: row.id, repository: found.repository,
     verifiedCommit: found.verifiedCommit, expectedLocalHead: row.headSha.toLowerCase() }
+}
+
+// The request a card's Install sends: the one commit the marketplace reviewed,
+// and the bar section the user picked ("" enables it without a placement,
+// which is what everything that is not a bar widget gets). It is
+// the verified update request minus the installed HEAD there is none of yet.
+// Cached catalog data chooses the request and never authorizes publication;
+// the helper rechecks the live catalog before the fetch and again before it
+// publishes, and refuses if anything about the listing moved.
+function installRequest(entry, section) {
+  // Re-derived from the entry, never read off its `installable` flag: the
+  // grid may have refetched and withdrawn the listing while the question was
+  // on screen, exactly as canStartUpdate re-gates an update.
+  if (!catalogInstallable(entry, entry && entry.installed)) return null
+  var snapshot = entry.updateSnapshot
+  if (snapshot.id !== entry.id) return null
+  if (typeof section !== "string" || (section !== "" && BAR_SECTIONS.indexOf(section) < 0)) return null
+  return { schemaVersion: 1, id: snapshot.id, repository: snapshot.repository,
+    verifiedCommit: snapshot.verifiedCommit, section: section }
 }
 
 // The request for an upstream commit nobody has reviewed. It binds the exact

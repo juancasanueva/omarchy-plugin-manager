@@ -29,7 +29,7 @@ const Model = new Function(
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
-    parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
+    parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, installRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
@@ -862,21 +862,22 @@ test("lastLine picks the last thing stderr actually said", () => {
 })
 
 test("failureMessage prefers the CLI's own words, and falls back to the exit code", () => {
-  assert.equal(Model.failureMessage("add", "fatal: repository not found\n", 128), "Add failed: fatal: repository not found")
+  assert.equal(Model.failureMessage("remove", "fatal: repository not found\n", 128), "Remove failed: fatal: repository not found")
   assert.equal(Model.failureMessage("remove", "", 1), "Remove failed (exit 1)")
 })
 
 test("actionGerund does not produce Updateing", () => {
   assert.equal(Model.actionGerund("update"), "Updating")
   assert.equal(Model.actionGerund("remove"), "Removing")
-  assert.equal(Model.actionGerund("add"), "Adding")
-  assert.equal(Model.actionVerb("add"), "Add")
+  assert.equal(Model.actionGerund("install"), "Installing")
+  assert.equal(Model.actionVerb("install"), "Install")
 })
 
-// Adding no longer enables — placement is a separate, asked-for step — so the
-// message must not claim the plugin is running.
-test("successMessage reports an add as added, not as live", () => {
-  assert.equal(Model.successMessage("add", "omarchy-clock"), "Added omarchy-clock")
+// Installing does enable, so the message may say the plugin is running; what
+// it must not do is name a kind nothing sends any more.
+test("successMessage reports an install as installed", () => {
+  assert.equal(Model.successMessage("install", "omarchy-clock"), "Installed omarchy-clock")
+  assert.equal(Model.successMessage("add", "omarchy-clock"), "Done")
 })
 
 test("matchesQuery searches name and id, case-insensitively", () => {
@@ -1023,6 +1024,7 @@ const catalogDoc = {
       repo: "https://github.com/acme/omarchy-weather",
       installCommand: "omarchy plugin add https://github.com/acme/omarchy-weather.git --enable",
       installAvailable: true, verificationStatus: "verified", sourceType: "community",
+      verificationCommit: "d".repeat(40),
       stars: 120, marketplaceHearts: 7, addedAt: "2026-08-19",
       listedAt: "2026-08-19T14:30:00.000Z",
       accent: "cyan", initials: "WE", previewThumbnail: "assets/img/w-card.webp"
@@ -1399,6 +1401,109 @@ test("a listing the registry cannot install offers no install button", () => {
   assert.match(Model.installBlockedReason(suite), /own installer/)
 })
 
+test("a listing with no marketplace-verified snapshot cannot be installed from here", () => {
+  // The panel installs one exact reviewed commit and nothing else, so a
+  // listing the marketplace has not verified has no commit to install.
+  const unreviewed = {
+    id: "acme.fresh", name: "Fresh", kind: "Panel", category: "Tools",
+    repo: "https://github.com/acme/fresh", installCommand: "",
+    installAvailable: true, sourceType: "community", verificationStatus: "unverified"
+  }
+  const entry = Model.catalogEntries({ plugins: [unreviewed] }, {})[0]
+  assert.equal(entry.installUrl, "https://github.com/acme/fresh")
+  assert.equal(entry.installable, false)
+  assert.equal(Model.installState(entry), "unavailable")
+  assert.equal(Model.installBlockedReason(entry),
+    "The marketplace has not verified a snapshot of this listing.")
+
+  // Verified but with no commit named, or a commit that is not a full SHA, is
+  // the same thing: nothing exact to install.
+  for (const change of [{ verificationStatus: "verified" },
+    { verificationStatus: "verified", verificationCommit: "d".repeat(39) },
+    { verificationStatus: "verified", verificationCommit: "d".repeat(40), sourceType: "builtin2" },
+    { verificationStatus: "verified", verificationCommit: "d".repeat(40), repo: "https://evil.test/a/b" }]) {
+    const projected = Model.catalogEntries({ plugins: [{ ...unreviewed, ...change }] }, {})[0]
+    assert.equal(projected.installable, false, JSON.stringify(change))
+  }
+  const verified = Model.catalogEntries({ plugins: [{ ...unreviewed,
+    verificationStatus: "verified", verificationCommit: "d".repeat(40) }] }, {})[0]
+  assert.equal(verified.installable, true)
+  assert.equal(Model.installState(verified), "installable")
+
+  // A duplicated id leaves no unambiguous snapshot, so it is not installable.
+  const duplicated = Model.catalogEntries({ plugins: [
+    { ...unreviewed, verificationStatus: "verified", verificationCommit: "d".repeat(40) },
+    { ...unreviewed, verificationStatus: "verified", verificationCommit: "e".repeat(40) }] }, {})
+  assert.ok(duplicated.every(entry => entry.installable === false))
+})
+
+test("a listing whose install command names another repository is not installable", () => {
+  // The card shows a url and the request fetches a repository; if those can
+  // disagree, a listing can display an official url and install someone
+  // else's code. `installCommand` is registry-supplied free text, `repo` is
+  // what the verified snapshot is bound to, so they must agree or the listing
+  // is not installable at all.
+  const spoofed = {
+    id: "acme.clock", name: "Clock", kind: "Panel", category: "Tools",
+    repo: "https://github.com/attacker/evil",
+    installCommand: "omarchy plugin add https://github.com/omarchy/official-clock.git --enable",
+    installAvailable: true, sourceType: "community",
+    verificationStatus: "verified", verificationCommit: "d".repeat(40)
+  }
+  const entry = Model.catalogEntries({ plugins: [spoofed] }, {})[0]
+  assert.equal(entry.installUrl, "https://github.com/omarchy/official-clock.git")
+  assert.equal(entry.updateSnapshot.repository, "https://github.com/attacker/evil")
+  assert.equal(entry.installable, false)
+  assert.equal(Model.installState(entry), "unavailable")
+  assert.equal(Model.installBlockedReason(entry),
+    "This listing's install command names a repository its verified snapshot does not.")
+  assert.equal(Model.installRequest(entry, "left"), null)
+  assert.equal(Model.markInstalled([entry], {})[0].installable, false)
+
+  // Agreement is canonical, not textual: a `.git` suffix, a trailing slash,
+  // an ssh form and a different case are the same repository.
+  for (const command of ["omarchy plugin add https://github.com/Attacker/Evil.git",
+                         "omarchy plugin add https://github.com/attacker/evil/",
+                         "omarchy plugin add git@github.com:attacker/evil.git", ""]) {
+    const agreed = Model.catalogEntries({ plugins: [{ ...spoofed, installCommand: command }] }, {})[0]
+    assert.equal(agreed.installable, true, command)
+    assert.equal(Model.installRequest(agreed, "left").repository, "https://github.com/attacker/evil")
+  }
+})
+
+test("installRequest binds the verified snapshot, never the repository tip", () => {
+  const entries = Model.catalogEntries(catalogDoc, {})
+  const weather = entries.find(entry => entry.id === "acme.weather")
+  assert.deepEqual(Model.installRequest(weather, "right"), {
+    schemaVersion: 1, id: "acme.weather",
+    repository: "https://github.com/acme/omarchy-weather",
+    verifiedCommit: "d".repeat(40), section: "right"
+  })
+  // The clone url the card shows carries a .git suffix; the request carries
+  // the canonical repository the helper reauthorizes against instead.
+  assert.equal(weather.installUrl, "https://github.com/acme/omarchy-weather.git")
+  for (const section of ["", "left", "center"])
+    assert.equal(Model.installRequest(weather, section).section, section)
+  for (const section of ["Right", "bogus", "left right", null, undefined, 0, ["left"]])
+    assert.equal(Model.installRequest(weather, section), null, String(section))
+  assert.equal(Model.installRequest(null, "left"), null)
+  assert.equal(Model.installRequest(entries.find(entry => entry.id === "acme.suite"), "left"), null)
+  // Something already installed is never requested again.
+  assert.equal(Model.installRequest({ ...weather, installed: true }, "left"), null)
+  assert.equal(Model.installRequest({ ...weather, updateSnapshot: null }, "left"), null)
+  // Installability is re-derived, never read off the stale flag: a grid
+  // refetch that withdraws the listing while the dialog is open produces no
+  // request, exactly as canStartUpdate re-gates an update.
+  for (const change of [{ installAvailable: false }, { installUrl: "" },
+                        { installUrl: "https://github.com/acme/other" }])
+    assert.equal(Model.installRequest({ ...weather, ...change }, "left"), null, JSON.stringify(change))
+  assert.equal(Model.installRequest({ ...weather, installAvailable: false, installable: true }, "left"),
+    null, "the derived flag carries no authority of its own")
+  // A snapshot that does not describe this very entry carries no authority.
+  assert.equal(Model.installRequest(
+    { ...weather, updateSnapshot: { ...weather.updateSnapshot, id: "acme.other" } }, "left"), null)
+})
+
 test("an already-installed plugin is not offered again", () => {
   const entries = Model.catalogEntries(catalogDoc, { "acme.weather": true })
   const weather = entries.find(e => e.id === "acme.weather")
@@ -1697,11 +1802,11 @@ test("modal focus ownership prioritizes successors and restores the list only wh
   assert.equal(Model.browseModalFocusOwner(true, true, true), "placement")
 })
 
-test("install confirmation describes placement before cloning only when required", () => {
+test("install confirmation describes placement before installing only when required", () => {
   assert.equal(Model.catalogPlacementConfirmationNote(false), "")
   assert.equal(
     Model.catalogPlacementConfirmationNote(true),
-    "\n\nNext, choose its bar section. Cloning starts only after that choice.")
+    "\n\nNext, choose its bar section. Installation starts only after that choice.")
 })
 
 test("Browse sorting keeps stars and hearts independent with deterministic tie-breakers", () => {
@@ -2799,11 +2904,12 @@ test("the Installed tab has no url field: plugins are added from Browse only", (
   assert.doesNotMatch(panel, /function askAdd\(|function focusUrlField\(/)
   assert.doesNotMatch(panel, /https:\/\/github\.com\/user\/omarchy-plugin\.git/)
   assert.doesNotMatch(panel, /\ba add\b/)
-  // The clone-and-place path survives: Browse still installs through it,
-  // the panel handing its pending answer to the store's argv builder.
+  // The install-and-place path survives: Browse still installs through it,
+  // the panel handing its pending answer to the store's request builder.
   assert.match(panel, /function startAdd\(section\) \{\s*store\.startAdd\(section\)\s*\}/)
   const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(storeSource, /function launchAdd\(url, id, section, label\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", installScript, "install", url, id, section, label\]\)/)
+  assert.match(storeSource, /function startAdd\(section\) \{[\s\S]*?Model\.installRequest\(entry, section\)/)
+  assert.match(storeSource, /function launchInstall\(request, label\) \{[\s\S]*?pinnedProc\.running = true/)
 })
 
 test("Installed filters share the Browse shape: labels on top, Search on its own row", () => {
@@ -3363,10 +3469,13 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   // shared by the popup and the expanded panel.
   assert.doesNotMatch(panel, /Process \{\s*id: releaseProbe/)
   assert.match(panel, /ReleaseNavigator \{ id: releaseNavigator \}/)
-  for (const script of ["installScript", "catalogScript", "updateScript", "noticeScript"]) {
+  for (const script of ["catalogScript", "updateScript", "noticeScript"]) {
     assert.match(store, new RegExp(`readonly property string ${script}:`), script)
     assert.doesNotMatch(panel, new RegExp(`property string ${script}`), script)
   }
+  // Installing is the pinned helper's third shape now, not a bash script that
+  // hands a url to the host command.
+  assert.doesNotMatch(store, /installScript/)
   // State the surface binds to is aliased, so existing bindings read the
   // store without naming it.
   for (const name of [
@@ -3399,6 +3508,39 @@ test("add confirmation never promises placement after cloning", () => {
   assert.match(store, /Model\.catalogPlacementConfirmationNote\(pendingPlacementNeeded\)/)
   assert.doesNotMatch(store, /asked where to put it once it is cloned|where to put it once it is cloned/)
   assert.doesNotMatch(panel, /asked where to put it once it is cloned|where to put it once it is cloned/)
+})
+
+test("installing runs the pinned helper on the verified commit, never the host add", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+
+  // No QML or JS may reach the host command that clones a mutable branch tip.
+  for (const [name, source] of [["PluginStore.qml", store],
+    ["Model.js", readFileSync(new URL("../Model.js", import.meta.url), "utf8")],
+    ["Panel.qml", readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")],
+    ["Expanded.qml", readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")],
+    ["CatalogCard.qml", readFileSync(new URL("../CatalogCard.qml", import.meta.url), "utf8")],
+    ["CatalogDetailsPane.qml", readFileSync(new URL("../CatalogDetailsPane.qml", import.meta.url), "utf8")]])
+    assert.doesNotMatch(source, /plugin add|launchAdd/, name)
+
+  // The install goes through the same independent worker an update does.
+  assert.match(store, /function launchInstall\(request, label\) \{[\s\S]*?busyKind = "install"[\s\S]*?pinnedProc\.command = \["\/usr\/bin\/env", "-i", "--", "PATH=\/usr\/bin:\/bin"/)
+  assert.match(store, /"Installing the verified snapshot of " \+ label\s*\+ "; closing this window does not cancel it"/)
+  // The confirmation names the exact commit rather than the repository tip,
+  // and the url it shows is the repository the request actually fetches —
+  // never the registry's free-text install command.
+  assert.match(store, /Model\.shortSha\(pendingVerifiedCommit\)/)
+  assert.match(store, /pendingVerifiedCommit = String\(entry\.updateSnapshot\.verifiedCommit\)/)
+  assert.match(store, /pendingUrl = String\(entry\.updateSnapshot\.repository\)/)
+  assert.doesNotMatch(store, /pendingUrl = entry\.installUrl/)
+  // Every status the helper can emit for an install is accepted, and only
+  // those; nothing else may be reported as a change on disk.
+  for (const status of ["installed", "installed; reload failed", "installed; enable failed",
+    "installed; finalization failed", "unchanged; install refused", "unchanged; request refused"])
+    assert.ok(store.includes(`"${status}"`), status)
+  assert.match(store, /if \(!pinnedExited \|\| \(busyKind !== "update" && busyKind !== "install"\)\) return/)
+  // A re-derived request is what actually runs: the dialog's answer is bound
+  // to the snapshot the live catalog still names.
+  assert.match(store, /function startAdd\(section\) \{[\s\S]*?request\.verifiedCommit !== commit[\s\S]*?launchInstall\(request, label\)/)
 })
 
 test("catalog projection joins the Marketplace engagement hearts endpoint by plugin id", () => {
@@ -4470,10 +4612,26 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /property string selfId: ""/)
   assert.match(store, /if \(row\.id === selfId\) \{/)
   assert.match(store, /"omarchy plugin enable " \+ selfId \+ " right"/)
-  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingPlacement"])
+  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingPlacement",
+                      "pendingVerifiedCommit"])
     assert.match(store, new RegExp(`property string ${name}: ""`), name)
-  assert.match(store, /property bool pendingVerified: false/)
+  // Only a marketplace-verified listing is installable at all, so there is no
+  // "is it verified" bit left to carry around.
+  assert.doesNotMatch(store, /pendingVerified\b/)
   assert.match(store, /property bool pendingPlacementNeeded: false/)
+  // The question, the button and the busy state all call it an install; the
+  // old "add" kind is gone, so no message helper keeps a branch for it.
+  assert.match(store, /pendingKind = "install"/)
+  assert.doesNotMatch(store, /pendingKind === "add"|pendingKind = "add"/)
+  for (const surface of ["Panel.qml", "Expanded.qml"]) {
+    const source = readFileSync(new URL("../" + surface, import.meta.url), "utf8")
+    assert.match(source, /confirmText: Model\.actionVerb\(root\.pendingKind\) === "Action"\s*\? "Confirm"\s*: Model\.actionVerb\(root\.pendingKind\)/, surface)
+  }
+  assert.equal(Model.actionVerb("install"), "Install")
+  assert.equal(Model.actionGerund("install"), "Installing")
+  assert.equal(Model.successMessage("install", "omarchy-clock"), "Installed omarchy-clock")
+  for (const fn of ["actionVerb", "actionGerund", "successMessage"])
+    assert.equal(Model[fn]("add", "x"), Model[fn]("nonsense", "x"), fn + " keeps no dead add branch")
   assert.match(store, /readonly property bool confirming: pendingKind !== "" && pendingKind !== "place"/)
   assert.match(store, /readonly property bool placing: pendingKind === "place"/)
   assert.match(store, /readonly property var placementChoices: pendingKind === "move"\s*\? Model\.moveOptions\(pendingSection\) : Model\.placementOptions\(\)/)
@@ -4485,7 +4643,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   ]) assert.match(store, new RegExp(`function ${fn.replace(/[()]/g, "\\$&")} \\{`), fn)
   // Asking returns whether the request was taken, so a surface can do its
   // own bookkeeping (close details, retire a probe) only for real requests.
-  assert.match(store, /function askInstall\(entry\) \{\s*if \(!entry \|\| !entry\.installable \|\| busy\) return false/)
+  assert.match(store, /function askInstall\(entry\) \{[\s\S]*?if \(!entry \|\| !entry\.installable \|\| !entry\.updateSnapshot \|\| busy\) return false/)
   assert.match(store, /function askRemove\(row\) \{\s*if \(!row \|\| !row\.removable \|\| busy\) return false/)
   // Enable without a placement question and disable of anything but the
   // surface itself are direct actions, exactly as before.
@@ -4496,7 +4654,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
 
   // The popup keeps its bindings through aliases and thin wrappers.
   assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
-  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingVerified", "pendingPlacementNeeded", "pendingPlacement"])
+  for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingVerifiedCommit", "pendingPlacementNeeded", "pendingPlacement"])
     assert.match(panel, new RegExp(`property alias ${name}: store\\.${name}\\b`), name)
   for (const name of ["confirming", "placing", "placementChoices", "placementMessage", "confirmMessage"])
     assert.match(panel, new RegExp(`readonly property alias ${name}: store\\.${name}\\b`), name)

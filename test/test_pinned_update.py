@@ -17,6 +17,8 @@ SPEC = importlib.util.spec_from_file_location(
 u = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(u)
 REPO = "https://github.com/acme/plugin"
+NEW_REPO = "https://github.com/acme/newplugin"
+NEW_ID = "acme.newplugin"
 
 
 class TransactionTests(unittest.TestCase):
@@ -44,8 +46,27 @@ class TransactionTests(unittest.TestCase):
         self.tip = self.commit("unreviewed tip")
         self.request = dict(schemaVersion=1, id="acme.plugin", repository=REPO,
                             verifiedCommit=self.target, expectedLocalHead=self.base)
-        self.catalog = {"plugins": [dict(id="acme.plugin", repo=REPO,
-            verificationStatus="verified", verificationCommit=self.target, sourceType="community")]}
+        # A second disposable repository nothing has installed yet, so an
+        # install can be exercised without touching the update fixture.
+        self.new_remote = Path(self.tmp.name) / "new-remote"
+        self.git("init", "-q", str(self.new_remote))
+        self.git("-C", str(self.new_remote), "config", "user.email", "fixture@example.invalid")
+        self.git("-C", str(self.new_remote), "config", "user.name", "Fixture")
+        self.new_manifest = dict(schemaVersion=1, id=NEW_ID, name="New Fixture", version="1",
+                                 kinds=["bar-widget"], entryPoints={"barWidget": "BarWidget.qml"})
+        (self.new_remote / "manifest.json").write_text(json.dumps(self.new_manifest))
+        self.new_commits = ()
+        self.new_base = self.new_commit("first")
+        # The verified snapshot is deliberately not the remote tip.
+        self.new_target = self.new_commit("verified snapshot")
+        self.new_tip = self.new_commit("unreviewed tip")
+        self.install = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO,
+                            verifiedCommit=self.new_target, section="right")
+        self.catalog = {"plugins": [
+            dict(id="acme.plugin", repo=REPO, verificationStatus="verified",
+                 verificationCommit=self.target, sourceType="community"),
+            dict(id=NEW_ID, repo=NEW_REPO, verificationStatus="verified",
+                 verificationCommit=self.new_target, sourceType="community")]}
         outer = self
 
         class FixtureUpdater(u.Updater):
@@ -55,14 +76,23 @@ class TransactionTests(unittest.TestCase):
             def fetch(self, stage, sha):
                 # In-process transport injection only. The production fetch has
                 # no environment/argv escape hatch for repository endpoints.
+                source = outer.new_remote if sha in outer.new_commits else outer.remote
                 self.git(stage, "-c", "protocol.file.allow=always", "fetch", "--no-tags", "--depth=256",
-                         "file://" + str(outer.remote), sha, extra_env={"GIT_ALLOW_PROTOCOL": "file"})
+                         "file://" + str(source), sha, extra_env={"GIT_ALLOW_PROTOCOL": "file"})
 
             def reload(self):
                 outer.reloaded = True
 
+            def enable(self, plugin_id, section):
+                outer.enabled.append((plugin_id, section))
+
         self.updater = lambda: FixtureUpdater(home=str(self.home))
         self.reloaded = False
+        self.enabled = []
+
+    @property
+    def new_plugin(self):
+        return self.home / ".config/omarchy/plugins" / NEW_ID
 
     def git(self, *args):
         result = subprocess.run(["/usr/bin/git", *args], stdout=subprocess.PIPE,
@@ -76,6 +106,14 @@ class TransactionTests(unittest.TestCase):
         self.git("-C", str(self.remote), "add", ".")
         self.git("-C", str(self.remote), "commit", "-qm", text)
         return self.git("-C", str(self.remote), "rev-parse", "HEAD")
+
+    def new_commit(self, text):
+        (self.new_remote / "BarWidget.qml").write_text(text)
+        self.git("-C", str(self.new_remote), "add", ".")
+        self.git("-C", str(self.new_remote), "commit", "-qm", text)
+        sha = self.git("-C", str(self.new_remote), "rev-parse", "HEAD")
+        self.new_commits = (*self.new_commits, sha)
+        return sha
 
     def test_scan_sees_entries_another_process_added_after_the_dirfd_opened(self):
         # Regression for the "Staged contents changed" refusal on btrfs: the
@@ -219,6 +257,32 @@ class TransactionTests(unittest.TestCase):
                             "protocol.https.allow=always", "http.followRedirects=false"):
                 self.assertIn(setting, argv)
             self.assertEqual(options["cwd"], f"/proc/self/fd/{fd}")
+            # The install path's host commands: absolute argv arrays, the
+            # account's own HOME and a fixed OMARCHY_PATH, never the ambient
+            # environment, and never a shell string.
+            response = b'[{"id":"' + NEW_ID.encode() + b'"}]'
+            self.assertIn(NEW_ID, updater.catalog_ids())
+            argv, options = calls[-1]
+            self.assertEqual(argv, ["/usr/bin/omarchy-plugin-catalog"])
+            self.assertEqual(options["env"]["HOME"], str(self.home))
+            self.assertEqual(options["env"]["OMARCHY_PATH"], "/usr/share/omarchy")
+            self.assertEqual(options["env"]["PATH"], "/usr/bin:/bin")
+            with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-1"}):
+                updater.enable(NEW_ID, "right")
+                self.assertEqual(calls[-2][0], ["/usr/bin/omarchy-plugin-list", "--json"])
+                self.assertEqual(calls[-1][0],
+                                 ["/usr/bin/omarchy-plugin-enable", NEW_ID, "--section", "right"])
+                self.assertEqual(calls[-1][1]["env"]["WAYLAND_DISPLAY"], "wayland-1")
+                self.assertEqual(calls[-1][1]["env"]["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+                # No section is a plain enable, not a placement: the host
+                # refuses --section for a plugin that replaces the whole bar.
+                updater.enable(NEW_ID, "")
+                self.assertEqual(calls[-1][0], ["/usr/bin/omarchy-plugin-enable", NEW_ID])
+                for bad in ("Right", "left right", "../left", "--index"):
+                    with self.subTest(section=bad), self.assertRaises(u.Refused):
+                        updater.enable(NEW_ID, bad)
+            with patch.dict(os.environ, {"WAYLAND_DISPLAY": "not-a-display"}), self.assertRaises(u.Refused):
+                updater.enable(NEW_ID, "right")
 
     def test_packed_nested_head_without_loose_parent_updates(self):
         self.git("-C", str(self.plugin), "branch", "-m", "feature/example")
@@ -556,6 +620,206 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(u.Refused):
             self.updater().execute(self.request)
         self.assertEqual((self.plugin / "Main.qml").read_text(), "base")
+
+    # ---- Installs -----------------------------------------------------------
+
+    def test_install_publishes_the_verified_commit_not_remote_head_and_enables(self):
+        result = self.updater().execute(self.install)
+        self.assertEqual(result, {"status": "installed"})
+        self.assertNotIn("backup", result, "an install replaces nothing, so it restores nothing")
+        self.assertEqual((self.new_plugin / "BarWidget.qml").read_text(), "verified snapshot")
+        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "HEAD"), self.new_target)
+        self.assertEqual(self.git("-C", str(self.new_plugin), "remote", "get-url", "origin"), NEW_REPO)
+        # A detached checkout: the host's own `omarchy plugin update` has no
+        # branch to pull, exactly as after a pinned update.
+        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+        self.assertTrue(self.reloaded)
+        self.assertEqual(self.enabled, [(NEW_ID, "right")])
+        state = self.home / ".config/omarchy/plugin-manager-updates"
+        transactions = list(state.glob("txn-*"))
+        self.assertEqual(len(transactions), 1)
+        # The checkout left the transaction; only the journal stays behind.
+        self.assertEqual(sorted(p.name for p in transactions[0].iterdir()),
+                         ["prepared.json", "published.json", "request.json", "result.json"])
+        self.assertEqual(json.loads((transactions[0] / "request.json").read_text()), self.install)
+        self.assertEqual(json.loads((transactions[0] / "published.json").read_text()), {"status": "installed"})
+        self.assertEqual(json.loads((transactions[0] / "result.json").read_text()), {"status": "installed"})
+        # The notification names the shape without any remote prose.
+        calls = []
+        updater = self.updater()
+        updater.run = lambda argv, **kwargs: calls.append(argv) or b""
+        updater.notify(u.request_value(self.install), result)
+        self.assertEqual(calls[0][3], "Pinned plugin install")
+        self.assertEqual(calls[0][4], NEW_ID + ": installed")
+
+    def test_install_without_a_section_still_enables_without_placement(self):
+        # A service, an overlay or a whole-bar plugin takes no place in the
+        # bar, but it is still switched on: the host's own add enabled every
+        # plugin it landed, and an installed plugin nobody turned on is a
+        # plugin that appears not to have installed.
+        self.install["section"] = ""
+        self.assertEqual(self.updater().execute(self.install)["status"], "installed")
+        self.assertTrue(self.reloaded)
+        self.assertEqual(self.enabled, [(NEW_ID, "")])
+
+    def test_install_refuses_an_existing_plugin_directory_or_symlink(self):
+        for kind in ("directory", "symlink", "file"):
+            with self.subTest(kind=kind):
+                if kind == "directory":
+                    self.new_plugin.mkdir()
+                elif kind == "symlink":
+                    self.new_plugin.symlink_to(self.plugin, target_is_directory=True)
+                else:
+                    self.new_plugin.write_text("squatter")
+                with self.assertRaisesRegex(u.Refused, "Already installed"):
+                    self.updater().execute(self.install)
+                self.assertFalse(self.reloaded)
+                self.assertEqual(self.enabled, [])
+                if kind == "directory":
+                    self.new_plugin.rmdir()
+                else:
+                    self.new_plugin.unlink()
+
+    def test_install_refuses_an_id_the_host_already_knows(self):
+        updater = self.updater()
+        updater.catalog_ids = lambda: {"omarchy.clock", NEW_ID}
+        with self.assertRaisesRegex(u.Refused, "already"):
+            updater.execute(self.install)
+        self.assertFalse(self.new_plugin.exists())
+        self.assertEqual(self.enabled, [])
+        # The real host catalog is consulted when nothing overrides it, and it
+        # does not know this disposable id.
+        self.assertNotIn(NEW_ID, self.updater().catalog_ids())
+
+    def test_install_refuses_when_the_catalog_does_not_authorize(self):
+        entry = self.catalog["plugins"][1]
+        for change in ({"verificationStatus": "unverified"}, {"sourceType": "builtin"},
+                       {"repo": "https://github.com/other/newplugin"},
+                       {"verificationCommit": self.new_tip}):
+            with self.subTest(change=change):
+                self.catalog["plugins"] = [{**entry, **change}]
+                with self.assertRaises(u.Refused):
+                    self.updater().execute(self.install)
+                self.assertFalse(self.new_plugin.exists())
+        # Revoked between the fetch and publication: nothing is published.
+        self.catalog["plugins"] = [entry]
+        updater = self.updater()
+        calls = 0
+        original = updater.catalog_bytes
+
+        def catalog():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.catalog["plugins"] = []
+            return original()
+        updater.catalog_bytes = catalog
+        with self.assertRaises(u.Refused):
+            updater.execute(self.install)
+        self.assertFalse(updater.published)
+        self.assertFalse(self.new_plugin.exists())
+        self.assertEqual(self.enabled, [])
+
+    def test_install_refuses_a_manifest_id_that_is_not_the_requested_one(self):
+        self.new_manifest["id"] = "acme.other"
+        (self.new_remote / "manifest.json").write_text(json.dumps(self.new_manifest))
+        bad = self.new_commit("changed id")
+        self.install["verifiedCommit"] = bad
+        self.catalog["plugins"][1]["verificationCommit"] = bad
+        with self.assertRaises(u.Refused):
+            self.updater().execute(self.install)
+        self.assertFalse(self.new_plugin.exists())
+        self.assertEqual(self.enabled, [])
+
+    def test_install_never_replaces_a_target_that_appeared_during_the_transaction(self):
+        updater = self.updater()
+        original = updater.checkpoint
+
+        def checkpoint(phase):
+            original(phase)
+            if phase == "before-publication":
+                self.new_plugin.mkdir()
+                (self.new_plugin / "theirs.txt").write_text("not ours")
+        updater.checkpoint = checkpoint
+        with self.assertRaises(u.Refused):
+            updater.execute(self.install)
+        self.assertFalse(updater.published)
+        # Whoever won the race keeps their directory untouched.
+        self.assertEqual(sorted(p.name for p in self.new_plugin.iterdir()), ["theirs.txt"])
+        self.assertEqual(self.enabled, [])
+        state = self.home / ".config/omarchy/plugin-manager-updates"
+        transactions = list(state.glob("txn-*"))
+        self.assertEqual(len(transactions), 1)
+        # The staged checkout stays in the unpublished transaction, journaled.
+        self.assertTrue((transactions[0] / "checkout/manifest.json").exists())
+        self.assertFalse((transactions[0] / "published.json").exists())
+        self.assertIn("refused", json.loads((transactions[0] / "refused.json").read_text())["reason"].lower())
+
+    def test_install_without_the_no_replace_syscall_is_unchanged(self):
+        with patch.object(u, "NOREPLACE", None), self.assertRaises(u.Refused):
+            self.updater().execute(self.install)
+        self.assertFalse(self.new_plugin.exists())
+
+    def test_install_enable_failure_keeps_the_published_checkout(self):
+        updater = self.updater()
+        updater.enable = lambda *_: u.require(False, "enable failed")
+        result = updater.execute(self.install)
+        self.assertEqual(result, {"status": "installed; enable failed"})
+        self.assertEqual((self.new_plugin / "BarWidget.qml").read_text(), "verified snapshot")
+        state = self.home / ".config/omarchy/plugin-manager-updates"
+        record = next(iter(state.glob("txn-*/result.json")))
+        self.assertEqual(json.loads(record.read_text()), {"status": "installed; enable failed"})
+        # A rescan failure stops before enable and says so instead.
+        self.setUp()
+        updater = self.updater()
+        updater.reload = lambda: u.require(False, "reload failed")
+        self.assertEqual(updater.execute(self.install), {"status": "installed; reload failed"})
+        self.assertEqual(self.enabled, [])
+        self.assertEqual((self.new_plugin / "BarWidget.qml").read_text(), "verified snapshot")
+
+    def test_install_request_shape_is_exact(self):
+        base = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO, verifiedCommit=self.new_target)
+        for bad in (dict(section="bogus"), dict(section="Right"), dict(section=None), dict(section=0),
+                    dict(), dict(section="left", expectedLocalHead=self.new_base),
+                    dict(section="left", extra=1), dict(section="left", unverifiedCommit=self.new_tip)):
+            with self.subTest(bad=bad), self.assertRaises(u.Refused):
+                u.request_value({**base, **bad})
+        for section in ("", "left", "center", "right"):
+            value = u.request_value({**base, "section": section})
+            self.assertTrue(value["install"])
+            self.assertTrue(value["verified"])
+            self.assertEqual(value["target"], self.new_target)
+            self.assertEqual(value["section"], section)
+            self.assertNotIn("expectedLocalHead", value)
+            self.assertEqual(u.request_value(value), value, "a normalized request validates again unchanged")
+        # Neither update shape gains a section, and the derived keys stay derived.
+        with self.assertRaises(u.Refused):
+            u.request_value({**self.request, "section": "left"})
+        injected = u.request_value({**base, "section": "left", "install": False, "verified": False,
+                                    "target": self.new_tip})
+        self.assertTrue(injected["install"])
+        self.assertEqual(injected["target"], self.new_target)
+
+    def test_install_refusal_is_reported_as_its_own_shape(self):
+        self.new_plugin.mkdir()
+        read_end, write_end = os.pipe()
+        observer = os.fork()
+        if observer == 0:
+            os.close(read_end)
+            os.dup2(write_end, 1)
+            updater = self.updater()
+            updater.notify = lambda *_: None
+            try:
+                u.launch(self.install, lambda: updater)
+            finally:
+                os._exit(0)
+        os.close(write_end)
+        os.waitpid(observer, 0)
+        with os.fdopen(read_end, "rb") as pipe:
+            result = json.loads(pipe.read())
+        self.assertEqual(result["status"], "unchanged; install refused")
+        self.assertEqual(result["reason"], "Already installed")
+        self.assertNotIn("backup", result)
 
 
 if __name__ == "__main__":

@@ -354,7 +354,7 @@ Panel {
   property alias pendingId: store.pendingId
   property alias pendingLabel: store.pendingLabel
   property alias pendingUrl: store.pendingUrl
-  property alias pendingVerified: store.pendingVerified
+  property alias pendingVerifiedCommit: store.pendingVerifiedCommit
   property alias pendingPlacementNeeded: store.pendingPlacementNeeded
   property alias pendingPlacement: store.pendingPlacement
   readonly property alias confirming: store.confirming
@@ -1817,7 +1817,7 @@ Panel {
         actionVisible: store.confirmCompareUrl !== ""
         onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
         confirmText: Model.actionVerb(root.pendingKind) === "Action"
-          ? "Add"
+          ? "Confirm"
           : Model.actionVerb(root.pendingKind)
         background: Color.popups.background
         foreground: root.contentForeground

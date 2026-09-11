@@ -1574,7 +1574,7 @@ Item {
           actionVisible: store.confirmCompareUrl !== ""
           onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
           confirmText: Model.actionVerb(root.pendingKind) === "Action"
-            ? "Add"
+            ? "Confirm"
             : Model.actionVerb(root.pendingKind)
           background: Color.menu.background
           foreground: root.foreground

@@ -1,14 +1,25 @@
 #!/usr/bin/python3
-"""Exact pinned plugin updates; no installed Git configuration is executed.
+"""Exact pinned plugin installs and updates; no installed Git configuration is executed.
 
 CLI: python3 -I -S pinned_update.py REQUEST_JSON
-Two request shapes, both bound to one full commit SHA-1:
-  verifiedCommit   - a marketplace-verified snapshot; the live catalog must
-                     authorize exactly this repository and commit, before the
-                     fetch and again before publication.
-  unverifiedCommit - an upstream commit the user's setting allows and the
-                     panel observed; no catalog authorization is consulted,
-                     every other check is identical. Recorded as unverified.
+Three request shapes, each bound to one full commit SHA-1:
+  verifiedCommit + expectedLocalHead
+                   - update to a marketplace-verified snapshot; the live
+                     catalog must authorize exactly this repository and
+                     commit, before the fetch and again before publication.
+  unverifiedCommit + expectedLocalHead
+                   - update to an upstream commit the user's setting allows
+                     and the panel observed; no catalog authorization is
+                     consulted, every other check is identical. Recorded as
+                     unverified.
+  verifiedCommit + section
+                   - a first install of a marketplace-verified snapshot. The
+                     same catalog authorization, fetch, staging and validation
+                     as a verified update, published into a name that must not
+                     exist with RENAME_NOREPLACE rather than exchanged, and
+                     then enabled: a named section is a placement, an empty
+                     section is a plain enable. There is no backup: nothing
+                     was replaced.
 The CLI forks a finite, independent worker before touching the plugin root.
 All executable Python is loaded before the fork. A destroyed QML Process can
 lose its result pipe, but cannot interrupt the worker's publication/finalization.
@@ -32,11 +43,17 @@ import sys
 import time
 
 CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
+OMARCHY = "/usr/share/omarchy"
+SECTIONS = ("", "left", "center", "right")
+# Recomputed by request_value on every validation, so they carry no authority
+# and are stripped again before anything is journaled.
+DERIVED = ("target", "verified", "install")
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CATALOG = 8 * 1024 * 1024
+MAX_PLUGINS = 4 * 1024 * 1024
 MAX_TREE = 16 * 1024 * 1024
 MAX_DISK = 128 * 1024 * 1024
 LIBC = ctypes.CDLL(None, use_errno=True)
@@ -44,6 +61,12 @@ EXCHANGE = getattr(LIBC, "renameat2", None)
 if EXCHANGE:
     EXCHANGE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     EXCHANGE.restype = ctypes.c_int
+# One syscall, bound once, named per flag so each publication site reads as
+# what it does: RENAME_EXCHANGE (2) swaps an update's two directories,
+# RENAME_NOREPLACE (1) refuses to overwrite anything at all, which is what a
+# first install must do. Both names are the same ctypes object; the flag at
+# the call site is what decides the behavior.
+NOREPLACE = EXCHANGE
 
 
 class Refused(Exception):
@@ -95,22 +118,41 @@ def request_value(value):
     require(type(value) is dict, "Invalid request fields")
     # The derived keys are recomputed on every validation, never trusted: a
     # normalized request re-enters here through launch() and execute().
-    value = {k: v for k, v in value.items() if k not in ("target", "verified")}
+    value = {k: v for k, v in value.items() if k not in DERIVED}
+    install = set(value) == {"schemaVersion", "id", "repository", "verifiedCommit", "section"}
     verified = set(value) == {"schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}
     unverified = set(value) == {"schemaVersion", "id", "repository", "unverifiedCommit", "expectedLocalHead"}
-    require(verified or unverified, "Invalid request fields")
-    commit_key = "verifiedCommit" if verified else "unverifiedCommit"
+    require(install or verified or unverified, "Invalid request fields")
+    commit_key = "unverifiedCommit" if unverified else "verifiedCommit"
     require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1, "Unsupported request")
     require(isinstance(value["id"], str) and ID.fullmatch(value["id"])
             and ".." not in value["id"] and not value["id"].startswith("omarchy."), "Invalid plugin id")
     require(repository(value["repository"]) == value["repository"] != "", "Noncanonical repository")
-    for key in (commit_key, "expectedLocalHead"):
+    keys = (commit_key,) if install else (commit_key, "expectedLocalHead")
+    for key in keys:
         require(isinstance(value[key], str) and SHA.fullmatch(value[key]), "Full SHA-1 required")
-    # `target` and `verified` are derived for the transaction; the original
-    # shape is what gets journaled, so a record says which kind it was.
-    return {**value, commit_key: value[commit_key].lower(),
-            "expectedLocalHead": value["expectedLocalHead"].lower(),
-            "target": value[commit_key].lower(), "verified": verified}
+    if install:
+        # An empty section enables without a placement; anything else is one
+        # of the three bar sections the host accepts, matched exactly.
+        require(type(value["section"]) is str and value["section"] in SECTIONS, "Invalid bar section")
+    # `target`, `verified` and `install` are derived for the transaction; the
+    # original shape is what gets journaled, so a record says which kind it was.
+    normalized = {**value, commit_key: value[commit_key].lower(),
+                  "target": value[commit_key].lower(), "verified": verified or install,
+                  "install": install}
+    if not install:
+        normalized["expectedLocalHead"] = value["expectedLocalHead"].lower()
+    return normalized
+
+
+def journal_value(request):
+    """The request exactly as the panel sent it, with no derived key added."""
+    return {k: v for k, v in request.items() if k not in DERIVED}
+
+
+def request_kind(value):
+    """Which shape a raw or normalized request is, without trusting a flag."""
+    return "install" if isinstance(value, dict) and "section" in value else "update"
 
 
 def authorize(raw, request):
@@ -196,6 +238,7 @@ class Updater:
         self.backup = ""
         self.reason = ""
         self.tx = None
+        self.original = None
         self.env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false",
@@ -265,7 +308,33 @@ class Updater:
         require(status == b"200", "Catalog redirects or non-200 responses are refused")
         return body
 
-    def open_paths(self, plugin_id):
+    def catalog_ids(self):
+        """Every plugin id the host already knows: first-party and installed.
+
+        The host's own add refuses an id that is taken by a checkout under any
+        directory name, or by a plugin that ships with Omarchy; an install here
+        refuses the same way rather than landing a second plugin the shell
+        would have to pick between. The account's home is passed explicitly —
+        the worker's environment has none — and the Omarchy root is fixed here
+        rather than inherited, so no caller can point the scan elsewhere.
+        """
+        raw = self.run(["/usr/bin/omarchy-plugin-catalog"], cap=MAX_PLUGINS,
+                       extra_env={"HOME": self.home, "OMARCHY_PATH": OMARCHY})
+        doc = document(raw, MAX_PLUGINS)
+        require(type(doc) is list and len(doc) <= 5000, "Invalid plugin catalog")
+        ids = set()
+        for entry in doc:
+            require(type(entry) is dict and isinstance(entry.get("id"), str), "Malformed plugin entry")
+            ids.add(entry["id"])
+        return ids
+
+    def session_env(self):
+        """The Wayland session a host IPC call needs, taken from the display alone."""
+        display = os.environ.get("WAYLAND_DISPLAY", "")
+        require(re.fullmatch(r"wayland-[0-9]{1,4}", display), "Wayland display unavailable")
+        return {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}", "WAYLAND_DISPLAY": display}
+
+    def open_paths(self, plugin_id, install=False):
         require(os.path.isabs(self.home) and len(self.home.encode()) <= 512
                 and all(p not in (".", "..", "") for p in self.home.split("/")[1:]), "Unsupported home path")
         fd = self.hold(os.open("/", DIR))
@@ -285,8 +354,20 @@ class Updater:
         self.omarchy = fd
         self.plugins = self.hold(checked_dir(fd, "plugins"))
         self.anchors.append((fd, "plugins", identity(self.plugins)))
-        self.original = self.hold(checked_dir(self.plugins, plugin_id))
-        self.anchors.append((self.plugins, plugin_id, identity(self.original)))
+        if install:
+            # Nothing may already answer to that name — not a directory, not a
+            # file, and not a symlink pointing anywhere at all. Publication
+            # asks the kernel for the same guarantee again; this only refuses
+            # early, with a reason a person can read.
+            try:
+                os.stat(plugin_id, dir_fd=self.plugins, follow_symlinks=False)
+            except FileNotFoundError:
+                self.original = None
+            else:
+                raise Refused("Already installed")
+        else:
+            self.original = self.hold(checked_dir(self.plugins, plugin_id))
+            self.anchors.append((self.plugins, plugin_id, identity(self.original)))
         try:
             os.mkdir("plugin-manager-updates", 0o700, dir_fd=fd)
             os.fsync(fd)
@@ -459,64 +540,164 @@ class Updater:
         if EXCHANGE(self.plugins, plugin_id.encode(), self.tx, b"checkout", 2) != 0:
             raise Refused("Atomic exchange refused: " + os.strerror(ctypes.get_errno()))
 
+    def publish(self, plugin_id):
+        """Move the staged checkout into a name that must not already exist.
+
+        RENAME_NOREPLACE makes the kernel refuse rather than overwrite, so
+        whoever created that name while this transaction was staging keeps it
+        (EEXIST) and the checkout stays in the unpublished transaction. There
+        is no second attempt and nothing is deleted.
+        """
+        require(NOREPLACE is not None, "Atomic publication unavailable")
+        if NOREPLACE(self.tx, b"checkout", self.plugins, plugin_id.encode(), 1) != 0:
+            raise Refused("Atomic publication refused: " + os.strerror(ctypes.get_errno()))
+
     def reload(self):
         # Same host IPC operation, without the shell wrapper's whole-output collector.
-        runtime = f"/run/user/{os.getuid()}"
-        display = os.environ.get("WAYLAND_DISPLAY", "")
-        require(re.fullmatch(r"wayland-[0-9]{1,4}", display), "Wayland display unavailable")
-        output = self.run(["/usr/bin/qs", "ipc", "-n", "-p", "/usr/share/omarchy/shell",
-            "call", "--", "shell", "rescanPlugins"], cap=4096,
-            extra_env={"XDG_RUNTIME_DIR": runtime, "WAYLAND_DISPLAY": display})
+        output = self.run(["/usr/bin/qs", "ipc", "-n", "-p", OMARCHY + "/shell",
+            "call", "--", "shell", "rescanPlugins"], cap=4096, extra_env=self.session_env())
         require(output.strip() not in (b"Target not found.", b"Function not found.",
                 b"Not ready to accept queries yet"), "Shell rescan refused")
+
+    def enable(self, plugin_id, section):
+        """Switch a freshly published plugin on, once the shell has discovered it.
+
+        The rescan is asynchronous and the host's enable fails outright on an
+        id it has not seen yet, so this waits the same bounded way the host's
+        own add does. A list call that fails is one more attempt, never a
+        reason to enable blindly; the deadline ends the wait either way.
+        """
+        require(section in SECTIONS, "Invalid bar section")
+        env = {**self.session_env(), "HOME": self.home, "OMARCHY_PATH": OMARCHY}
+        for _ in range(40):
+            self.checkpoint("enable")
+            try:
+                listed = document(self.run(["/usr/bin/omarchy-plugin-list", "--json"],
+                                           cap=MAX_PLUGINS, extra_env=env), MAX_PLUGINS)
+            except Refused:
+                listed = None
+            if type(listed) is list and any(type(entry) is dict and entry.get("id") == plugin_id
+                                            for entry in listed):
+                break
+            time.sleep(0.05)
+        else:
+            raise Refused("Shell did not discover the plugin")
+        # Only a plugin that takes a place in the bar gets one. The host
+        # refuses a placement for a plugin that replaces the whole bar, so an
+        # empty section is a bare enable rather than an empty argument.
+        placement = ["--section", section] if section else []
+        self.run(["/usr/bin/omarchy-plugin-enable", plugin_id, *placement],
+                 cap=16384, extra_env=env)
 
     def notify(self, request, result):
         self.deadline = time.monotonic() + 5
         self.cancelled = False
         try:
             self.run(["/usr/bin/notify-send", "--app-name=Plugin Manager", "--",
-                      "Pinned plugin update" + ("" if request.get("verified", True) else " (unverified)"),
+                      "Pinned plugin install" if request_kind(request) == "install"
+                      else "Pinned plugin update" + ("" if request.get("verified", True) else " (unverified)"),
                       request["id"] + ": " + result["status"]
                       + (" (" + result["reason"] + ")" if result.get("reason") else "")], cap=4096,
                      extra_env={"DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus"})
         except Exception:
             pass
 
+    def stage_snapshot(self, request):
+        """Everything both shapes do: open a transaction, fetch and vet the tree.
+
+        Returns the staged checkout's descriptor at a detached HEAD on exactly
+        the requested commit, validated by the host and byte-identical to the
+        tree the commit names.
+        """
+        self.transaction = "txn-" + secrets.token_hex(12)
+        os.mkdir(self.transaction, 0o700, dir_fd=self.state)
+        os.fsync(self.state)
+        self.tx = self.hold(checked_dir(self.state, self.transaction, private=True))
+        self.anchors.append((self.state, self.transaction, identity(self.tx)))
+        create_file(self.tx, "request.json", json.dumps(journal_value(request)).encode())
+        os.mkdir("checkout", 0o700, dir_fd=self.tx)
+        stage = self.hold(checked_dir(self.tx, "checkout", private=True))
+        self.anchors.append((self.tx, "checkout", identity(stage)))
+        self.git(stage, "init", "--quiet", "--template=", "--object-format=sha1")
+        self.git(stage, "config", "remote.origin.url", request["repository"])
+        self.fetch(stage, request["target"])
+        fetched = self.git(stage, "rev-parse", "FETCH_HEAD^{commit}").decode().strip()
+        require(fetched == request["target"], "Fetched object is not the requested commit")
+        return stage, fetched
+
+    def vet_stage(self, stage, fetched, request, target_tree):
+        self.git(stage, "checkout", "--quiet", "--detach", fetched)
+        require(self.git(stage, "rev-parse", "HEAD").decode().strip() == fetched, "Staged HEAD mismatch")
+        manifest = document(read_file(stage, "manifest.json", 65536)[0], 65536)
+        require(type(manifest) is dict and manifest.get("id") == request["id"], "Manifest id changed")
+        self.validate(stage)
+        require(self.scan(stage, skip_git=True) == target_tree, "Staged contents changed")
+        self.scan(stage, sync=True)
+
+    def install(self, request):
+        """A first install of one verified snapshot into a name nothing holds."""
+        self.open_paths(request["id"], install=True)
+        # The host refuses an id another plugin already answers to under some
+        # other directory name, or that ships with Omarchy; so does this. It is
+        # an early, readable refusal, not the guarantee: publication below is
+        # still a no-replace rename through the descriptor opened above.
+        require(request["id"] not in self.catalog_ids(), "Plugin id is already in use")
+        authorize(self.catalog_bytes(), request)
+        stage, fetched = self.stage_snapshot(request)
+        target_tree = self.tree(stage, fetched)
+        self.vet_stage(stage, fetched, request, target_tree)
+        authorize(self.catalog_bytes(), request)
+        self.check_anchors()
+        create_file(self.tx, "prepared.json", json.dumps({"replacement": identity(stage)}).encode())
+        self.checkpoint("before-publication")
+        # Signals only set a flag, so none can raise between the syscall and
+        # published=True. Nothing is ever rolled back once it is published.
+        self.publish(request["id"])
+        self.published = True
+        os.fsync(self.plugins)
+        os.fsync(self.tx)
+        # The checkout left the transaction directory; the journal stays, and
+        # there is no backup to name because nothing was replaced.
+        result = {"status": "installed"}
+        create_file(self.tx, "published.json", json.dumps(result).encode())
+        self.deadline = time.monotonic() + 10
+        self.cancelled = False
+        try:
+            self.checkpoint("after-publication")
+            self.reload()
+        except Exception:
+            result["status"] = "installed; reload failed"
+        else:
+            # Every install is enabled, placed or not: a plugin that landed on
+            # disk and was never switched on looks to the user like one that
+            # did not install. Enabling waits on an asynchronous rescan the
+            # shell may take its time over, so it gets a deadline of its own.
+            self.deadline = time.monotonic() + 60
+            self.cancelled = False
+            try:
+                self.enable(request["id"], request["section"])
+            except Exception:
+                result["status"] = "installed; enable failed"
+        create_file(self.tx, "result.json", json.dumps(result).encode())
+        return result
+
     def execute(self, value):
         request = request_value(value)
         try:
+            if request["install"]:
+                return self.install(request)
             self.open_paths(request["id"])
             self.local_metadata(request)
             if request["verified"]:
                 authorize(self.catalog_bytes(), request)
-            self.transaction = "txn-" + secrets.token_hex(12)
-            os.mkdir(self.transaction, 0o700, dir_fd=self.state)
-            os.fsync(self.state)
-            self.tx = self.hold(checked_dir(self.state, self.transaction, private=True))
-            self.anchors.append((self.state, self.transaction, identity(self.tx)))
+            stage, fetched = self.stage_snapshot(request)
             self.backup = self.home + "/.config/omarchy/plugin-manager-updates/" + self.transaction + "/checkout"
-            create_file(self.tx, "request.json", json.dumps(
-                {k: v for k, v in request.items() if k not in ("target", "verified")}).encode())
-            os.mkdir("checkout", 0o700, dir_fd=self.tx)
-            stage = self.hold(checked_dir(self.tx, "checkout", private=True))
-            self.anchors.append((self.tx, "checkout", identity(stage)))
-            self.git(stage, "init", "--quiet", "--template=", "--object-format=sha1")
-            self.git(stage, "config", "remote.origin.url", request["repository"])
-            self.fetch(stage, request["target"])
-            fetched = self.git(stage, "rev-parse", "FETCH_HEAD^{commit}").decode().strip()
-            require(fetched == request["target"], "Fetched object is not the requested commit")
             self.git(stage, "merge-base", "--is-ancestor", request["expectedLocalHead"], fetched)
             require(fetched != request["expectedLocalHead"], "Already at the requested commit")
             base_tree = self.tree(stage, request["expectedLocalHead"])
             target_tree = self.tree(stage, fetched)
             self.check_clean(stage, base_tree, request, "index-before")
-            self.git(stage, "checkout", "--quiet", "--detach", fetched)
-            require(self.git(stage, "rev-parse", "HEAD").decode().strip() == fetched, "Staged HEAD mismatch")
-            manifest = document(read_file(stage, "manifest.json", 65536)[0], 65536)
-            require(type(manifest) is dict and manifest.get("id") == request["id"], "Manifest id changed")
-            self.validate(stage)
-            require(self.scan(stage, skip_git=True) == target_tree, "Staged contents changed")
-            self.scan(stage, sync=True)
+            self.vet_stage(stage, fetched, request, target_tree)
             if request["verified"]:
                 authorize(self.catalog_bytes(), request)
             self.check_clean(stage, base_tree, request, "index-final")
@@ -543,7 +724,8 @@ class Updater:
             return result
         except Exception as error:
             if self.published:
-                return {"status": "updated; finalization failed", "backup": self.backup}
+                return ({"status": "installed; finalization failed"} if request["install"]
+                        else {"status": "updated; finalization failed", "backup": self.backup})
             self.reason = reason_text(error)
             if self.tx is not None:
                 # Best effort: the journal must never mask the refusal itself.
@@ -580,8 +762,12 @@ def launch(request, factory=Updater):
         try:
             result = updater.execute(request)
         except Exception as error:
-            result = {"status": "unchanged; update refused",
-                      "reason": updater.reason or reason_text(error), "backup": updater.backup}
+            reason = updater.reason or reason_text(error)
+            # A refused install replaced nothing, so it has no backup to name.
+            result = ({"status": "unchanged; install refused", "reason": reason}
+                      if request_kind(request) == "install"
+                      else {"status": "unchanged; update refused", "reason": reason,
+                            "backup": updater.backup})
         try:
             os.write(write_end, json.dumps(result).encode() + b"\n")
         except BrokenPipeError:

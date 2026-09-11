@@ -236,9 +236,17 @@ an upstream SHA and no confirmation that overrides a refusal.
 
 ### The actions
 
-- **Add** — from the Browse tab only; there is no url field. Installing a
-  card runs `omarchy plugin add <url> --yes` behind a confirmation, with the
-  url taken from the catalog entry rather than typed in.
+- **Add** — from the Browse tab only; there is no url field. Installing a card
+  invokes the same bundled Python helper an update does, with the repository,
+  the full marketplace-verified commit, the id, and the bar section you chose.
+  It installs only that commit, never `origin HEAD` or a branch tip, and the
+  host `omarchy plugin add` command is deliberately not used. A listing the
+  marketplace has not verified a snapshot of cannot be installed from the
+  panel at all, and neither can one whose install command names a repository
+  its verified snapshot does not: the card states the reason instead of
+  offering a button. The confirmation names the short verified commit and the
+  repository the request will actually fetch — the same one the helper
+  reauthorizes — rather than the registry's free-text install command.
 - **Enable / disable** — one switch per row, not a pair of icons that trade
   places. An icon that changes with the state makes you read the glyph to
   learn where the plugin stands and read it again to work out what clicking
@@ -278,7 +286,14 @@ an upstream SHA and no confirmation that overrides a refusal.
 - **Remove** — for anything under `~/.config/omarchy/plugins`, runs
   `omarchy plugin remove <id> --yes` behind a confirmation.
 
-### Pinned-update transaction and recovery
+### Pinned install and update transaction, and recovery
+
+Installs and updates are the same transaction with a different publication
+step, and everything below applies to both. An install request carries the
+repository, the verified commit, the id, and the bar section instead of an
+expected installed HEAD; it refuses outright when `~/.config/omarchy/plugins`
+already holds that name (directory, file or symlink) or when the host already
+knows that plugin id, and there is no unverified install shape at all.
 
 The helper reads `https://plugins.omarchy.org/catalog.json` directly over HTTPS,
 without redirects or cached fallback, before fetching and again before
@@ -296,10 +311,19 @@ rather than silently choosing another target.
 Staging lives in a private 0700 transaction under
 `~/.config/omarchy/plugin-manager-updates/txn-<random>/`, outside plugin discovery
 and on the same filesystem. The helper uses isolated, hook-free Git, checks the
-snapshot tree and manifest id, and runs the host validator **before** exchanging
-the installed directory with the staged checkout using Linux `RENAME_EXCHANGE`.
-There is no missing-directory gap. Files and directory entries are fsynced;
-only successful publication triggers the host `rescanPlugins` IPC operation.
+snapshot tree and manifest id, and runs the host validator **before** publishing.
+An update exchanges the installed directory with the staged checkout using Linux
+`RENAME_EXCHANGE`; an install moves the staged checkout into the new name using
+`RENAME_NOREPLACE`, so a name that appeared while the transaction was staging
+wins the race untouched and the checkout stays in the unpublished transaction.
+There is no missing-directory gap and nothing the helper did not create is ever
+removed. Files and directory entries are fsynced; only successful publication
+triggers the host `rescanPlugins` IPC operation. Only a successful rescan is
+followed by `omarchy-plugin-enable`, after the same bounded wait for shell
+discovery the host add performs: `<id> --section <section>` for a bar widget
+you placed, a bare `<id>` for everything else, which the host switches on
+without a placement. Every install is enabled; a plugin left on disk and never
+switched on reads as one that did not install.
 
 | Prerequisite | Refusal behavior |
 |---|---|
@@ -309,18 +333,25 @@ only successful publication triggers the host `rescanPlugins` IPC operation.
 | Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
 | Bounded work | 120-second transaction; 8 MiB/5,000-entry catalog; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
 | Same filesystem with atomic exchange support | Refuse rather than use two renames |
+| Install target name unused, and its id unknown to the host catalog | Refuse rather than overwrite, merge into, or shadow an existing plugin |
 
-The replacement retains a fresh `.git`, canonical origin and detached HEAD.
-It is a shallow clone (depth 256) with no tracking branch, so the host's own
-`omarchy plugin update <id>` no longer works for that checkout afterwards: later
-updates for it go through this panel's pinned update only. To return to the
-host flow, remove the plugin and add it again.
+Whatever the helper publishes — an installed plugin or a replacement — retains
+a fresh `.git`, canonical origin and detached HEAD. It is a shallow clone
+(depth 256) with no tracking branch, so the host's own `omarchy plugin update
+<id>` does not work for that checkout: later updates for it go through this
+panel's pinned update only. To return to the host flow, remove the plugin and
+add it with the host command.
 Local branches, tags, reflogs, hooks and configuration are **not migrated**;
-they remain in the original checkout at the transaction's `checkout/` backup.
+for an update they remain in the original checkout at the transaction's
+`checkout/` backup. An install replaces nothing, so it has no backup and reports
+none: its transaction directory keeps the journal alone once the checkout has
+been published out of it.
 Inspect `request.json`, `prepared.json` (directory device/inode identities),
 `published.json` and `result.json` to distinguish staging from publication.
-A crash between exchange and journaling requires checking those identities and
-both HEADs; do not assume the backup name alone proves which tree it contains.
+A crash between publication and journaling requires checking those identities
+and both HEADs; do not assume the backup name alone proves which tree it
+contains. An unpublished install leaves its staged `checkout/` in the
+transaction beside `refused.json`; nothing outside that directory changed.
 There is no automatic recovery or rollback that could overwrite later edits.
 The advisory lock serializes helper requests, not arbitrary same-user writers;
 final rechecks do not make concurrent external edits race-free.
@@ -331,11 +362,14 @@ those transaction directories are reviewed and moved out of this state directory
 Once clicked, the finite worker runs independently of the QML observer. Closing
 the window is **not cancellation**, including during a manager self-update.
 The already-loaded Python worker retains no dependency on reopening its helper
-source after exchange. Its bounded notification and transaction records outlive
-the window. A rescan failure reports **updated; reload failed**, not unchanged. A refusal
-reports **unchanged; update refused** followed by the helper's reason (for
-example a dirty checkout or a revoked verification), and the same reason is
-written to `refused.json` in the transaction directory when one was opened.
+source after publication. Its bounded notification and transaction records
+outlive the window. A rescan failure reports **updated; reload failed** or
+**installed; reload failed**, not unchanged, and an install that published but
+could not be placed reports **installed; enable failed**. A refusal reports
+**unchanged; update refused** or **unchanged; install refused** followed by the
+helper's reason (for example a dirty checkout, a name already taken, or a
+revoked verification), and the same reason is written to `refused.json` in the
+transaction directory when one was opened.
 If the observer loses the result, inspect the retained transaction; do not retry
 blindly. Live Quickshell hot-reload/self-update behavior still needs runtime
 validation; disposable transaction tests do not prove desktop integration.
@@ -400,22 +434,30 @@ by Installed rows. A match opens the published Release; absence or failure falls
 back to the validated repository root. Non-GitHub and missing versions remain
 plain or absent, and opening Browse never performs a Release API request.
 
-Not everything the registry lists is installable in one command — suites ship
-their own installers, and some repos are not plugin-shaped. Those cards show a
-visible blocked reason, with the full explanation in details, instead of a
+Not everything the registry lists is installable from here — suites ship their
+own installers, some repos are not plugin-shaped, some listings have no
+marketplace-verified snapshot for the panel to install exactly, and some name
+one repository in their install command and another in the snapshot that was
+reviewed. Those cards show
+a visible blocked reason, with the full explanation in details, instead of a
 button that could only fail.
 Plugins you already have carry an `installed` badge on the preview, beside the
 `verified` one, rather than offering themselves again.
 
 ### Installing asks where it goes
 
-Cloning a plugin makes the shell tear every plugin widget down and rebuild it
-— this panel among them. There is no "after the install" in which a plugin's
+Installing a plugin makes the shell tear every plugin widget down and rebuild
+it — this panel among them. There is no "after the install" in which a plugin's
 own window can ask you anything, so the section question comes *before*
-anything is cloned, off the kind the registry publishes. Both answers in hand,
-the install runs detached and reports through a desktop notification, because
-a process owned by a destroyed panel cannot be relied on to finish and the
-placement is the half that would be dropped.
+anything is staged, off the kind the registry publishes. Both answers in hand,
+the helper forks an independent worker before it touches the plugin root, so
+publication and placement finish whatever happens to the window that started
+them; a process owned by a destroyed panel cannot be relied on to finish, and
+the placement is the half that would be dropped. Only the result can be lost,
+and the helper reports through a desktop notification that outlives all of
+this. The enable runs after publication and a successful rescan, so an install
+that could not be switched on still says **installed; enable failed** rather
+than being rolled back.
 
 ### Where the catalog comes from
 
@@ -476,11 +518,14 @@ or not it carries a badge.
 
 ## Why it confirms
 
-Adding a plugin clones a repository and loads its QML into the long-running
+Adding a plugin fetches a repository and loads its QML into the long-running
 `omarchy-shell` process. Plugin code is **unsandboxed**: it runs with your
 user's full privileges. Removing deletes a directory. Both actions confirm
-first, and the install dialog shows the full url so you can read it before it
-runs. There is no free-text url entry: every url comes from a catalog entry.
+first, and the install dialog shows the short verified commit and the full
+repository url the fetch will use, so you can read both before anything runs.
+There is no free-text url entry, and the url shown is the one bound to the
+reviewed snapshot rather than anything the listing's install command claims:
+a listing whose two disagree cannot be installed here at all.
 
 Commands are executed as argv arrays, never through a shell, so a repository
 url cannot become a command. Urls are also validated against `https://`,
