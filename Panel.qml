@@ -937,6 +937,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Source"
@@ -969,6 +970,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Kind"
@@ -1001,6 +1003,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Status"
@@ -1044,6 +1047,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Category"
@@ -1076,6 +1080,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Kind"
@@ -1108,6 +1113,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Availability"
@@ -1140,6 +1146,7 @@ Panel {
               height: parent.height
 
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.top: parent.top
                 text: "Sort"
