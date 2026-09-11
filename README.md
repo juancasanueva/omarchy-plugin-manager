@@ -156,8 +156,9 @@ uses, and every control narrows both lists at once:
   same question; each row still names its own kind.
 - **Status filter** (`t`) — **All**, **Enabled**, **Disabled**, or **Update**.
   Enabled/Disabled read the same on/off state shown by each row's switch;
-  Update shows all detected upstream changes, including unverified ones, plus
-  differing marketplace-verified snapshots for the installed GitHub origin.
+  Update shows checkouts with a newer marketplace-verified snapshot for their
+  GitHub origin, and, only with **Allow updating unverified plugins** switched
+  on, checkouts with detected upstream changes as well.
 - **Search by name** (`/`) — matches the name and the id, so typing
   `hyprmoncfg` finds `crmne.hyprmoncfg`. It deliberately does not search
   descriptions: a search that matched prose would surface plugins whose names
@@ -174,15 +175,32 @@ When nothing matches, the message names whichever controls excluded everything
 
 ### Knowing what needs updating
 
-**Availability is not permission to install.** Update badges, the header count,
-the Update filter, and the bar's blue dot include every checkout with detected
-upstream changes, even when it is unverified or absent from the marketplace.
-A differing verified snapshot also remains discoverable without a branch report;
-a checkout meeting both conditions is counted once.
+**Only what can be installed counts as an update.** By default, update
+badges, the header count, the Update filter, and the bar's blue dot include a
+checkout only when the marketplace has verified a newer snapshot of it. A
+repository whose author has pushed past the verified commit, or that the
+marketplace does not list at all, is not an update: the panel says **No
+verified update available** and offers nothing, because nothing reviewed is
+there to offer. The background check still records what it observed.
 
-- **Upstream changes — not verified** means the observed branch tip does not
-  match an authorized verification snapshot. Being at an older verified SHA does
-  not make the checkout current. Without a differing verified target, Update is disabled.
+**Allow updating unverified plugins**, in the expanded panel's settings (the
+gear in its header), changes that. It is **off by default**. Switched on, every
+checkout with observed upstream changes shows again, with a grey arrow rather
+than the orange one, and its Update button installs the exact upstream commit
+the check observed after a confirmation that names that commit and links its
+diff. Nothing is fetched from a moving branch: the commit the row shows is the
+commit the helper is asked for, and if the tip moved while the question was
+on screen the answer installs nothing. A verified snapshot always wins: when
+one is installable it is what Update installs, unreviewed tips are offered only
+when there is no verified snapshot ahead of the checkout, and a checkout meeting
+both conditions is counted once. With the setting on you are choosing to run
+code the marketplace has not reviewed; the setting is stored in this plugin's
+own entry in `~/.config/omarchy/shell.json` as `allowUnverifiedUpdates: true`.
+
+- **Upstream changes — not verified** (setting on) means the observed branch
+  tip does not match an authorized verification snapshot. Being at an older
+  verified SHA does not make the checkout current. **Unreviewed commit …
+  installable** follows it when the tip can be installed under the setting.
 - **Verified snapshot … available** names the only installable candidate. If
   upstream is newer and unreviewed, Update still requests only this verified SHA.
   A differing SHA is not proof of ancestry: the helper must prove fast-forward eligibility.
@@ -192,15 +210,17 @@ a checkout meeting both conditions is counted once.
   refuse that downgrade. Ancestry comes from the checkout's most recent 128
   commits, so an older verified commit beyond that window is still offered and
   refused with a reason.
-- **No upstream changes** requires a matching checkout-bound branch report.
-  **Upstream check unavailable** means missing, failed, or stale evidence, not current.
+- **No upstream changes** (setting on) requires a matching checkout-bound
+  branch report. **Upstream check unavailable** and, with the setting off,
+  **Update check unavailable** mean missing, failed, or stale evidence, not current.
 
 The badge and details' Changes link compare the exact upstream commits when
 upstream changes are detected; otherwise they compare the verified-only candidate.
 Their labels identify which comparison opens. Report versions describe upstream,
 never the separately named verified target. Cached catalog metadata may display a
-candidate; execution always requires fresh exact-repository/SHA authorization.
-There is no upstream-SHA fallback and no confirmation override.
+candidate; executing a verified snapshot always requires fresh exact
+repository/SHA authorization. There is no fallback from a verified snapshot to
+an upstream SHA and no confirmation that overrides a refusal.
 
 ### The actions
 
@@ -223,9 +243,15 @@ There is no upstream-SHA fallback and no confirmation override.
   failed to render. Disabling this panel closes the window you are clicking
   in, so that one confirms and hands you the command to undo it.
 - **Update** — invokes the bundled Python helper with the displayed repository,
-  full verified SHA, id, and expected installed HEAD. It installs only that
-  snapshot, never `origin HEAD`, another branch, or a fallback commit. The host
-  `omarchy plugin update` command is deliberately not used.
+  full target SHA, id, and expected installed HEAD. It installs only that
+  commit, never `origin HEAD`, another branch, or a fallback commit. The host
+  `omarchy plugin update` command is deliberately not used. The target is the
+  marketplace-verified snapshot, installed on the click; or, only with **Allow
+  updating unverified plugins** switched on and no verified snapshot ahead, the
+  exact upstream commit the background check observed, installed after a
+  confirmation that names it. Such an install is recorded as unverified in the
+  transaction's `request.json` (`unverifiedCommit` instead of `verifiedCommit`)
+  and in the desktop notification ("Pinned plugin update (unverified)").
 - **Remove** — for anything under `~/.config/omarchy/plugins`, runs
   `omarchy plugin remove <id> --yes` behind a confirmation.
 
@@ -236,7 +262,10 @@ without redirects or cached fallback, before fetching and again before
 publication. Browse reads the same canonical URL, but through its own cache;
 execution never consults that cache and rejects every redirect response.
 A unique community listing must still be verified at exactly the
-requested repository and full SHA. HTTPS and `git@github.com:` / `ssh://git@github.com/`
+requested repository and full SHA. For an unverified request, made only under
+**Allow updating unverified plugins**, the catalog is not consulted at all: the
+target is the exact upstream commit the panel observed, and every other check
+below applies unchanged. HTTPS and `git@github.com:` / `ssh://git@github.com/`
 origins compare canonically; network Git always uses canonical HTTPS. Repository
 moves, revoked verification, malformed metadata, or unavailable objects refuse
 rather than silently choosing another target.

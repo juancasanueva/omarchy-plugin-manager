@@ -10,6 +10,7 @@ var SECTION_LIST = "===list==="
 var SECTION_CATALOG = "===catalog==="
 var SECTION_GIT = "===git==="
 var SECTION_MANIFEST = "===manifest==="
+var SECTION_SETTINGS = "===settings===\n"
 
 // The two lists the panel draws. What you installed is what you can act on;
 // the built-ins are the backdrop. Splitting them means the buttons in a
@@ -27,6 +28,8 @@ var STATUS_UPDATE = "update"
 
 // The loader emits four fixed sections in order. Anything else — a truncated
 // stream, a section that never printed — is a failed read, not empty data.
+// This plugin's own shell.json entry travels ahead of them as an optional
+// fifth section, so an older loader still splits.
 function splitSections(raw) {
   var text = String(raw || "")
   var atList = text.indexOf(SECTION_LIST)
@@ -35,8 +38,13 @@ function splitSections(raw) {
   var atManifest = text.indexOf(SECTION_MANIFEST)
   if (atList < 0 || atCatalog < 0 || atGit < 0 || atManifest < 0) return null
   if (!(atList < atCatalog && atCatalog < atGit && atGit < atManifest)) return null
+  // Optional, but if it is there it leads: a marker anywhere else is a
+  // corrupted stream, not a section.
+  var atSettings = text.indexOf(SECTION_SETTINGS)
+  if (atSettings >= 0 && atSettings > atList) return null
 
   return {
+    settings: atSettings >= 0 ? text.slice(atSettings + SECTION_SETTINGS.length, atList) : "",
     list: text.slice(atList + SECTION_LIST.length, atCatalog),
     catalog: text.slice(atCatalog + SECTION_CATALOG.length, atGit),
     git: text.slice(atGit + SECTION_GIT.length, atManifest),
@@ -53,6 +61,41 @@ function parseArray(raw) {
   } catch (error) {
     return null
   }
+}
+
+// This plugin's own inline shell.json entry, as the loader printed it: one
+// JSON object, or nothing when the entry is absent. Only a plain object with
+// bounded, plain-typed values survives; the settings the panel reads from it
+// are then decided one key at a time (see allowUnverifiedUpdates), so a
+// hostile or malformed entry can at most switch a feature off.
+var MAX_SETTINGS_BYTES = 4096
+
+function parseSelfSettings(raw) {
+  var text = String(raw || "").trim()
+  if (text === "" || text.length > MAX_SETTINGS_BYTES) return {}
+  var value
+  try {
+    value = JSON.parse(text)
+  } catch (error) {
+    return {}
+  }
+  if (!value || Array.isArray(value) || typeof value !== "object") return {}
+  var out = {}
+  for (var key in value) {
+    if (!hasOwnKey(value, key) || key === "id" || key === "__proto__") continue
+    var item = value[key]
+    var type = typeof item
+    if (type === "boolean" || (type === "number" && isFinite(item))) out[key] = item
+    else if (type === "string" && item.length <= 256) out[key] = item
+  }
+  return out
+}
+
+// The one setting the panel acts on. Strictly the boolean true: a string
+// "true", 1, or anything else a hand edit might produce leaves it off.
+function allowUnverifiedUpdates(settings) {
+  return !!settings && hasOwnKey(settings, "allowUnverifiedUpdates")
+    && settings.allowUnverifiedUpdates === true
 }
 
 // One compact JSON object per line, with path, remote, exactTag and the
@@ -1675,7 +1718,26 @@ function pinnedRequest(row, entries) {
     verifiedCommit: found.verifiedCommit, expectedLocalHead: row.headSha.toLowerCase() }
 }
 
-function applyPinnedUpdates(rows, entries) {
+// The request for an upstream commit nobody has reviewed. It binds the exact
+// commit the background check observed, never a branch name, and it never
+// consults the catalog: the plugin may not be listed at all. Only the user's
+// explicit setting, checked by applyPinnedUpdates, makes such a row eligible.
+function unverifiedRequest(row) {
+  if (!row || row.firstParty || !row.gitManaged) return null
+  var head = String(row.headSha || ""), tip = String(row.remoteSha || "")
+  if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(tip) || head === tip) return null
+  var repository = canonicalUpdateRepository(row.updateOrigin)
+  if (repository === "") return null
+  return { schemaVersion: 1, id: row.id, repository: repository,
+    unverifiedCommit: tip, expectedLocalHead: head }
+}
+
+// `allowUnverified` is the user's setting (see allowUnverifiedUpdates). With
+// it off, an upstream tip the marketplace has not verified is not an update:
+// it is not counted, not badged, not filtered and not installable. The
+// observed facts (upstreamBehind, remoteSha) stay on the row either way.
+function applyPinnedUpdates(rows, entries, allowUnverified) {
+  var unverifiedAllowed = allowUnverified === true
   var out = []
   for (var i = 0; i < (rows || []).length; i++) {
     var row = rows[i], copy = {}, request = pinnedRequest(row, entries)
@@ -1692,7 +1754,13 @@ function applyPinnedUpdates(rows, entries) {
     // and is refused with a reason instead.
     copy.verifiedSuperseded = differs && (row.ancestors || []).indexOf(request.verifiedCommit) >= 0
     copy.pinnedEligible = differs && !copy.verifiedSuperseded
-    copy.behind = copy.upstreamBehind || copy.pinnedEligible
+    copy.unverifiedAllowed = unverifiedAllowed
+    // A verified snapshot always wins: the unreviewed tip is offered only
+    // when nothing reviewed is installable, and never when the tip is the
+    // verified commit itself (that case is pinnedEligible or superseded).
+    copy.unverifiedEligible = unverifiedAllowed && copy.upstreamBehind && !copy.pinnedEligible
+      && unverifiedRequest(row) !== null && row.remoteSha !== copy.verifiedTargetSha
+    copy.behind = copy.pinnedEligible || copy.unverifiedEligible
     out.push(copy)
   }
   return out
@@ -1700,11 +1768,19 @@ function applyPinnedUpdates(rows, entries) {
 
 function updateStatus(row) {
   if (!row || !row.updatable) return ""
+  if (row.unverifiedAllowed !== true) {
+    // Unreviewed upstream changes are not mentioned at all with the setting
+    // off: they are not something this panel will install.
+    if (row.pinnedEligible) return "Verified snapshot " + shortSha(row.verifiedTargetSha) + " available"
+    if (row.verifiedSuperseded) return "Installed is ahead of verified snapshot " + shortSha(row.verifiedTargetSha)
+    return row.updateChecked === true ? "No verified update available" : "Update check unavailable"
+  }
   var upstream = row.upstreamBehind
     ? "Upstream changes — " + (row.remoteSha === row.verifiedTargetSha ? "verified snapshot" : "not verified")
     : (row.updateChecked === true ? "No upstream changes" : "Upstream check unavailable")
   if (row.pinnedEligible) return upstream + "; Verified snapshot " + shortSha(row.verifiedTargetSha) + " available"
   if (row.verifiedSuperseded) return upstream + "; Installed is ahead of verified snapshot " + shortSha(row.verifiedTargetSha)
+  if (row.unverifiedEligible) return upstream + "; Unreviewed commit " + shortSha(row.remoteSha) + " installable"
   return upstream
 }
 
@@ -1712,9 +1788,20 @@ function pinnedUpdateTooltip(row) {
   var status = updateStatus(row)
   if (row && row.pinnedEligible) return status + ". Install verified snapshot "
     + shortSha(row.verifiedTargetSha) + " — rechecked before publication"
+  if (row && row.unverifiedEligible) return status + ". Install unreviewed commit "
+    + shortSha(row.remoteSha) + " — the marketplace has not verified it; asks first"
   if (row && row.verifiedSuperseded) return status + ". Update disabled; the installed commit already contains verified snapshot "
     + shortSha(row.verifiedTargetSha)
   return status + ". Update disabled; no newer matching verified snapshot"
+}
+
+// The question before an unreviewed commit is installed. Plain text only; the
+// label is the sanitized row name and the commit is seven hex characters.
+function updateUnverifiedConfirmMessage(label, row) {
+  var tip = row ? shortSha(row.remoteSha) : ""
+  return "Update " + label + " to an unreviewed commit?\n\n"
+    + "The marketplace has not verified " + tip + ". Nobody has reviewed what it changes; "
+    + "installing it runs code only its author has seen. Exactly this commit is installed, nothing newer."
 }
 
 // ---- Update presentation ---------------------------------------------------

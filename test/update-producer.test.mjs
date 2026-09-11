@@ -145,6 +145,11 @@ test("load producer emits strict checkout HEAD provenance without coupling exact
     const absent = join(plugins, "06-absent")
     mkdirSync(join(absent, ".git"), { recursive: true })
     writeFileSync(join(absent, "manifest.json"), JSON.stringify({ version: "1.0.3" }))
+    // This plugin's own inline entry, among other widgets, is printed ahead of the list.
+    writeFileSync(join(home, ".config", "omarchy", "shell.json"), JSON.stringify({ bar: { layout: {
+      left: [{ id: "omarchy.clock" }],
+      right: [{ id: "io.github.juancasanueva.plugin-manager", allowUnverifiedUpdates: true }, { id: "other" }] } },
+      plugins: [{ id: "io.github.juancasanueva.plugin-manager", stale: true }] }))
 
     executable(join(bin, "omarchy"), `#!/usr/bin/env bash
 case "$*" in
@@ -188,6 +193,10 @@ esac
     })
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, "")
+    assert.ok(result.stdout.startsWith("===settings===\n"), "settings lead the stream")
+    const settingsSection = result.stdout.split("===settings===\n")[1].split("===list===")[0]
+    assert.deepEqual(JSON.parse(settingsSection), { id: "io.github.juancasanueva.plugin-manager", allowUnverifiedUpdates: true },
+      "the layout entry wins over a stale plugins[] entry")
     const gitSection = result.stdout.split("===git===\n")[1].split("\n===manifest===")[0]
     const records = gitSection.trim().split("\n").map(line => JSON.parse(line))
     const byId = Object.fromEntries(records.map(record => [record.path.split("/").at(-1), record]))
@@ -291,7 +300,7 @@ test("successful update queues the fresh cycle and update entry points enforce s
     let refreshes = 0, reloads = 0
     const root = { pinnedExited: true, busyKind: "update", busyId: "Thing", busyRowId: "thing",
       pinnedOutput: JSON.stringify({ status: outcome, backup: "" }), pinnedOverflow: false,
-      pendingUpdateReport: "old", rows: [], setStatus(text, error) { this.status = text; this.error = error },
+      pendingUpdateReport: "old", rows: [], allowUnverifiedUpdates: false, setStatus(text, error) { this.status = text; this.error = error },
       requestFreshUpdateCycle() { refreshes++ }, reload() { reloads++ }, actionFinished() {} }
     Function("root", "Model", `with(root) { ${source.slice(begin, bodyEnd)}; finishPinnedUpdate() }`)(root, Model)
     assert.equal(root.busyKind, "")

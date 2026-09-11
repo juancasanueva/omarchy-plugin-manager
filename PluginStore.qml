@@ -105,6 +105,41 @@ Item {
   // warning before it runs.
   property string selfId: ""
 
+  // The scoped shell API of the surface that owns this store, when it has
+  // one (the expanded window). It is the sanctioned way to write this
+  // plugin's inline shell.json entry; a surface without it can only read.
+  property var shell: null
+
+  // This plugin's own inline shell.json entry, as the loader printed it.
+  // Read here rather than from the shell API because both surfaces need it,
+  // the popup has no shell API of its own, and shell.json is already what the
+  // store watches: a write goes through the host, the host rewrites the
+  // file, the watcher reloads, and every surface sees the same value.
+  property var selfSettings: ({})
+  readonly property bool allowUnverifiedUpdates: Model.allowUnverifiedUpdates(selfSettings)
+  onAllowUnverifiedUpdatesChanged: rows = Model.applyPinnedUpdates(rows, catalog, allowUnverifiedUpdates)
+
+  // Persist the one setting through the host, merged over the entry's other
+  // keys (updateEntryInline replaces the whole entry). The local copy moves
+  // only when the host accepted the write; the reload confirms it.
+  function setAllowUnverifiedUpdates(value) {
+    var next = {}
+    for (var key in selfSettings) next[key] = selfSettings[key]
+    if (value === true) next.allowUnverifiedUpdates = true
+    else delete next.allowUnverifiedUpdates
+    if (!shell || typeof shell.updateEntryInline !== "function" || selfId === "") {
+      setStatus("Could not save the setting: no shell connection", true)
+      return false
+    }
+    var saved = shell.updateEntryInline(selfId, next) === true
+    if (saved || Model.allowUnverifiedUpdates(next) === allowUnverifiedUpdates) {
+      selfSettings = next
+      return true
+    }
+    setStatus("Could not save the setting", true)
+    return false
+  }
+
   property string pendingKind: ""
   property string pendingId: ""
   property string pendingLabel: ""
@@ -131,8 +166,9 @@ Item {
   readonly property string placementMessage:
     "Where in the bar should " + pendingLabel + " go?"
 
-  // Kept for the shared confirmation component; updates never enter a dialog.
-  readonly property string confirmCompareUrl: ""
+  // Only an unreviewed update enters a dialog, and it offers the exact diff.
+  readonly property string confirmCompareUrl: pendingKind === "update"
+    ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
 
   readonly property string confirmMessage: {
     if (pendingKind === "add")
@@ -146,6 +182,8 @@ Item {
         + Model.catalogPlacementConfirmationNote(pendingPlacementNeeded)
     if (pendingKind === "remove")
       return "Remove " + pendingLabel + "?\n\nIts folder under ~/.config/omarchy/plugins is deleted."
+    if (pendingKind === "update")
+      return Model.updateUnverifiedConfirmMessage(pendingLabel, Model.findRow(rows, pendingId))
     if (pendingKind === "disable")
       return "Disable " + pendingLabel + "?\n\n"
         + "This is the panel you are looking at. It leaves the bar and this window closes with it — "
@@ -176,7 +214,7 @@ Item {
     catalog = stampedState.entries
   }
 
-  onCatalogChanged: rows = Model.applyPinnedUpdates(rows, catalog)
+  onCatalogChanged: rows = Model.applyPinnedUpdates(rows, catalog, allowUnverifiedUpdates)
 
   // ---- Loading ------------------------------------------------------------
 
@@ -236,6 +274,7 @@ Item {
 
     loadError = ""
     loadRetried = false
+    selfSettings = Model.parseSelfSettings(sections.settings)
     var merged = Model.mergePlugins(
       listEntries,
       Model.parseArray(sections.catalog) || [],
@@ -247,7 +286,7 @@ Item {
     // freshly loaded HEAD as before, so a stale report still says nothing.
     if (pendingUpdateReport !== "")
       merged = Model.applyUpdateReport(merged, Model.parseUpdateReport(pendingUpdateReport))
-    rows = Model.applyPinnedUpdates(merged, catalog)
+    rows = Model.applyPinnedUpdates(merged, catalog, allowUnverifiedUpdates)
     rowsLoaded()
     finishOpenLoad()
   }
@@ -285,7 +324,7 @@ Item {
     checkingUpdates = false
     pendingUpdateReport = raw
     if (rows.length === 0) return
-    rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, Model.parseUpdateReport(raw)), catalog)
+    rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, Model.parseUpdateReport(raw)), catalog, allowUnverifiedUpdates)
   }
 
   // ---- Catalog ------------------------------------------------------------
@@ -483,6 +522,7 @@ Item {
 
   function cancelPending() {
     pendingKind = ""
+    pendingUnverifiedSha = ""
     pendingId = ""
     pendingLabel = ""
     pendingUrl = ""
@@ -498,6 +538,19 @@ Item {
       var row = Model.findRow(rows, pendingId)
       cancelPending()
       if (row) startDisable(row)
+      return
+    }
+    if (pendingKind === "update") {
+      // Re-gated on the live row: the list may have reloaded, the check may
+      // have moved the tip, or the setting may have been switched off while
+      // the question was on screen. Only the exact commit the dialog named
+      // is ever installed; anything else is a no-op, never a substitute.
+      var target = Model.findRow(rows, pendingId)
+      var expected = pendingUnverifiedSha
+      cancelPending()
+      if (!target || target.unverifiedEligible !== true || target.remoteSha !== expected
+          || !canStartUpdate(target)) return
+      runUpdate(target)
       return
     }
     if (pendingKind === "add") {
@@ -523,20 +576,47 @@ Item {
     launchAdd(url, id, section, label)
   }
 
-  // All entry points bind the displayed tuple, even programmatic callers.
-  // Cached catalog data chooses the request, never authorizes publication.
-  function canStartUpdate(row) {
-    if (!row || row.pinnedEligible !== true || busy || pinnedProc.running
-        || !root.loadProcessSettled() || !root.updateProcessSettled()) return false
-    var current = Model.findRow(rows, row.id)
-    var request = Model.pinnedRequest(row, catalogLoaded ? catalog : null)
-    return !!current && !!request && current.headSha === row.headSha
-      && current.updateOrigin === row.updateOrigin && row.verifiedTargetSha === request.verifiedCommit
+  // The commit an open unreviewed-update question names, so the answer can
+  // be held to exactly that commit.
+  property string pendingUnverifiedSha: ""
+
+  // The request a row's Update would send: the verified snapshot when one is
+  // installable, otherwise the observed unreviewed tip if the user's setting
+  // allows it, otherwise nothing. Cached catalog data chooses the request,
+  // never authorizes publication; the helper rechecks a verified one.
+  function updateRequest(row) {
+    if (!row) return null
+    if (row.pinnedEligible === true) return Model.pinnedRequest(row, catalogLoaded ? catalog : null)
+    if (row.unverifiedEligible === true && allowUnverifiedUpdates) return Model.unverifiedRequest(row)
+    return null
   }
 
+  // All entry points bind the displayed tuple, even programmatic callers.
+  function canStartUpdate(row) {
+    if (!row || busy || pinnedProc.running
+        || !root.loadProcessSettled() || !root.updateProcessSettled()) return false
+    var current = Model.findRow(rows, row.id)
+    var request = updateRequest(row)
+    if (!current || !request || current.headSha !== row.headSha
+        || current.updateOrigin !== row.updateOrigin) return false
+    if (row.pinnedEligible === true)
+      return row.verifiedTargetSha === request.verifiedCommit && current.pinnedEligible === true
+    return current.unverifiedEligible === true && current.remoteSha === request.unverifiedCommit
+  }
+
+  // A verified snapshot installs on the click. An unreviewed commit asks
+  // first, naming the exact commit, with the diff one click away.
   function startUpdate(row) {
     if (!canStartUpdate(row)) return
-    runUpdate(row)
+    if (row.pinnedEligible === true) {
+      runUpdate(row)
+      return
+    }
+    pendingId = row.id
+    pendingLabel = row.name
+    pendingUrl = ""
+    pendingUnverifiedSha = row.remoteSha
+    pendingKind = "update"
   }
 
   readonly property string pinnedHelperPath:
@@ -547,14 +627,15 @@ Item {
 
   function runUpdate(row) {
     if (!canStartUpdate(row) || actionProc.running) return
-    var request = Model.pinnedRequest(row, catalogLoaded ? catalog : null)
+    var request = updateRequest(row)
     busyRowId = row.id
     busyId = row.name
     busyKind = "update"
     pinnedOutput = ""
     pinnedExited = false
     pinnedOverflow = false
-    setStatus("Installing the verified snapshot; closing this window does not cancel it", false)
+    setStatus((request.verifiedCommit ? "Installing the verified snapshot" : "Installing unreviewed commit " + Model.shortSha(request.unverifiedCommit))
+      + "; closing this window does not cancel it", false)
     // Process.command is QStringList; avoid the environment property's
     // QVariantHash binding, which this installed QML toolchain cannot type.
     pinnedProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
@@ -588,7 +669,7 @@ Item {
               outcome !== "updated")
     if (changed) {
       pendingUpdateReport = ""
-      rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, {}), null)
+      rows = Model.applyPinnedUpdates(Model.applyUpdateReport(rows, {}), null, allowUnverifiedUpdates)
       root.requestFreshUpdateCycle()
     } else root.reload()
     root.actionFinished("update", label, outcome === "updated" ? 0 : 1)
@@ -651,6 +732,13 @@ Item {
     id: loadProc
     command: ["bash", "-c",
       "catalog=$(omarchy plugin catalog); "
+      // This plugin's own inline entry, wherever shell.json keeps it. Bounded
+      // read, one object or nothing; the id is this plugin's fixed manifest id.
+      + "printf '===settings===\\n'; "
+      + "head -c 1048577 -- \"$HOME/.config/omarchy/shell.json\" 2>/dev/null "
+      + "  | jq -c --arg id io.github.juancasanueva.plugin-manager "
+      + "    '[(.bar.layout // {} | .[]? | .[]?), (.plugins // [] | .[]?)] "
+      + "     | map(select(type == \"object\" and (.id | tostring) == $id)) | first // empty' 2>/dev/null; "
       + "printf '===list===\\n'; "
       + "omarchy plugin list --json; "
       + "printf '\\n===catalog===\\n'; "

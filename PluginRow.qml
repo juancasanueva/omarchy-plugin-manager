@@ -481,7 +481,7 @@ Rectangle {
       fontFamily: root.fontFamily
       // Nothing to pull is nothing to click: a confirmed up-to-date checkout
       // gets no button to press and therefore no spin to watch.
-      enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && root.row.pinnedEligible === true
+      enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true)
       opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
       onClicked: root.updateRequested()
 

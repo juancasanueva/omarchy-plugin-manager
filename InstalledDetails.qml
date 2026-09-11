@@ -209,7 +209,7 @@ Item {
           foreground: root.installable ? Color.accent : root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && root.row.pinnedEligible === true
+          enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true)
           opacity: root.updating ? 1 : (enabled ? 1 : 0.4)
           onClicked: root.updateRequested()
         }

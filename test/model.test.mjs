@@ -30,6 +30,7 @@ const Model = new Function(
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
+    unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, allowUnverifiedUpdates,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -81,7 +82,11 @@ test("pinned update eligibility binds raw repo, verified status, unique id and f
   assert.equal(pinned.pinnedRequest(rows[0], entries([raw, raw])), null)
   assert.equal(pinned.pinnedRequest({ ...rows[0], updateOrigin: "", clonedFrom: raw.repo }, entries([raw])), null)
   assert.equal(pinned.pinnedRequest(rows[0], null), null)
-  assert.equal(pinned.applyPinnedUpdates(rows, null)[0].behind, true)
+  // With no catalog the only candidate is the unreviewed tip, which exists
+  // only when the user's setting allows it.
+  assert.equal(pinned.applyPinnedUpdates(rows, null)[0].behind, false)
+  assert.equal(pinned.applyPinnedUpdates(rows, null, true)[0].behind, true)
+  assert.equal(pinned.applyPinnedUpdates(rows, null, "true")[0].behind, false, "strictly the boolean true")
 })
 
 function upstreamFixture(verified = "a".repeat(40)) {
@@ -96,12 +101,12 @@ function upstreamFixture(verified = "a".repeat(40)) {
   return { row, catalog, report, head, tip }
 }
 
-test("all detected upstream changes survive verification projection and remain discoverable", () => {
+test("with the setting on, all detected upstream changes survive verification projection and remain discoverable", () => {
   const { row, catalog, report, head, tip } = upstreamFixture()
   const upstream = Model.applyUpdateReport([row], report)[0]
   for (const entries of [catalog, [], Model.catalogEntries({ plugins: [{ id: row.id,
     repo: row.remote, sourceType: "community", verificationStatus: "unverified" }] }, {})]) {
-    const projected = Model.applyPinnedUpdates([upstream], entries)[0]
+    const projected = Model.applyPinnedUpdates([upstream], entries, true)[0]
     for (const key of ["localSha", "remoteSha", "localVersion", "remoteVersion", "updateChecked", "versionChanged"])
       assert.equal(projected[key], upstream[key], key)
     assert.equal(projected.upstreamBehind, true)
@@ -109,8 +114,10 @@ test("all detected upstream changes survive verification projection and remain d
     assert.equal(Model.countBehind([projected]), 1)
     assert.equal(Model.filterRows([projected], "all", "update", "").length, 1)
     assert.equal(Model.upToDate(projected), false)
+    assert.equal(projected.unverifiedEligible, true)
     assert.match(Model.pinnedUpdateTooltip(projected), /Upstream changes — not verified/)
-    assert.match(Model.pinnedUpdateTooltip(projected), /disabled/i)
+    assert.match(Model.pinnedUpdateTooltip(projected), /Install unreviewed commit ccccccc/)
+    assert.match(Model.pinnedUpdateTooltip(projected), /asks first/)
     assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${tip}`)
   }
 })
@@ -119,7 +126,7 @@ test("verified-only discovery never fabricates branch evidence or survives catal
   const target = "b".repeat(40)
   const { row, catalog, head } = upstreamFixture(target)
   const unknown = Model.applyUpdateReport([row], {})[0]
-  const projected = Model.applyPinnedUpdates([unknown], catalog)[0]
+  const projected = Model.applyPinnedUpdates([unknown], catalog, true)[0]
   assert.equal(projected.pinnedEligible, true)
   assert.equal(Model.countBehind([projected]), 1)
   assert.equal(Model.filterRows([projected], "all", "update", "").length, 1)
@@ -132,7 +139,7 @@ test("verified-only discovery never fabricates branch evidence or survives catal
   assert.match(Model.pinnedUpdateTooltip(projected), /Verified snapshot bbbbbbb available/)
   assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${target}`)
   assert.deepEqual(Model.updateReleaseCandidates(projected), [])
-  const revoked = Model.applyPinnedUpdates([projected], [])[0]
+  const revoked = Model.applyPinnedUpdates([projected], [], true)[0]
   assert.equal(revoked.behind, false)
   assert.equal(revoked.verifiedTargetSha, "")
   assert.equal(Model.upToDate(revoked), false)
@@ -143,7 +150,7 @@ test("a verified snapshot already contained in the installed HEAD is never offer
   const { row, catalog, head } = upstreamFixture(verified)
   const atTip = { [row.sourceDir]: { localSha: head, remoteSha: head, localVersion: "1.0", remoteVersion: "" } }
   const ahead = Model.applyUpdateReport([{ ...row, ancestors: [head, "d".repeat(40), verified] }], atTip)[0]
-  const projected = Model.applyPinnedUpdates([ahead], catalog)[0]
+  const projected = Model.applyPinnedUpdates([ahead], catalog, true)[0]
   assert.equal(projected.verifiedSuperseded, true)
   assert.equal(projected.pinnedEligible, false)
   assert.equal(projected.behind, false)
@@ -160,16 +167,16 @@ test("a verified snapshot already contained in the installed HEAD is never offer
   // The same target absent from the recent ancestry stays a candidate for
   // the helper, which proves or refuses ancestry itself.
   const unknown = Model.applyPinnedUpdates(
-    [Model.applyUpdateReport([{ ...row, ancestors: [head, "d".repeat(40)] }], atTip)[0]], catalog)[0]
+    [Model.applyUpdateReport([{ ...row, ancestors: [head, "d".repeat(40)] }], atTip)[0]], catalog, true)[0]
   assert.equal(unknown.verifiedSuperseded, false)
   assert.equal(unknown.pinnedEligible, true)
   assert.equal(unknown.behind, true)
   assert.match(Model.updateStatus(unknown), /Verified snapshot bbbbbbb available/)
-  const missing = Model.applyPinnedUpdates([Model.applyUpdateReport([row], atTip)[0]], catalog)[0]
+  const missing = Model.applyPinnedUpdates([Model.applyUpdateReport([row], atTip)[0]], catalog, true)[0]
   assert.equal(missing.pinnedEligible, true)
 
   // Being exactly at the verified commit is neither eligible nor superseded.
-  const exact = Model.applyPinnedUpdates([{ ...ahead, headSha: verified, ancestors: [verified] }], catalog)[0]
+  const exact = Model.applyPinnedUpdates([{ ...ahead, headSha: verified, ancestors: [verified] }], catalog, true)[0]
   assert.equal(exact.verifiedSuperseded, false)
   assert.equal(exact.pinnedEligible, false)
   assert.doesNotMatch(Model.updateStatus(exact), /ahead/)
@@ -177,7 +184,7 @@ test("a verified snapshot already contained in the installed HEAD is never offer
   // Detected upstream changes still surface on a superseded row.
   const behindTip = { [row.sourceDir]: { localSha: head, remoteSha: "c".repeat(40), localVersion: "1.0", remoteVersion: "2.0" } }
   const both = Model.applyPinnedUpdates(
-    [Model.applyUpdateReport([{ ...row, ancestors: [head, verified] }], behindTip)[0]], catalog)[0]
+    [Model.applyUpdateReport([{ ...row, ancestors: [head, verified] }], behindTip)[0]], catalog, true)[0]
   assert.equal(both.verifiedSuperseded, true)
   assert.equal(both.pinnedEligible, false)
   assert.equal(both.behind, true)
@@ -187,10 +194,10 @@ test("a verified snapshot already contained in the installed HEAD is never offer
 
 test("stale and failed reports stay unknown even at the verified snapshot", () => {
   const { row, catalog, report } = upstreamFixture()
-  const previous = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog)
+  const previous = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog, true)
   for (const failed of [{}, { [row.sourceDir]: { ...report[row.sourceDir], remoteSha: "" } },
     { [row.sourceDir]: { ...report[row.sourceDir], localSha: "b".repeat(40) } }]) {
-    const fresh = Model.applyPinnedUpdates(Model.applyUpdateReport(previous, failed), catalog)[0]
+    const fresh = Model.applyPinnedUpdates(Model.applyUpdateReport(previous, failed), catalog, true)[0]
     assert.equal(fresh.updateChecked, false)
     assert.equal(fresh.behind, false)
     assert.equal(fresh.remoteSha, "")
@@ -210,7 +217,8 @@ test("catalog, installed load and branch report converge in all arrival orders",
   const rawReport = JSON.stringify({ path: row.sourceDir, ...report[row.sourceDir] })
   for (const order of ["CLR", "CRL", "LCR", "LRC", "RCL", "RLC"]) {
     const state = { rows: [], catalog: [], loading: false, loadError: "", loadRetried: false,
-      pendingUpdateReport: "", checkingUpdates: false, rowsLoaded() {}, finishOpenLoad() {} }
+      pendingUpdateReport: "", checkingUpdates: false, rowsLoaded() {}, finishOpenLoad() {},
+      selfSettings: {}, allowUnverifiedUpdates: true }
     const api = Function("Model", "state", `with (state) {
       ${qmlFunction(store, "applyLoad")}; ${qmlFunction(store, "applyUpdateReport")};
       return { applyLoad, applyUpdateReport }
@@ -220,7 +228,7 @@ test("catalog, installed load and branch report converge in all arrival orders",
       if (event === "R") api.applyUpdateReport(rawReport)
       if (event === "C") {
         state.catalog = catalog
-        state.rows = Model.applyPinnedUpdates(state.rows, state.catalog)
+        state.rows = Model.applyPinnedUpdates(state.rows, state.catalog, state.allowUnverifiedUpdates)
       }
     }
     const projected = state.rows[0]
@@ -237,20 +245,20 @@ test("catalog, installed load and branch report converge in all arrival orders",
 test("row and detail presentation name upstream and verified comparisons independently", () => {
   const presentation = Function(source + "; return { updateStatus, updateCompareLabel }")()
   const { row, catalog, report, head, tip } = upstreamFixture("b".repeat(40))
-  const projected = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog)[0]
+  const projected = Model.applyPinnedUpdates(Model.applyUpdateReport([row], report), catalog, true)[0]
   assert.match(presentation.updateStatus(projected), /Upstream changes — not verified/)
   assert.match(presentation.updateStatus(projected), /Verified snapshot bbbbbbb available/)
   assert.equal(Model.pinnedRequest(projected, catalog).verifiedCommit, "b".repeat(40))
   assert.equal(Model.updateCompareUrl(projected), `${row.remote}/compare/${head}...${tip}`)
   assert.match(presentation.updateCompareLabel(projected), /upstream.*aaaaaaa.*ccccccc/i)
-  const onlyVerified = Model.applyPinnedUpdates(Model.applyUpdateReport([row], {}), catalog)[0]
+  const onlyVerified = Model.applyPinnedUpdates(Model.applyUpdateReport([row], {}), catalog, true)[0]
   assert.match(presentation.updateCompareLabel(onlyVerified), /verified.*aaaaaaa.*bbbbbbb/i)
   const current = Model.applyPinnedUpdates(Model.applyUpdateReport([row], {
     [row.sourceDir]: { ...report[row.sourceDir], remoteSha: head }
-  }), upstreamFixture().catalog)[0]
+  }), upstreamFixture().catalog, true)[0]
   assert.equal(presentation.updateStatus(current), "No upstream changes")
   assert.equal(Model.upToDate(current), true)
-  const reviewedTip = Model.applyPinnedUpdates([projected], upstreamFixture(tip).catalog)[0]
+  const reviewedTip = Model.applyPinnedUpdates([projected], upstreamFixture(tip).catalog, true)[0]
   assert.doesNotMatch(presentation.updateStatus(reviewedTip), /not verified/)
   for (const file of ["PluginRow.qml", "InstalledListRow.qml", "InstalledDetails.qml"]) {
     const qml = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
@@ -259,10 +267,10 @@ test("row and detail presentation name upstream and verified comparisons indepen
       assert.match(qml, /Model\.updateCompareLabel\(/, file)
       assert.match(qml, /root\.row\.pinnedEligible === true/, file)
       const gate = qml.match(/enabled: (root\.actionsEnabled && root\.updateEnabled[^\n]+)/)[1]
-      for (const candidate of [projected, Model.applyPinnedUpdates([projected], [])[0]]) {
+      for (const candidate of [projected, Model.applyPinnedUpdates([projected], [], true)[0]]) {
         const root = { row: candidate, actionsEnabled: true, updateEnabled: true,
           upToDate: Model.upToDate(candidate) }
-        assert.equal(Function("root", `return ${gate}`)(root), candidate.pinnedEligible, file)
+        assert.equal(Function("root", `return ${gate}`)(root), candidate.pinnedEligible || candidate.unverifiedEligible, file)
       }
       if (file === "PluginRow.qml") {
         let opened
@@ -1122,18 +1130,33 @@ function qmlFunction(source, name) {
   assert.fail(`Unterminated QML function ${name}`)
 }
 
-test("confirmation cannot supply an unreviewed update bypass", () => {
+test("the unreviewed-update confirmation installs exactly the commit it named, or nothing", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const state = { pendingKind: "update", pendingId: "thing", calls: 0,
-    runUpdate() { this.calls++ }, runAction() { this.calls++ } }
-  Function("state", `with (state) { ${qmlFunction(store, "confirmPending")}; confirmPending() }`)(state)
-  assert.equal(state.calls, 0)
-  assert.match(store, /readonly property string confirmCompareUrl: ""/)
+  const tip = "c".repeat(40)
+  const run = (row, sha, gate = true) => {
+    const state = { pendingKind: "update", pendingId: "thing", pendingLabel: "Thing", pendingUrl: "",
+      pendingUnverifiedSha: sha, pendingPlacementNeeded: false, rows: row ? [row] : [], calls: [],
+      runUpdate(target) { this.calls.push(target.id) }, runAction() { this.calls.push("action") },
+      canStartUpdate: () => gate, startDisable() {}, startAdd() {} }
+    Function("Model", "state", `with (state) { ${qmlFunction(store, "cancelPending")}; ${qmlFunction(store, "confirmPending")}; confirmPending() }`)(Model, state)
+    assert.equal(state.pendingKind, "", "the question is retired whatever the answer")
+    assert.equal(state.pendingUnverifiedSha, "")
+    return state.calls
+  }
+  const eligible = { id: "thing", unverifiedEligible: true, remoteSha: tip }
+  assert.deepEqual(run(eligible, tip), ["thing"])
+  assert.deepEqual(run(eligible, "d".repeat(40)), [], "the tip moved while the question was up")
+  assert.deepEqual(run({ ...eligible, unverifiedEligible: false }, tip), [], "the setting went off or a verified snapshot appeared")
+  assert.deepEqual(run(null, tip), [], "the row left the list")
+  assert.deepEqual(run(eligible, tip, false), [], "busy or unsettled processes still gate")
+  // The dialog offers the exact diff, and only for this kind of question.
+  assert.match(store, /readonly property string confirmCompareUrl: pendingKind === "update"\s*\? Model\.updateCompareUrl\(Model\.findRow\(rows, pendingId\)\) : ""/)
+  assert.match(store, /if \(pendingKind === "update"\)\s*return Model\.updateUnverifiedConfirmMessage\(pendingLabel, Model\.findRow\(rows, pendingId\)\)/)
 })
 
 test("both update entry points require the displayed tuple and settled processes", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const model = Function(source + "; return { pinnedRequest, findRow }")()
+  const model = Function(source + "; return { pinnedRequest, unverifiedRequest, findRow, shortSha }")()
   const target = "b".repeat(40), base = "a".repeat(40)
   const row = { id: "thing", name: "Thing", headSha: base, remoteSha: "c".repeat(40), verifiedTargetSha: target,
     gitManaged: true, pinnedEligible: true, updateOrigin: "https://github.com/acme/plugin" }
@@ -1141,10 +1164,11 @@ test("both update entry points require the displayed tuple and settled processes
   const pinnedProc = { running: false }, actionProc = { running: false }
   const state = { rows: [row], catalog, catalogLoaded: true, busy: false,
     busyKind: "", busyId: "", busyRowId: "", pinnedOutput: "", pinnedExited: false,
-    pinnedOverflow: false, pinnedHelperPath: "/plugin/helpers/pinned_update.py",
+    pinnedOverflow: false, pinnedHelperPath: "/plugin/helpers/pinned_update.py", allowUnverifiedUpdates: false,
+    pendingKind: "", pendingId: "", pendingLabel: "", pendingUrl: "", pendingUnverifiedSha: "",
     setStatus() {}, loadProcessSettled: () => true, updateProcessSettled: () => true }
   state.root = state
-  const names = ["canStartUpdate", "startUpdate", "runUpdate"]
+  const names = ["updateRequest", "canStartUpdate", "startUpdate", "runUpdate"]
   Object.assign(state, Function("Model", "state", "pinnedProc", "actionProc", "Quickshell", `with (state) {
     ${names.map(name => qmlFunction(store, name)).join("\n")}; return {${names.join(",")}}
   }`)(model, state, pinnedProc, actionProc, { env: key => key === "WAYLAND_DISPLAY" ? "wayland-23" : "" }))
@@ -1174,6 +1198,28 @@ test("both update entry points require the displayed tuple and settled processes
   assert.equal(pinnedProc.running, false, "stale display cannot silently retarget")
   state.runUpdate({ ...row, pinnedEligible: false })
   assert.equal(pinnedProc.running, false, "upstream availability does not authorize execution")
+
+  // The unreviewed tip: only with the setting on, only through the question,
+  // and the request names that exact commit rather than a verified one.
+  const unverified = { ...row, pinnedEligible: false, unverifiedEligible: true, verifiedTargetSha: "" }
+  state.rows = [unverified]
+  state.runUpdate(unverified)
+  assert.equal(pinnedProc.running, false, "the setting is off")
+  state.allowUnverifiedUpdates = true
+  state.startUpdate(unverified)
+  assert.equal(pinnedProc.running, false, "an unreviewed commit asks first")
+  assert.equal(state.pendingKind, "update")
+  assert.equal(state.pendingUnverifiedSha, unverified.remoteSha)
+  state.pendingKind = ""
+  state.runUpdate(unverified)
+  assert.equal(pinnedProc.running, true)
+  const sent = JSON.parse(pinnedProc.command[9])
+  assert.deepEqual(sent, { schemaVersion: 1, id: row.id, repository: row.updateOrigin,
+    unverifiedCommit: unverified.remoteSha, expectedLocalHead: base })
+  pinnedProc.running = false
+  state.rows = [{ ...unverified, remoteSha: "d".repeat(40) }]
+  state.runUpdate(unverified)
+  assert.equal(pinnedProc.running, false, "the tip the row shows must still be the tip the list holds")
 })
 
 test("action confirmation keyboard skips absent action and isolates present action", () => {
@@ -1283,7 +1329,10 @@ test("both confirmation panes route View changes without answering the question"
 
 test("pinned updates use a dedicated bounded process, not the host HEAD updater", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.doesNotMatch(store, /"omarchy", "plugin", "update"|pendingKind = "update"/)
+  assert.doesNotMatch(store, /"omarchy", "plugin", "update"/)
+  // The only path into an update question is the unreviewed tip, after the gate.
+  assert.equal(store.split('pendingKind = "update"').length - 1, 1)
+  assert.match(store, /function startUpdate\(row\) \{\s*if \(!canStartUpdate\(row\)\) return\s*if \(row\.pinnedEligible === true\) \{\s*runUpdate\(row\)\s*return\s*\}[\s\S]*?pendingUnverifiedSha = row\.remoteSha\s*pendingKind = "update"/)
   const process = store.slice(store.indexOf("id: pinnedProc"), store.indexOf("id: actionProc"))
   assert.match(process, /clearEnvironment: true/)
   assert.match(process, /splitMarker: ""/)
@@ -3064,7 +3113,7 @@ test("an up-to-date row's update button is disabled and never spins", () => {
   // Enter on a selected row goes through the same gate, which the store owns
   // so both windows refuse the same rows.
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(store, /function canStartUpdate\(row\) \{\s+if \(!row \|\| row\.pinnedEligible !== true \|\| busy/)
+  assert.match(store, /function canStartUpdate\(row\) \{\s+if \(!row \|\| busy/)
   assert.match(panel, /function startUpdate\(row\) \{\s+if \(!store\.canStartUpdate\(row\)\) return\s+revokeReleaseNavigation\(\)\s+store\.startUpdate\(row\)/)
 })
 
@@ -4236,7 +4285,7 @@ test("Browse details are a third face of the flip, not a dialog", () => {
   assert.match(pane, /onPreviewUndecodable: root\.previewsSupported = false/)
   // Tabs still answer while the page is up; the grid's cursor keys do not.
   const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
-  assert.ok(keys.indexOf('text === "1"') < keys.indexOf("else if (root.detailsOpen) return"), "tab keys before the details guard")
+  assert.ok(keys.indexOf('text === "1"') < keys.indexOf("else if (root.detailsOpen || root.settingsOpen) return"), "tab keys before the details guard")
   // The hint bar says the one way out.
   const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
   assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
@@ -4486,7 +4535,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /property var shell: null/)
   assert.match(expanded, /property var manifest: null/)
   assert.match(expanded, /property bool opened: false/)
-  assert.match(expanded, /PluginStore \{\s*id: store\s*watchConfig: true\s*selfId: root\.pluginId\s*\}/)
+  assert.match(expanded, /PluginStore \{\s*id: store\s*watchConfig: true\s*selfId: root\.pluginId\s*(\/\/[^\n]*\n\s*)*shell: root\.shell\s*\}/)
 
   const window = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("PanelWindow {") + 700)
   assert.match(window, /visible: root\.opened/)
@@ -4617,4 +4666,169 @@ test("PopupBridge hands the expanded window back to the popup on its own output"
   assert.match(barWidget, /readonly property string screenName: root\.QsWindow\.window && root\.QsWindow\.window\.screen/)
   assert.match(barWidget, /Component\.onCompleted: PopupBridge\.register\(root\)/)
   assert.match(barWidget, /Component\.onDestruction: PopupBridge\.unregister\(root\)/)
+})
+
+test("unverified upstream changes are hidden unless the setting allows them", () => {
+  const { row, catalog, report, head, tip } = upstreamFixture()
+  const upstream = Model.applyUpdateReport([row], report)[0]
+  // Off (the default, and anything that is not the boolean true).
+  for (const setting of [undefined, false, "true", 1]) {
+    const off = Model.applyPinnedUpdates([upstream], catalog, setting)[0]
+    assert.equal(off.upstreamBehind, true, "the observation survives")
+    assert.equal(off.remoteSha, tip)
+    assert.equal(off.unverifiedEligible, false)
+    assert.equal(off.pinnedEligible, false)
+    assert.equal(off.behind, false)
+    assert.equal(Model.countBehind([off]), 0)
+    assert.equal(Model.filterRows([off], "all", "update", "").length, 0)
+    assert.equal(Model.upToDate(off), true)
+    assert.equal(Model.updateStatus(off), "No verified update available")
+    assert.doesNotMatch(Model.pinnedUpdateTooltip(off), /upstream|unreviewed/i)
+    assert.match(Model.pinnedUpdateTooltip(off), /Update disabled/)
+    assert.equal(Model.updateCompareUrl(off), "")
+    assert.equal(Model.updateCompareLabel(off), "")
+    assert.deepEqual(Model.updateReleaseCandidates(off), [])
+  }
+  const unchecked = Model.applyPinnedUpdates([Model.applyUpdateReport([row], {})[0]], catalog)[0]
+  assert.equal(Model.updateStatus(unchecked), "Update check unavailable")
+  // On: the tip is offered, as the exact commit the check observed.
+  const on = Model.applyPinnedUpdates([upstream], catalog, true)[0]
+  assert.equal(on.unverifiedEligible, true)
+  assert.equal(on.behind, true)
+  assert.equal(Model.countBehind([on]), 1)
+  assert.equal(Model.upToDate(on), false)
+  assert.equal(Model.updateStatus(on), "Upstream changes — not verified; Unreviewed commit ccccccc installable")
+  assert.equal(Model.updateCompareUrl(on), `${row.remote}/compare/${head}...${tip}`)
+  assert.deepEqual(Model.unverifiedRequest(on), { schemaVersion: 1, id: row.id, repository: row.remote,
+    unverifiedCommit: tip, expectedLocalHead: head })
+  // A verified snapshot always wins over the unreviewed tip.
+  const verifiedAhead = Model.applyPinnedUpdates([upstream], upstreamFixture("b".repeat(40)).catalog, true)[0]
+  assert.equal(verifiedAhead.pinnedEligible, true)
+  assert.equal(verifiedAhead.unverifiedEligible, false)
+  assert.match(Model.updateStatus(verifiedAhead), /Verified snapshot bbbbbbb available$/)
+  // A tip that is the verified commit itself is the verified path, never the unreviewed one.
+  const tipVerified = Model.applyPinnedUpdates([upstream], upstreamFixture(tip).catalog, true)[0]
+  assert.equal(tipVerified.pinnedEligible, true)
+  assert.equal(tipVerified.unverifiedEligible, false)
+  // Superseded stays superseded: the setting never resurrects a downgrade.
+  const atTip = { [row.sourceDir]: { localSha: head, remoteSha: head, localVersion: "1.0", remoteVersion: "" } }
+  const superseded = Model.applyPinnedUpdates([Model.applyUpdateReport([{ ...row, ancestors: [head, "b".repeat(40)] }], atTip)[0]],
+    upstreamFixture("b".repeat(40)).catalog, true)[0]
+  assert.equal(superseded.verifiedSuperseded, true)
+  assert.equal(superseded.behind, false)
+  // Switching off afterwards hides the same row again.
+  assert.equal(Model.applyPinnedUpdates([on], catalog, false)[0].behind, false)
+})
+
+test("unverifiedRequest binds the observed tip to the canonical origin and nothing else", () => {
+  const head = "a".repeat(40), tip = "c".repeat(40)
+  const row = { id: "acme.plugin", gitManaged: true, headSha: head, remoteSha: tip,
+    updateOrigin: "git@github.com:Acme/Plugin.git" }
+  assert.deepEqual(Model.unverifiedRequest(row), { schemaVersion: 1, id: row.id,
+    repository: "https://github.com/acme/plugin", unverifiedCommit: tip, expectedLocalHead: head })
+  for (const change of [{ firstParty: true }, { gitManaged: false }, { remoteSha: head },
+    { remoteSha: "C".repeat(40) }, { remoteSha: "c".repeat(39) }, { remoteSha: "c".repeat(64) }, { remoteSha: "" },
+    { headSha: "A".repeat(40) }, { headSha: "" }, { updateOrigin: "" },
+    { updateOrigin: "https://gitlab.com/acme/plugin" }, { updateOrigin: "https://github.com/acme/plugin?x" }]) {
+    assert.equal(Model.unverifiedRequest({ ...row, ...change }), null, JSON.stringify(change))
+  }
+  assert.equal(Model.unverifiedRequest(null), null)
+  const message = Model.updateUnverifiedConfirmMessage("Plugin", row)
+  assert.match(message, /^Update Plugin to an unreviewed commit\?\n\n/)
+  assert.match(message, /has not verified ccccccc/)
+  assert.match(message, /Exactly this commit is installed, nothing newer\.$/)
+  assert.doesNotMatch(message, /[<>&]/)
+})
+
+test("the plugin's own shell.json entry is read strictly and the setting is the boolean true only", () => {
+  assert.deepEqual(Model.parseSelfSettings(""), {})
+  assert.deepEqual(Model.parseSelfSettings("   \n"), {})
+  assert.deepEqual(Model.parseSelfSettings("nonsense"), {})
+  assert.deepEqual(Model.parseSelfSettings("[1,2]"), {})
+  assert.deepEqual(Model.parseSelfSettings('"x"'), {})
+  assert.deepEqual(Model.parseSelfSettings(JSON.stringify({ id: "x", allowUnverifiedUpdates: true, n: 2, s: "a",
+    nested: { a: 1 }, list: [1], big: "x".repeat(300), __proto__: { polluted: true } })),
+    { allowUnverifiedUpdates: true, n: 2, s: "a" })
+  assert.deepEqual(Model.parseSelfSettings(`{"allowUnverifiedUpdates": true, "pad": "${"x".repeat(5000)}"}`), {}, "bounded")
+  for (const value of [true]) assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedUpdates: value }), true)
+  for (const value of ["true", 1, "yes", null, undefined, {}, []])
+    assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedUpdates: value }), false, String(value))
+  assert.equal(Model.allowUnverifiedUpdates({}), false)
+  assert.equal(Model.allowUnverifiedUpdates(null), false)
+  assert.equal(Model.allowUnverifiedUpdates(Object.create({ allowUnverifiedUpdates: true })), false, "own key only")
+
+  // The settings section rides ahead of the four fixed ones and is optional.
+  const four = "===list===\n[]\n===catalog===\n[]\n===git===\n\n===manifest===\n"
+  assert.equal(Model.splitSections(four).settings, "")
+  const five = '===settings===\n{"allowUnverifiedUpdates":true}\n' + four
+  assert.equal(Model.splitSections(five).settings.trim(), '{"allowUnverifiedUpdates":true}')
+  assert.deepEqual(Model.parseArray(Model.splitSections(five).list), [])
+  assert.equal(Model.splitSections(four + "===settings===\n{}"), null, "a trailing settings marker is not a valid stream")
+})
+
+test("the expanded window's settings face owns the one switch and reads back through the store", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const button = expanded.slice(expanded.indexOf("id: settingsButton"), expanded.indexOf("id: settingsButton") + 600)
+  assert.match(button, /iconText: "󰒓"/)
+  assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
+  assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
+  assert.match(expanded, /id: tabs\s*anchors\.right: settingsButton\.left/)
+  assert.match(expanded, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*flipTo\(1, function\(\) \{ settingsOpen = true \}\)\s*\}/)
+  assert.match(expanded, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*flipTo\(-1, function\(\) \{ settingsOpen = false \}\)\s*\}/)
+  const handler = expanded.slice(expanded.indexOf("onActiveTabChanged: {"), expanded.indexOf("onActiveTabChanged: {") + 200)
+  assert.match(handler, /settingsOpen = false/)
+  for (const id of ["installedPane", "catalogGrid", "browseDetailsPane"]) {
+    const face = expanded.slice(expanded.indexOf(`id: ${id}`), expanded.indexOf(`id: ${id}`) + 200)
+    assert.match(face, /visible: [^\n]*&& !root\.settingsOpen/, id)
+  }
+  const pane = expanded.slice(expanded.indexOf("id: settingsPane"), expanded.indexOf("ActionConfirmDialog {"))
+  assert.match(pane, /visible: root\.settingsOpen/)
+  assert.match(pane, /anchors\.top: statusLine\.bottom[\s\S]*?anchors\.bottom: hintBar\.top/)
+  assert.match(pane, /angle: root\.contentFlipAngle/)
+  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.closeSettings\(\)/)
+  assert.match(pane, /text: "Settings"/)
+  assert.match(pane, /text: "Allow updating unverified plugins"/)
+  assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
+  assert.match(pane, /pinned to the exact commit the check observed, after a confirmation\./)
+  assert.match(pane, /id: unverifiedSwitch[\s\S]*?checked: store\.allowUnverifiedUpdates[\s\S]*?onToggled: store\.setAllowUnverifiedUpdates\(!store\.allowUnverifiedUpdates\)/)
+  // Every Text on the face is plain text.
+  const texts = pane.split(/\bText \{/).slice(1)
+  assert.ok(texts.length >= 3)
+  for (const text of texts) assert.match(text.slice(0, 200), /textFormat: Text\.PlainText/)
+  // Backspace leaves the face; Escape still closes the window; cursor keys wait.
+  const { calls, press } = expandedKeyHarness({ browsing: false, detailsOpen: false, settingsOpen: true,
+    closeSettings: () => calls.push("settings-back") })
+  press({ key: "Backspace", text: "\b", accepted: false })
+  assert.deepEqual(calls, ["settings-back"])
+  press({ key: "Escape", text: "", accepted: false })
+  assert.deepEqual(calls, ["settings-back", "dismiss"])
+  const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
+  assert.match(keys, /else if \(root\.detailsOpen \|\| root\.settingsOpen\) return/)
+
+  // The store owns the value and the write goes through the host.
+  assert.match(store, /property var shell: null/)
+  assert.match(store, /readonly property bool allowUnverifiedUpdates: Model\.allowUnverifiedUpdates\(selfSettings\)/)
+  assert.match(store, /onAllowUnverifiedUpdatesChanged: rows = Model\.applyPinnedUpdates\(rows, catalog, allowUnverifiedUpdates\)/)
+  assert.equal(store.split("Model.applyPinnedUpdates(").length - 1,
+    store.split(", allowUnverifiedUpdates)").length - 1, "every projection carries the setting")
+  assert.match(store, /selfSettings = Model\.parseSelfSettings\(sections\.settings\)/)
+  assert.ok(store.indexOf("printf '===settings===") < store.indexOf("printf '===list==="), "settings lead the load stream")
+  assert.ok(store.includes('head -c 1048577 -- \\"$HOME/.config/omarchy/shell.json\\" 2>/dev/null'), "bounded read of the host config")
+  assert.match(store, /jq -c --arg id io\.github\.juancasanueva\.plugin-manager/)
+  // Saving merges over the entry's other keys, since the host replaces the entry.
+  const saves = []
+  const state = { selfSettings: { position: "right", allowUnverifiedUpdates: true }, selfId: "acme.plugin",
+    shell: { updateEntryInline: (id, settings) => { saves.push([id, settings]); return true } },
+    allowUnverifiedUpdates: true, setStatus() {} }
+  const api = Function("Model", "state", `with (state) { ${qmlFunction(store, "setAllowUnverifiedUpdates")}; return setAllowUnverifiedUpdates }`)(Model, state)
+  assert.equal(api(false), true)
+  assert.deepEqual(saves, [["acme.plugin", { position: "right" }]])
+  assert.deepEqual(state.selfSettings, { position: "right" })
+  state.allowUnverifiedUpdates = false // the readonly binding would have followed selfSettings
+  state.shell.updateEntryInline = () => false
+  assert.equal(api(true), false, "a refused write leaves the value alone")
+  assert.deepEqual(state.selfSettings, { position: "right" })
+  state.shell = null
+  assert.equal(api(true), false)
 })

@@ -47,6 +47,8 @@ Item {
     id: store
     watchConfig: true
     selfId: root.pluginId
+    // The sanctioned way to write this plugin's shell.json entry (settings).
+    shell: root.shell
   }
 
   Connections {
@@ -236,6 +238,7 @@ Item {
 
   onActiveTabChanged: {
     detailsEntry = null
+    settingsOpen = false
     // Decided from the tab's own new value: `browsing` is a binding on it and
     // may not have re-evaluated by the time this handler runs, which is how
     // coming back to Installed once landed on nothing at all. Browse starts
@@ -408,6 +411,21 @@ Item {
     flipTo(1, function() { detailsEntry = entry })
   }
 
+  // ---- Settings: one more face of the flip, reached from the header's gear.
+  //      Backspace and the Back button return; Escape still closes the window,
+  //      as everywhere else on this surface.
+  property bool settingsOpen: false
+
+  function openSettings() {
+    if (settingsOpen) return
+    flipTo(1, function() { settingsOpen = true })
+  }
+
+  function closeSettings() {
+    if (!settingsOpen) return
+    flipTo(-1, function() { settingsOpen = false })
+  }
+
   function closeDetails() {
     if (!detailsOpen) return
     flipTo(-1, function() { detailsEntry = null })
@@ -527,13 +545,17 @@ Item {
             root.dismiss()
             event.accepted = true
           }
+          else if (event.key === Qt.Key_Backspace && root.settingsOpen && !searchField.activeFocus) {
+            root.closeSettings()
+            event.accepted = true
+          }
           else if (event.key === Qt.Key_Backspace && root.browsing && root.detailsOpen && !searchField.activeFocus) {
             root.closeDetails()
             event.accepted = true
           }
           else if (text === "1") { root.switchTab("installed"); event.accepted = true }
           else if (text === "2") { root.switchTab("browse"); event.accepted = true }
-          else if (root.detailsOpen) return
+          else if (root.detailsOpen || root.settingsOpen) return
           else if (event.key === Qt.Key_Down || text === "j") { root.moveSelection(0, 1); event.accepted = true }
           else if (event.key === Qt.Key_Up || text === "k") { root.moveSelection(0, -1); event.accepted = true }
           else if (event.key === Qt.Key_Right || text === "l") { root.moveSelection(1, 0); event.accepted = true }
@@ -723,7 +745,7 @@ Item {
 
           ButtonGroup {
             id: tabs
-            anchors.right: collapseButton.left
+            anchors.right: settingsButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -733,6 +755,21 @@ Item {
             fontSize: Style.font.caption
             focusable: false
             onChanged: function(value) { root.switchTab(value) }
+          }
+
+          // The one switch this panel has lives behind the gear; the face it
+          // opens is another turn of the same card.
+          PanelActionButton {
+            id: settingsButton
+            anchors.right: collapseButton.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰒓"
+            fontSize: Style.font.display
+            tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
+            foreground: root.settingsOpen ? Color.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
           }
 
           // The way back. Same slot the popup's expand icon sits in, so the
@@ -1088,7 +1125,7 @@ Item {
         // ---- Installed: the list on the left, one plugin in full on the right.
         Item {
           id: installedPane
-          visible: !root.browsing
+          visible: !root.browsing && !root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: statusLine.bottom
@@ -1245,7 +1282,7 @@ Item {
         // ---- Browse: the popup's card grid, one column wider.
         GridView {
           id: catalogGrid
-          visible: root.browsing && !root.detailsOpen
+          visible: root.browsing && !root.detailsOpen && !root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: statusLine.bottom
@@ -1385,7 +1422,7 @@ Item {
         //      right, and the way back at the top; the third face of the flip.
         CatalogDetailsPane {
           id: browseDetailsPane
-          visible: root.browsing && root.detailsOpen
+          visible: root.browsing && root.detailsOpen && !root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: statusLine.bottom
@@ -1414,6 +1451,116 @@ Item {
           onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
           onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
           onPreviewUndecodable: root.previewsSupported = false
+        }
+
+        // ---- Settings: the way back at the top, one switch below it; the
+        //      face the gear turns the card over to.
+        Item {
+          id: settingsPane
+          visible: root.settingsOpen
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: statusLine.bottom
+          anchors.topMargin: Style.space(10)
+          anchors.bottom: hintBar.top
+          anchors.bottomMargin: Style.space(10)
+          // One face of the tab-flip card; see contentFlip.
+          transform: Rotation {
+            origin.x: settingsPane.width / 2
+            origin.y: settingsPane.height / 2
+            axis { x: 0; y: 1; z: 0 }
+            angle: root.contentFlipAngle
+          }
+          scale: root.contentFlipScale
+          layer.enabled: root.contentFlipping
+
+          Button {
+            id: settingsBackButton
+            anchors.left: parent.left
+            anchors.top: parent.top
+            iconText: "󰁍"
+            text: "Back"
+            tooltipText: "Back to the list"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.closeSettings()
+          }
+
+          Column {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: settingsBackButton.bottom
+            anchors.topMargin: Style.space(16)
+            spacing: Style.space(14)
+
+            Text {
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              text: "Settings"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            // Off is the marketplace's promise; on is the user's own call, and
+            // the caption says so in the same words the confirmation will.
+            Item {
+              width: parent.width
+              height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight)
+
+              Column {
+                id: unverifiedText
+                anchors.left: parent.left
+                anchors.right: unverifiedSwitch.left
+                anchors.rightMargin: Style.space(16)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(4)
+
+                Text {
+                  // Never rich text: AutoText would fetch what a crafted string points at.
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: "Allow updating unverified plugins"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  wrapMode: Text.WordWrap
+                }
+
+                Text {
+                  // Never rich text: AutoText would fetch what a crafted string points at.
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: "Off: only marketplace-verified snapshots are offered. "
+                    + "On: upstream commits nobody has reviewed can be installed, pinned to the exact commit the check observed, after a confirmation."
+                  color: root.secondaryForeground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              ToggleSwitch {
+                id: unverifiedSwitch
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                checked: store.allowUnverifiedUpdates
+                interactive: true
+                busy: root.busy
+                foreground: root.foreground
+                onToggled: store.setAllowUnverifiedUpdates(!store.allowUnverifiedUpdates)
+
+                PanelToolTip {
+                  visible: unverifiedSwitch.containsMouse
+                  text: store.allowUnverifiedUpdates ? "Unreviewed commits can be installed" : "Only verified snapshots are offered"
+                  fontFamily: root.fontFamily
+                }
+              }
+            }
+          }
         }
 
         ActionConfirmDialog {
