@@ -300,30 +300,41 @@ class Updater:
         def visit(fd, prefix, depth):
             nonlocal total, count
             require(depth <= 20, "Tree too deep")
-            with os.scandir(fd) as entries:
-                for entry in entries:
-                    self.checkpoint("tree")
-                    count += 1
-                    require(count <= 4096, "Too many files")
-                    name = entry.name
-                    if skip_git and not prefix and name == ".git":
-                        continue
-                    require(len(name.encode()) <= 255, "Invalid filename")
-                    path = prefix + name
-                    info = entry.stat(follow_symlinks=False)
-                    if stat.S_ISDIR(info.st_mode):
-                        child = checked_dir(fd, name)
-                        try:
-                            visit(child, path + "/", depth + 1)
-                        finally:
-                            os.close(child)
-                    else:
-                        require(stat.S_ISREG(info.st_mode), "Symlinks and special files refused")
-                        data, mode = read_file(fd, name, 32 * 1024 * 1024, sync=sync)
-                        total += len(data)
-                        require(total <= MAX_DISK, "Checkout exceeds disk limit")
-                        digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-                        result[path] = ("100755" if mode & 0o111 else "100644", digest)
+            # Enumerate through a freshly reopened view of the same inode. A
+            # dirfd opened while the directory was still empty keeps returning
+            # an empty listing on btrfs even after another process (git
+            # checkout) has populated the inode; reopening via /proc/self/fd
+            # yields the current entries. It is the same inode, not a path
+            # re-resolution, so every openat below still uses the validated
+            # `fd`. Name lookup on the held fd is unaffected, only readdir is.
+            view = os.open("/proc/self/fd/%d" % fd, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                with os.scandir(view) as entries:
+                    for entry in entries:
+                        self.checkpoint("tree")
+                        count += 1
+                        require(count <= 4096, "Too many files")
+                        name = entry.name
+                        if skip_git and not prefix and name == ".git":
+                            continue
+                        require(len(name.encode()) <= 255, "Invalid filename")
+                        path = prefix + name
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            child = checked_dir(fd, name)
+                            try:
+                                visit(child, path + "/", depth + 1)
+                            finally:
+                                os.close(child)
+                        else:
+                            require(stat.S_ISREG(info.st_mode), "Symlinks and special files refused")
+                            data, mode = read_file(fd, name, 32 * 1024 * 1024, sync=sync)
+                            total += len(data)
+                            require(total <= MAX_DISK, "Checkout exceeds disk limit")
+                            digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                            result[path] = ("100755" if mode & 0o111 else "100644", digest)
+            finally:
+                os.close(view)
             if sync:
                 os.fsync(fd)
         visit(root, "", 0)

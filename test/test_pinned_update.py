@@ -77,6 +77,29 @@ class TransactionTests(unittest.TestCase):
         self.git("-C", str(self.remote), "commit", "-qm", text)
         return self.git("-C", str(self.remote), "rev-parse", "HEAD")
 
+    def test_scan_sees_entries_another_process_added_after_the_dirfd_opened(self):
+        # Regression for the "Staged contents changed" refusal on btrfs: the
+        # staging dirfd is opened while the directory is still empty, then git
+        # checkout (another process) populates that inode. On btrfs the
+        # long-held fd kept reporting an empty listing, so scan() saw nothing
+        # and refused a perfectly good checkout. scan() must reopen the inode
+        # for enumeration. The directory lives under HOME so the test lands on
+        # the same filesystem as real checkouts rather than a tmpfs /tmp.
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as scratch:
+            root = Path(scratch) / "checkout"
+            root.mkdir(mode=0o700)
+            fd = os.open(str(root), u.DIR)
+            try:
+                subprocess.run(["/usr/bin/touch", "--", str(root / "a.txt"), str(root / "b.txt")],
+                               check=True, env={"PATH": "/usr/bin:/bin"})
+                (root / "sub").mkdir(mode=0o700)
+                subprocess.run(["/usr/bin/touch", "--", str(root / "sub" / "c.txt")],
+                               check=True, env={"PATH": "/usr/bin:/bin"})
+                result = u.Updater(home=scratch).scan(fd, skip_git=True)
+            finally:
+                os.close(fd)
+        self.assertEqual(set(result), {"a.txt", "b.txt", "sub/c.txt"})
+
     def test_installs_verified_commit_not_remote_head_and_keeps_backup(self):
         result = self.updater().execute(self.request)
         self.assertEqual(result["status"], "updated")
