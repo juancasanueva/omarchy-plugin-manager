@@ -1,7 +1,14 @@
 #!/usr/bin/python3
-"""Exact marketplace snapshots; no installed Git configuration is executed.
+"""Exact pinned plugin updates; no installed Git configuration is executed.
 
 CLI: python3 -I -S pinned_update.py REQUEST_JSON
+Two request shapes, both bound to one full commit SHA-1:
+  verifiedCommit   - a marketplace-verified snapshot; the live catalog must
+                     authorize exactly this repository and commit, before the
+                     fetch and again before publication.
+  unverifiedCommit - an upstream commit the user's setting allows and the
+                     panel observed; no catalog authorization is consulted,
+                     every other check is identical. Recorded as unverified.
 The CLI forks a finite, independent worker before touching the plugin root.
 All executable Python is loaded before the fork. A destroyed QML Process can
 lose its result pipe, but cannot interrupt the worker's publication/finalization.
@@ -85,16 +92,25 @@ def document(raw, cap):
 
 
 def request_value(value):
-    require(type(value) is dict and set(value) == {
-        "schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}, "Invalid request fields")
+    require(type(value) is dict, "Invalid request fields")
+    # The derived keys are recomputed on every validation, never trusted: a
+    # normalized request re-enters here through launch() and execute().
+    value = {k: v for k, v in value.items() if k not in ("target", "verified")}
+    verified = set(value) == {"schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}
+    unverified = set(value) == {"schemaVersion", "id", "repository", "unverifiedCommit", "expectedLocalHead"}
+    require(verified or unverified, "Invalid request fields")
+    commit_key = "verifiedCommit" if verified else "unverifiedCommit"
     require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1, "Unsupported request")
     require(isinstance(value["id"], str) and ID.fullmatch(value["id"])
             and ".." not in value["id"] and not value["id"].startswith("omarchy."), "Invalid plugin id")
     require(repository(value["repository"]) == value["repository"] != "", "Noncanonical repository")
-    for key in ("verifiedCommit", "expectedLocalHead"):
+    for key in (commit_key, "expectedLocalHead"):
         require(isinstance(value[key], str) and SHA.fullmatch(value[key]), "Full SHA-1 required")
-    return {**value, "verifiedCommit": value["verifiedCommit"].lower(),
-            "expectedLocalHead": value["expectedLocalHead"].lower()}
+    # `target` and `verified` are derived for the transaction; the original
+    # shape is what gets journaled, so a record says which kind it was.
+    return {**value, commit_key: value[commit_key].lower(),
+            "expectedLocalHead": value["expectedLocalHead"].lower(),
+            "target": value[commit_key].lower(), "verified": verified}
 
 
 def authorize(raw, request):
@@ -459,7 +475,8 @@ class Updater:
         self.cancelled = False
         try:
             self.run(["/usr/bin/notify-send", "--app-name=Plugin Manager", "--",
-                      "Pinned plugin update", request["id"] + ": " + result["status"]
+                      "Pinned plugin update" + ("" if request.get("verified", True) else " (unverified)"),
+                      request["id"] + ": " + result["status"]
                       + (" (" + result["reason"] + ")" if result.get("reason") else "")], cap=4096,
                      extra_env={"DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus"})
         except Exception:
@@ -470,24 +487,26 @@ class Updater:
         try:
             self.open_paths(request["id"])
             self.local_metadata(request)
-            authorize(self.catalog_bytes(), request)
+            if request["verified"]:
+                authorize(self.catalog_bytes(), request)
             self.transaction = "txn-" + secrets.token_hex(12)
             os.mkdir(self.transaction, 0o700, dir_fd=self.state)
             os.fsync(self.state)
             self.tx = self.hold(checked_dir(self.state, self.transaction, private=True))
             self.anchors.append((self.state, self.transaction, identity(self.tx)))
             self.backup = self.home + "/.config/omarchy/plugin-manager-updates/" + self.transaction + "/checkout"
-            create_file(self.tx, "request.json", json.dumps(request).encode())
+            create_file(self.tx, "request.json", json.dumps(
+                {k: v for k, v in request.items() if k not in ("target", "verified")}).encode())
             os.mkdir("checkout", 0o700, dir_fd=self.tx)
             stage = self.hold(checked_dir(self.tx, "checkout", private=True))
             self.anchors.append((self.tx, "checkout", identity(stage)))
             self.git(stage, "init", "--quiet", "--template=", "--object-format=sha1")
             self.git(stage, "config", "remote.origin.url", request["repository"])
-            self.fetch(stage, request["verifiedCommit"])
+            self.fetch(stage, request["target"])
             fetched = self.git(stage, "rev-parse", "FETCH_HEAD^{commit}").decode().strip()
-            require(fetched == request["verifiedCommit"], "Fetched object is not the verified commit")
+            require(fetched == request["target"], "Fetched object is not the requested commit")
             self.git(stage, "merge-base", "--is-ancestor", request["expectedLocalHead"], fetched)
-            require(fetched != request["expectedLocalHead"], "Already at verified snapshot")
+            require(fetched != request["expectedLocalHead"], "Already at the requested commit")
             base_tree = self.tree(stage, request["expectedLocalHead"])
             target_tree = self.tree(stage, fetched)
             self.check_clean(stage, base_tree, request, "index-before")
@@ -498,7 +517,8 @@ class Updater:
             self.validate(stage)
             require(self.scan(stage, skip_git=True) == target_tree, "Staged contents changed")
             self.scan(stage, sync=True)
-            authorize(self.catalog_bytes(), request)
+            if request["verified"]:
+                authorize(self.catalog_bytes(), request)
             self.check_clean(stage, base_tree, request, "index-final")
             self.check_anchors()
             create_file(self.tx, "prepared.json", json.dumps({"original": identity(self.original),

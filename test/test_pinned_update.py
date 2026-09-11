@@ -100,6 +100,64 @@ class TransactionTests(unittest.TestCase):
                 os.close(fd)
         self.assertEqual(set(result), {"a.txt", "b.txt", "sub/c.txt"})
 
+    def test_unverified_request_installs_the_observed_tip_without_the_catalog(self):
+        # The user's setting allows an upstream commit nobody reviewed. The
+        # helper never consults the catalog for it, but every other check
+        # still applies, and the transaction records which kind it was.
+        updater = self.updater()
+
+        def never(*_):
+            raise AssertionError("the catalog is not consulted for an unverified request")
+        updater.catalog_bytes = never
+        request = dict(schemaVersion=1, id="acme.plugin", repository=REPO,
+                       unverifiedCommit=self.tip, expectedLocalHead=self.base)
+        result = updater.execute(request)
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual((self.plugin / "Main.qml").read_text(), "unreviewed tip")
+        self.assertEqual(self.git("-C", str(self.plugin), "rev-parse", "HEAD"), self.tip)
+        self.assertTrue(self.reloaded)
+        journaled = json.loads((Path(result["backup"]).parent / "request.json").read_text())
+        self.assertEqual(journaled, request)
+        self.assertNotIn("verifiedCommit", journaled)
+        self.assertNotIn("target", journaled)
+        # The notification names the kind, without any remote prose.
+        calls = []
+        updater.run = lambda argv, **kwargs: calls.append(argv) or b""
+        updater.notify(u.request_value(request), result)
+        self.assertEqual(calls[0][3], "Pinned plugin update (unverified)")
+        self.assertEqual(calls[0][4], "acme.plugin: updated")
+        calls.clear()
+        updater.notify(u.request_value(self.request), result)
+        self.assertEqual(calls[0][3], "Pinned plugin update")
+
+    def test_unverified_request_keeps_every_other_refusal(self):
+        # A non-fast-forward target refuses exactly as a verified one would.
+        self.git("-C", str(self.remote), "checkout", "-q", "--detach", self.base)
+        divergent = self.commit("other branch")
+        for target in (divergent, self.base):
+            self.git("-C", str(self.plugin), "fetch", "-q", str(self.remote), self.target)
+            self.git("-C", str(self.plugin), "checkout", "-q", "--detach", self.target)
+            request = dict(schemaVersion=1, id="acme.plugin", repository=REPO,
+                           unverifiedCommit=target, expectedLocalHead=self.target)
+            updater = self.updater()
+            updater.catalog_bytes = lambda: (_ for _ in ()).throw(AssertionError("no catalog"))
+            with self.subTest(target=target), self.assertRaises(u.Refused):
+                updater.execute(request)
+            self.assertEqual((self.plugin / "Main.qml").read_text(), "verified")
+        # The two shapes are exact: no mixing, no extras, full lowercase SHA-1.
+        for bad in (dict(verifiedCommit=self.target, unverifiedCommit=self.tip),
+                    dict(unverifiedCommit=self.tip, extra=1), dict(unverifiedCommit=self.tip[:39]),
+                    dict(unverifiedCommit="g" * 40), dict()):
+            value = dict(schemaVersion=1, id="acme.plugin", repository=REPO, expectedLocalHead=self.base, **bad)
+            with self.subTest(bad=bad), self.assertRaises(u.Refused):
+                u.request_value(value)
+        normalized = u.request_value(dict(schemaVersion=1, id="acme.plugin", repository=REPO,
+                                          unverifiedCommit=self.tip.upper(), expectedLocalHead=self.base))
+        self.assertEqual(normalized["target"], self.tip)
+        self.assertFalse(normalized["verified"])
+        self.assertEqual(u.request_value(normalized), normalized, "a normalized request validates again unchanged")
+        self.assertTrue(u.request_value(self.request)["verified"])
+
     def test_installs_verified_commit_not_remote_head_and_keeps_backup(self):
         result = self.updater().execute(self.request)
         self.assertEqual(result["status"], "updated")
