@@ -30,21 +30,39 @@ var STATUS_UPDATE = "update"
 // stream, a section that never printed — is a failed read, not empty data.
 // This plugin's own shell.json entry travels ahead of them as an optional
 // fifth section, so an older loader still splits.
+//
+// The settings section is user-written text (the entry, printed by `jq -c` as
+// exactly one line), so the other markers are searched only after that line:
+// a value that happens to contain "===list===" stays inside the settings
+// slice, where the worst it can do is fail to parse, and cannot shift the
+// list, catalog, git or manifest slices.
 function splitSections(raw) {
   var text = String(raw || "")
-  var atList = text.indexOf(SECTION_LIST)
-  var atCatalog = text.indexOf(SECTION_CATALOG)
-  var atGit = text.indexOf(SECTION_GIT)
-  var atManifest = text.indexOf(SECTION_MANIFEST)
+  var settings = ""
+  var from = 0
+  if (text.indexOf(SECTION_SETTINGS) === 0) {
+    var lineEnd = text.indexOf("\n", SECTION_SETTINGS.length)
+    // An absent entry prints nothing, so the list marker follows directly.
+    if (text.indexOf(SECTION_LIST, SECTION_SETTINGS.length) === SECTION_SETTINGS.length) {
+      from = SECTION_SETTINGS.length
+    } else {
+      if (lineEnd < 0) return null
+      settings = text.slice(SECTION_SETTINGS.length, lineEnd)
+      from = lineEnd + 1
+    }
+  }
+  var atList = text.indexOf(SECTION_LIST, from)
+  var atCatalog = text.indexOf(SECTION_CATALOG, from)
+  var atGit = text.indexOf(SECTION_GIT, from)
+  var atManifest = text.indexOf(SECTION_MANIFEST, from)
   if (atList < 0 || atCatalog < 0 || atGit < 0 || atManifest < 0) return null
   if (!(atList < atCatalog && atCatalog < atGit && atGit < atManifest)) return null
-  // Optional, but if it is there it leads: a marker anywhere else is a
-  // corrupted stream, not a section.
-  var atSettings = text.indexOf(SECTION_SETTINGS)
-  if (atSettings >= 0 && atSettings > atList) return null
+  // Optional, but if it is there it leads: a settings marker anywhere after
+  // its own line is a corrupted stream, not a section.
+  if (text.indexOf(SECTION_SETTINGS, from) >= 0) return null
 
   return {
-    settings: atSettings >= 0 ? text.slice(atSettings + SECTION_SETTINGS.length, atList) : "",
+    settings: settings,
     list: text.slice(atList + SECTION_LIST.length, atCatalog),
     catalog: text.slice(atCatalog + SECTION_CATALOG.length, atGit),
     git: text.slice(atGit + SECTION_GIT.length, atManifest),
@@ -64,30 +82,61 @@ function parseArray(raw) {
 }
 
 // This plugin's own inline shell.json entry, as the loader printed it: one
-// JSON object, or nothing when the entry is absent. Only a plain object with
-// bounded, plain-typed values survives; the settings the panel reads from it
-// are then decided one key at a time (see allowUnverifiedUpdates), so a
-// hostile or malformed entry can at most switch a feature off.
+// JSON object, or nothing when the entry is absent. Two views of it:
+//
+// parseSelfEntry keeps the entry whole (every own key except the id, values
+// untouched) so a write can hand the host back everything the entry held;
+// the host replaces the entry rather than merging into it. It is null, not
+// {}, when the text is not one bounded JSON object, so the store can refuse
+// to write over an entry it could not read.
+//
+// parseSelfSettings is the strict view the panel reads from: only bounded,
+// plain-typed values, and the settings it acts on are then decided one key
+// at a time (see allowUnverifiedUpdates). A hostile or malformed entry can
+// at most switch a feature off, and (see splitSections) cannot touch the rows.
 var MAX_SETTINGS_BYTES = 4096
 
-function parseSelfSettings(raw) {
+function parseSelfEntry(raw) {
   var text = String(raw || "").trim()
-  if (text === "" || text.length > MAX_SETTINGS_BYTES) return {}
+  if (text === "") return {}
+  if (text.length > MAX_SETTINGS_BYTES) return null
   var value
   try {
     value = JSON.parse(text)
   } catch (error) {
-    return {}
+    return null
   }
-  if (!value || Array.isArray(value) || typeof value !== "object") return {}
+  if (!value || Array.isArray(value) || typeof value !== "object") return null
   var out = {}
   for (var key in value) {
     if (!hasOwnKey(value, key) || key === "id" || key === "__proto__") continue
-    var item = value[key]
+    out[key] = value[key]
+  }
+  return out
+}
+
+function parseSelfSettings(raw) {
+  var entry = parseSelfEntry(raw)
+  var out = {}
+  for (var key in entry || {}) {
+    var item = entry[key]
     var type = typeof item
     if (type === "boolean" || (type === "number" && isFinite(item))) out[key] = item
     else if (type === "string" && item.length <= 256) out[key] = item
   }
+  return out
+}
+
+// The entry to write back: a fresh copy of everything the entry held, with
+// the one setting set (only the boolean true is ever stored) or removed.
+function withSelfSetting(entry, key, value) {
+  var out = {}
+  for (var name in entry || {}) {
+    if (!hasOwnKey(entry, name) || name === "id" || name === "__proto__") continue
+    out[name] = entry[name]
+  }
+  if (value === true) out[key] = true
+  else delete out[key]
   return out
 }
 
@@ -1755,12 +1804,16 @@ function applyPinnedUpdates(rows, entries, allowUnverified) {
     copy.verifiedSuperseded = differs && (row.ancestors || []).indexOf(request.verifiedCommit) >= 0
     copy.pinnedEligible = differs && !copy.verifiedSuperseded
     copy.unverifiedAllowed = unverifiedAllowed
-    // A verified snapshot always wins: the unreviewed tip is offered only
-    // when nothing reviewed is installable, and never when the tip is the
-    // verified commit itself (that case is pinnedEligible or superseded).
-    copy.unverifiedEligible = unverifiedAllowed && copy.upstreamBehind && !copy.pinnedEligible
-      && unverifiedRequest(row) !== null && row.remoteSha !== copy.verifiedTargetSha
-    copy.behind = copy.pinnedEligible || copy.unverifiedEligible
+    // A verified snapshot always wins: the unreviewed tip is shown only when
+    // nothing reviewed is installable, and never when the tip is the verified
+    // commit itself (that case is pinnedEligible or superseded). Shown is not
+    // installable: a checkout whose origin the helper cannot bind (not a
+    // GitHub repository) still gets the grey arrow and the count, so nothing
+    // the setting promises to surface is hidden; only its button stays off.
+    copy.unverifiedShown = unverifiedAllowed && copy.upstreamBehind && !copy.pinnedEligible
+      && row.remoteSha !== copy.verifiedTargetSha
+    copy.unverifiedEligible = copy.unverifiedShown && unverifiedRequest(row) !== null
+    copy.behind = copy.pinnedEligible || copy.unverifiedShown
     out.push(copy)
   }
   return out
@@ -1781,6 +1834,7 @@ function updateStatus(row) {
   if (row.pinnedEligible) return upstream + "; Verified snapshot " + shortSha(row.verifiedTargetSha) + " available"
   if (row.verifiedSuperseded) return upstream + "; Installed is ahead of verified snapshot " + shortSha(row.verifiedTargetSha)
   if (row.unverifiedEligible) return upstream + "; Unreviewed commit " + shortSha(row.remoteSha) + " installable"
+  if (row.unverifiedShown) return upstream + "; update needs a GitHub origin"
   return upstream
 }
 
@@ -1792,6 +1846,7 @@ function pinnedUpdateTooltip(row) {
     + shortSha(row.remoteSha) + " — the marketplace has not verified it; asks first"
   if (row && row.verifiedSuperseded) return status + ". Update disabled; the installed commit already contains verified snapshot "
     + shortSha(row.verifiedTargetSha)
+  if (row && row.unverifiedShown) return status + ". Update disabled; the helper installs only from a GitHub origin"
   return status + ". Update disabled; no newer matching verified snapshot"
 }
 
@@ -2160,8 +2215,14 @@ function versionLabel(row) {
 // A checkout the background check has actually compared and found level
 // with its remote. Unchecked is not up to date — it is unknown, and the
 // button stays offered until the check says otherwise.
+// "Current" is a positive claim, so it is not made while the setting hides
+// an unreviewed upstream change: such a row shows neither the arrow nor the
+// check. A superseded checkout keeps its check: it is ahead of the snapshot.
 function upToDate(row) {
-  return !!row && row.updateChecked === true && row.behind !== true
+  if (!row || row.updateChecked !== true || row.behind === true) return false
+  var hiddenUpstream = row.unverifiedAllowed !== true && row.upstreamBehind === true
+    && row.verifiedSuperseded !== true
+  return !hiddenUpstream
 }
 
 function countBehind(rows) {

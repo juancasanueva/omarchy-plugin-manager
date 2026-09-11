@@ -157,6 +157,19 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(normalized["verified"])
         self.assertEqual(u.request_value(normalized), normalized, "a normalized request validates again unchanged")
         self.assertTrue(u.request_value(self.request)["verified"])
+        # The derived keys carry no authority. A request that arrives already
+        # claiming to be verified, or naming another target, has both
+        # recomputed from its commit key; nothing on argv can promote an
+        # unreviewed commit or swap the commit the checks bind to.
+        injected = u.request_value(dict(schemaVersion=1, id="acme.plugin", repository=REPO,
+                                        unverifiedCommit=self.tip, expectedLocalHead=self.base,
+                                        verified=True, target=self.target))
+        self.assertFalse(injected["verified"])
+        self.assertEqual(injected["target"], self.tip)
+        self.assertNotIn("verifiedCommit", injected)
+        with self.assertRaises(u.Refused):
+            u.request_value(dict(schemaVersion=1, id="acme.plugin", repository=REPO,
+                                 unverifiedCommit=self.tip, expectedLocalHead=self.base, verified=True, extra=1))
 
     def test_installs_verified_commit_not_remote_head_and_keeps_backup(self):
         result = self.updater().execute(self.request)

@@ -187,16 +187,27 @@ there to offer. The background check still records what it observed.
 header of both the popup and the expanded panel; it is one setting, shared),
 changes that. It is **off by default**. Switched on, every
 checkout with observed upstream changes shows again, with a grey arrow rather
-than the orange one, and its Update button installs the exact upstream commit
-the check observed after a confirmation that names that commit and links its
-diff. Nothing is fetched from a moving branch: the commit the row shows is the
+than the orange one, and is counted. Update works for GitHub origins: the
+button installs the exact upstream commit the check observed after a
+confirmation that names that commit and links its diff. A checkout hosted
+elsewhere shows its arrow and **update needs a GitHub origin**, with the
+button disabled, because the helper binds only canonical GitHub repositories.
+Nothing is fetched from a moving branch: the commit the row shows is the
 commit the helper is asked for, and if the tip moved while the question was
 on screen the answer installs nothing. A verified snapshot always wins: when
 one is installable it is what Update installs, unreviewed tips are offered only
 when there is no verified snapshot ahead of the checkout, and a checkout meeting
 both conditions is counted once. With the setting on you are choosing to run
-code the marketplace has not reviewed; the setting is stored in this plugin's
-own entry in `~/.config/omarchy/shell.json` as `allowUnverifiedUpdates: true`.
+code the marketplace has not reviewed.
+
+The setting is stored in this plugin's own entry in
+`~/.config/omarchy/shell.json` as `allowUnverifiedUpdates: true`, written
+through the host and merged over whatever else that entry holds. The switch
+refuses to write until the plugin list has loaded and that entry was read
+whole, so a failed read can never rewrite the entry from an empty copy. With
+the setting off, a checkout whose only difference is an unreviewed upstream
+commit carries neither the arrow nor the green check: the panel does not claim
+it is current, it says **No verified update available**.
 
 - **Upstream changes — not verified** (setting on) means the observed branch
   tip does not match an authorized verification snapshot. Being at an older

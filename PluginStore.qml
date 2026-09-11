@@ -115,29 +115,40 @@ Item {
   // the popup has no shell API of its own, and shell.json is already what the
   // store watches: a write goes through the host, the host rewrites the
   // file, the watcher reloads, and every surface sees the same value.
+  // Two views of that entry: `selfEntry` is the whole thing, kept so a write
+  // can hand every key back to the host (updateEntryInline replaces the
+  // entry, it does not merge); `selfSettings` is the strict view the panel
+  // reads. `selfEntryLoaded` says the last load actually produced the entry:
+  // until it has, or after a failed load, there is nothing safe to write
+  // over, so the switch refuses rather than rewriting the entry from nothing.
+  property var selfEntry: ({})
+  property bool selfEntryLoaded: false
   property var selfSettings: ({})
   readonly property bool allowUnverifiedUpdates: Model.allowUnverifiedUpdates(selfSettings)
   onAllowUnverifiedUpdatesChanged: rows = Model.applyPinnedUpdates(rows, catalog, allowUnverifiedUpdates)
 
-  // Persist the one setting through the host, merged over the entry's other
-  // keys (updateEntryInline replaces the whole entry). The local copy moves
-  // only when the host accepted the write; the reload confirms it.
+  // Persist the one setting through the host, merged over the entry as it
+  // was loaded. The local copies move only when the host accepted the
+  // write; the watcher reload then confirms it on every surface.
   function setAllowUnverifiedUpdates(value) {
-    var next = {}
-    for (var key in selfSettings) next[key] = selfSettings[key]
-    if (value === true) next.allowUnverifiedUpdates = true
-    else delete next.allowUnverifiedUpdates
+    var want = value === true
+    if (want === allowUnverifiedUpdates) return true
+    if (!selfEntryLoaded || !selfEntry) {
+      setStatus("Settings unavailable until the plugin list loads", true)
+      return false
+    }
     if (!shell || typeof shell.updateEntryInline !== "function" || selfId === "") {
       setStatus("Could not save the setting: no shell connection", true)
       return false
     }
-    var saved = shell.updateEntryInline(selfId, next) === true
-    if (saved || Model.allowUnverifiedUpdates(next) === allowUnverifiedUpdates) {
-      selfSettings = next
-      return true
+    var next = Model.withSelfSetting(selfEntry, "allowUnverifiedUpdates", want)
+    if (shell.updateEntryInline(selfId, next) !== true) {
+      setStatus("Could not save the setting", true)
+      return false
     }
-    setStatus("Could not save the setting", true)
-    return false
+    selfEntry = next
+    selfSettings = Model.parseSelfSettings(JSON.stringify(next))
+    return true
   }
 
   property string pendingKind: ""
@@ -268,12 +279,20 @@ Item {
       // as "no plugins installed", which is a different and much scarier
       // claim than "could not read".
       loadError = "Could not read the plugin list"
+      // The entry may have changed under a load that failed; do not write
+      // over it from a stale copy.
+      selfEntryLoaded = false
       finishOpenLoad()
       return
     }
 
     loadError = ""
     loadRetried = false
+    // A null entry is one the loader printed but this code could not read
+    // (oversized or not one JSON object): the setting stays off and the
+    // switch refuses to write until a later load reads it whole.
+    selfEntry = Model.parseSelfEntry(sections.settings)
+    selfEntryLoaded = selfEntry !== null
     selfSettings = Model.parseSelfSettings(sections.settings)
     var merged = Model.mergePlugins(
       listEntries,

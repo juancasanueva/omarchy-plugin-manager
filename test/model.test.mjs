@@ -30,7 +30,7 @@ const Model = new Function(
     catalogVersionLabel, catalogVersionReleaseCandidates, catalogVersionFallbackUrl,
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
-    unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, allowUnverifiedUpdates,
+    unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -4682,7 +4682,8 @@ test("unverified upstream changes are hidden unless the setting allows them", ()
     assert.equal(off.behind, false)
     assert.equal(Model.countBehind([off]), 0)
     assert.equal(Model.filterRows([off], "all", "update", "").length, 0)
-    assert.equal(Model.upToDate(off), true)
+    // Hidden is not current: no arrow, but no green check either.
+    assert.equal(Model.upToDate(off), false)
     assert.equal(Model.updateStatus(off), "No verified update available")
     assert.doesNotMatch(Model.pinnedUpdateTooltip(off), /upstream|unreviewed/i)
     assert.match(Model.pinnedUpdateTooltip(off), /Update disabled/)
@@ -4719,6 +4720,25 @@ test("unverified upstream changes are hidden unless the setting allows them", ()
   assert.equal(superseded.behind, false)
   // Switching off afterwards hides the same row again.
   assert.equal(Model.applyPinnedUpdates([on], catalog, false)[0].behind, false)
+  // A checkout the helper cannot bind (not a GitHub origin) is still shown
+  // and counted with the setting on: nothing promised is hidden, only the
+  // button stays off and the status says why.
+  const elsewhere = Model.applyPinnedUpdates([{ ...upstream, updateOrigin: "https://gitlab.com/acme/plugin",
+    remote: "https://gitlab.com/acme/plugin" }], catalog, true)[0]
+  assert.equal(elsewhere.unverifiedShown, true)
+  assert.equal(elsewhere.unverifiedEligible, false)
+  assert.equal(elsewhere.behind, true)
+  assert.equal(Model.countBehind([elsewhere]), 1)
+  assert.equal(Model.upToDate(elsewhere), false)
+  assert.equal(Model.updateStatus(elsewhere), "Upstream changes — not verified; update needs a GitHub origin")
+  assert.match(Model.pinnedUpdateTooltip(elsewhere), /Update disabled; the helper installs only from a GitHub origin/)
+  assert.equal(Model.unverifiedRequest(elsewhere), null)
+  assert.equal(Model.applyPinnedUpdates([elsewhere], catalog, false)[0].behind, false)
+  // A current checkout with the setting off keeps its check; a superseded one too.
+  const level = Model.applyPinnedUpdates([Model.applyUpdateReport([row], {
+    [row.sourceDir]: { ...report[row.sourceDir], remoteSha: head } })[0]], catalog, false)[0]
+  assert.equal(Model.upToDate(level), true)
+  assert.equal(Model.upToDate(Model.applyPinnedUpdates([superseded], catalog, false)[0]), true)
 })
 
 test("unverifiedRequest binds the observed tip to the canonical origin and nothing else", () => {
@@ -4765,6 +4785,45 @@ test("the plugin's own shell.json entry is read strictly and the setting is the 
   assert.equal(Model.splitSections(five).settings.trim(), '{"allowUnverifiedUpdates":true}')
   assert.deepEqual(Model.parseArray(Model.splitSections(five).list), [])
   assert.equal(Model.splitSections(four + "===settings===\n{}"), null, "a trailing settings marker is not a valid stream")
+  // The entry is one jq line of user-written text: a marker inside a value
+  // stays inside the settings slice and cannot shift the four fixed sections.
+  for (const marker of ["===list===", "===git===", "===catalog===", "===manifest===", "===settings===\n"]) {
+    const entry = JSON.stringify({ allowUnverifiedUpdates: true, note: "x" + marker + "y" })
+    const sections = Model.splitSections("===settings===\n" + entry + "\n" + four)
+    assert.ok(sections, JSON.stringify(marker))
+    assert.equal(sections.settings, entry, JSON.stringify(marker))
+    assert.deepEqual(Model.parseArray(sections.list), [], JSON.stringify(marker))
+    assert.deepEqual(Model.parseArray(sections.catalog), [], JSON.stringify(marker))
+    assert.equal(Model.allowUnverifiedUpdates(Model.parseSelfSettings(sections.settings)), true, JSON.stringify(marker))
+  }
+  // A settings line that never ends is a truncated stream; an empty entry
+  // (absent from shell.json) leaves the list marker directly after its own.
+  assert.equal(Model.splitSections("===settings===\n{\"a\":1}"), null)
+  assert.equal(Model.splitSections("===settings===\n" + four).settings, "")
+  assert.deepEqual(Model.parseArray(Model.splitSections("===settings===\n" + four).list), [])
+  // The strict view never yields a marker-bearing value with a marker outside its line.
+  const truncated = Model.splitSections("===settings===\n{\"note\":\"===list===\n[]\"}\n" + four)
+  assert.ok(truncated)
+  assert.deepEqual(Model.parseSelfSettings(truncated.settings), {}, "an entry cut by its own newline just fails to parse")
+})
+
+test("the plugin's own entry is kept whole for writing and null when it could not be read", () => {
+  assert.deepEqual(Model.parseSelfEntry(""), {})
+  assert.deepEqual(Model.parseSelfEntry("  \n"), {})
+  assert.equal(Model.parseSelfEntry("nonsense"), null)
+  assert.equal(Model.parseSelfEntry("[1]"), null)
+  assert.equal(Model.parseSelfEntry(`{"pad":"${"x".repeat(5000)}"}`), null, "oversized is unknown, not empty")
+  const raw = JSON.stringify({ id: "x", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), n: 2, allowUnverifiedUpdates: true })
+  assert.deepEqual(Model.parseSelfEntry(raw), { pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), n: 2, allowUnverifiedUpdates: true })
+  assert.deepEqual(Model.parseSelfSettings(raw), { n: 2, allowUnverifiedUpdates: true }, "the strict view drops what it cannot vouch for")
+  const entry = Model.parseSelfEntry(raw)
+  const off = Model.withSelfSetting(entry, "allowUnverifiedUpdates", false)
+  assert.deepEqual(off, { pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), n: 2 })
+  assert.deepEqual(entry.pinned, ["a", "b"], "the loaded entry is not mutated")
+  assert.deepEqual(Model.withSelfSetting(off, "allowUnverifiedUpdates", true).allowUnverifiedUpdates, true)
+  assert.deepEqual(Model.withSelfSetting(off, "allowUnverifiedUpdates", "true"), off, "only the boolean true is stored")
+  assert.deepEqual(Model.withSelfSetting({ id: "x", __proto__: { leak: 1 } }, "allowUnverifiedUpdates", true), { allowUnverifiedUpdates: true })
+  assert.deepEqual(Model.withSelfSetting(null, "allowUnverifiedUpdates", true), { allowUnverifiedUpdates: true })
 })
 
 test("the expanded window's settings face owns the one switch and reads back through the store", () => {
@@ -4813,25 +4872,55 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(store, /onAllowUnverifiedUpdatesChanged: rows = Model\.applyPinnedUpdates\(rows, catalog, allowUnverifiedUpdates\)/)
   assert.equal(store.split("Model.applyPinnedUpdates(").length - 1,
     store.split(", allowUnverifiedUpdates)").length - 1, "every projection carries the setting")
-  assert.match(store, /selfSettings = Model\.parseSelfSettings\(sections\.settings\)/)
+  assert.match(store, /selfEntry = Model\.parseSelfEntry\(sections\.settings\)\s*selfEntryLoaded = selfEntry !== null\s*selfSettings = Model\.parseSelfSettings\(sections\.settings\)/)
+  assert.match(store, /loadError = "Could not read the plugin list"[\s\S]{0,200}selfEntryLoaded = false/)
   assert.ok(store.indexOf("printf '===settings===") < store.indexOf("printf '===list==="), "settings lead the load stream")
   assert.ok(store.includes('head -c 1048577 -- \\"$HOME/.config/omarchy/shell.json\\" 2>/dev/null'), "bounded read of the host config")
   assert.match(store, /jq -c --arg id io\.github\.juancasanueva\.plugin-manager/)
-  // Saving merges over the entry's other keys, since the host replaces the entry.
-  const saves = []
-  const state = { selfSettings: { position: "right", allowUnverifiedUpdates: true }, selfId: "acme.plugin",
+  // Saving hands the host the whole entry as loaded, with the one key
+  // changed: arrays, objects and long strings the strict view does not
+  // carry all survive, since the host replaces the entry outright.
+  const saves = [], statuses = []
+  const loaded = { position: "right", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), allowUnverifiedUpdates: true }
+  const state = { selfEntry: loaded, selfEntryLoaded: true,
+    selfSettings: { position: "right", allowUnverifiedUpdates: true }, selfId: "acme.plugin",
     shell: { updateEntryInline: (id, settings) => { saves.push([id, settings]); return true } },
-    allowUnverifiedUpdates: true, setStatus() {} }
+    allowUnverifiedUpdates: true, setStatus(text, error) { statuses.push([text, error]) } }
   const api = Function("Model", "state", `with (state) { ${qmlFunction(store, "setAllowUnverifiedUpdates")}; return setAllowUnverifiedUpdates }`)(Model, state)
   assert.equal(api(false), true)
-  assert.deepEqual(saves, [["acme.plugin", { position: "right" }]])
+  assert.deepEqual(saves, [["acme.plugin", { position: "right", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300) }]])
+  assert.deepEqual(state.selfEntry, saves[0][1])
   assert.deepEqual(state.selfSettings, { position: "right" })
+  assert.deepEqual(loaded.pinned, ["a", "b"], "the loaded entry is not mutated in place")
   state.allowUnverifiedUpdates = false // the readonly binding would have followed selfSettings
+  // Asking for the value already in force is a no-op, not a write.
+  assert.equal(api(false), true)
+  assert.equal(saves.length, 1)
+  // A host refusal is a failure even though the value did not move.
   state.shell.updateEntryInline = () => false
   assert.equal(api(true), false, "a refused write leaves the value alone")
   assert.deepEqual(state.selfSettings, { position: "right" })
+  assert.deepEqual(state.selfEntry, saves[0][1])
+  assert.deepEqual(statuses.pop(), ["Could not save the setting", true])
   state.shell = null
   assert.equal(api(true), false)
+  assert.deepEqual(statuses.pop(), ["Could not save the setting: no shell connection", true])
+  // Nothing is written over an entry that was never read whole: after a
+  // failed load, or an entry the parser refused, the switch declines.
+  state.shell = { updateEntryInline: (id, settings) => { saves.push([id, settings]); return true } }
+  for (const change of [{ selfEntryLoaded: false }, { selfEntry: null }]) {
+    const saved = { ...state }
+    Object.assign(state, change)
+    assert.equal(api(true), false, JSON.stringify(change))
+    assert.equal(saves.length, 1, "no write")
+    assert.deepEqual(statuses.pop(), ["Settings unavailable until the plugin list loads", true])
+    Object.assign(state, saved)
+  }
+  // An absent entry loads as {} and is written as just the switch.
+  Object.assign(state, { selfEntry: {}, selfEntryLoaded: true, selfSettings: {}, allowUnverifiedUpdates: false })
+  assert.equal(api(true), true)
+  assert.deepEqual(saves[1], ["acme.plugin", { allowUnverifiedUpdates: true }])
+  assert.deepEqual(state.selfSettings, { allowUnverifiedUpdates: true })
 })
 
 test("the popup's settings pane owns the same switch and writes through the bar's shell", () => {
