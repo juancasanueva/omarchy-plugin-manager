@@ -942,7 +942,11 @@ Item {
     + "update_worker() { path=\"$1\"; outfile=\"$2\"; "
     + "  branch=$(git -C \"$path\" rev-parse --abbrev-ref HEAD 2>/dev/null); "
     + "  local_sha=$(git -C \"$path\" rev-parse HEAD 2>/dev/null); "
-    + "  remote_sha=$(timeout 12 git -C \"$path\" ls-remote origin \"refs/heads/$branch\" 2>/dev/null | cut -f1); "
+    // A pinned update leaves the checkout detached, and a branch named HEAD
+    // exists on no remote; compare a detached checkout against the remote's
+    // default branch instead, which is what the marketplace verifies.
+    + "  if [ \"$branch\" = HEAD ]; then ref=HEAD; else ref=\"refs/heads/$branch\"; fi; "
+    + "  remote_sha=$(timeout 12 git -C \"$path\" ls-remote origin \"$ref\" 2>/dev/null | head -n 1 | cut -f1); "
     + "  local_version=$(jq -r '.version // \"\"' \"$path/manifest.json\" 2>/dev/null); "
     + "  remote_version=\"\"; "
     + "  if [ -n \"$remote_sha\" ] && [ \"$remote_sha\" != \"$local_sha\" ]; then "

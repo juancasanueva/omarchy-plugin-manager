@@ -633,3 +633,53 @@ exit 1
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("update producer compares a detached checkout against the remote default branch", () => {
+  // A pinned update leaves HEAD detached at the verified commit. Asking the
+  // remote for a branch literally named HEAD found nothing, so a freshly
+  // updated plugin sat unchecked forever. The remote's HEAD symref names the
+  // default branch, which is what the marketplace verifies.
+  const root = mkdtempSync(join(tmpdir(), "plugin-manager-detached-"))
+  const home = join(root, "home")
+  const plugins = join(home, ".config", "omarchy", "plugins")
+  const runtime = join(root, "runtime")
+  const bin = join(root, "bin")
+  const gitLog = join(root, "git.log")
+  const sha = "42ca30751cf3e623e615cbb54d9bf874927560a1"
+  try {
+    for (const path of [plugins, runtime, bin]) mkdirSync(path, { recursive: true })
+    chmodSync(runtime, 0o700)
+    const path = join(plugins, "detached")
+    mkdirSync(join(path, ".git"), { recursive: true })
+    writeFileSync(join(path, "manifest.json"), JSON.stringify({ version: "1.5.0" }))
+    executable(join(bin, "git"), `#!/usr/bin/env bash
+path=""; if [ "\${1:-}" = -C ]; then path="$2"; shift 2; fi
+command="\${1:-}"; shift || true
+case "$command" in
+  rev-parse) [ "\${1:-}" = --abbrev-ref ] && printf 'HEAD\\n' || printf '${sha}\\n';;
+  remote) printf 'https://github.com/acme/detached.git\\n';;
+  ls-remote)
+    printf '%s\\n' "$*" >> "$GIT_LOG"
+    case " $* " in *" origin HEAD "*) printf '${sha}\\tHEAD\\n';; *" refs/heads/HEAD "*) exit 99;; *) exit 1;; esac;;
+  *) exit 1;;
+esac
+`)
+    executable(join(bin, "curl"), `#!/usr/bin/env bash
+exit 22
+`)
+    const result = runProducer({
+      HOME: home, XDG_RUNTIME_DIR: runtime, PATH: `${bin}:${process.env.PATH}`, LC_ALL: "C", GIT_LOG: gitLog
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const records = result.stdout.trimEnd().split("\n").map(line => JSON.parse(line))
+    assert.equal(records.length, 1)
+    assert.equal(records[0].localSha, sha)
+    assert.equal(records[0].remoteSha, sha, "the detached checkout is compared against the default branch")
+    assert.equal(records[0].remoteVersion, "")
+    const asked = readFileSync(gitLog, "utf8")
+    assert.match(asked, /origin HEAD/)
+    assert.doesNotMatch(asked, /refs\/heads\/HEAD/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
