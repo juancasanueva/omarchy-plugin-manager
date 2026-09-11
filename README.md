@@ -183,8 +183,9 @@ marketplace does not list at all, is not an update: the panel says **No
 verified update available** and offers nothing, because nothing reviewed is
 there to offer. The background check still records what it observed.
 
-**Allow updating unverified plugins**, in the expanded panel's settings (the
-gear in its header), changes that. It is **off by default**. Switched on, every
+**Allow updating unverified plugins**, in the settings pane (the gear in the
+header of both the popup and the expanded panel; it is one setting, shared),
+changes that. It is **off by default**. Switched on, every
 checkout with observed upstream changes shows again, with a grey arrow rather
 than the orange one, and its Update button installs the exact upstream commit
 the check observed after a confirmation that names that commit and links its

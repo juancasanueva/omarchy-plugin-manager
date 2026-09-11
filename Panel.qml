@@ -62,6 +62,13 @@ Panel {
   PluginStore {
     id: store
     selfId: root.moduleName
+    // The sanctioned way to write this plugin's shell.json entry (settings).
+    // The trusted built-in bar hands each third-party widget a PluginBarApi
+    // whose `shell` is the same scoped shell facade the expanded window gets
+    // (Bar.pluginBarApiFor -> shell.pluginShellForId -> pluginShellFor), and
+    // its updateEntryInline accepts this plugin's own id. `bar` arrives after
+    // construction through injectPanel, so this stays a binding.
+    shell: root.bar ? root.bar.shell : null
   }
 
   Connections {
@@ -208,6 +215,22 @@ Panel {
   property var detailsEntry: null
   readonly property bool detailsOpen: detailsEntry !== null
 
+  // The settings pane is an overlay like the details page, not a third face
+  // of the tab flip: the popup's turn is bound to the two tabs.
+  property bool settingsOpen: false
+
+  function openSettings() {
+    if (settingsOpen) return
+    revokeReleaseNavigation()
+    settingsOpen = true
+  }
+
+  function closeSettings() {
+    if (!settingsOpen) return
+    revokeReleaseNavigation()
+    settingsOpen = false
+  }
+
   // ---- Tab flip -----------------------------------------------------------
 
   // The content below the header turns over like a card when the tab changes:
@@ -274,6 +297,7 @@ Panel {
     if (activeTab === tab) return
     revokeReleaseNavigation()
     closeDetails()
+    closeSettings()
     pendingTab = tab
     contentFlip.direction = tab === "browse" ? 1 : -1
     contentFlip.restart()
@@ -575,6 +599,7 @@ Panel {
     Qt.callLater(function() {
       if (root.opened
           && Model.browseModalFocusOwner(root.detailsOpen, root.confirming, root.placing) === "list"
+          && !root.settingsOpen
           && keyCatcher) keyCatcher.forceActiveFocus()
     })
   }
@@ -582,7 +607,7 @@ Panel {
   property bool titleIconIntroArmed: false
 
   onOpenedChanged: {
-    if (!opened) { detailsEntry = null; revokeReleaseNavigation(); return }
+    if (!opened) { detailsEntry = null; settingsOpen = false; revokeReleaseNavigation(); return }
     titleIconIntro.stop()
     titleIcon.opacity = 0
     titleIconIntroArmed = true
@@ -609,7 +634,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || root.placing || root.detailsOpen
+      blocked: root.confirming || root.placing || root.detailsOpen || root.settingsOpen
         || searchField.activeFocus
         || groupDropdown.popupOpen || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
         || catalogKindDropdown.popupOpen || availabilityDropdown.popupOpen || sortDropdown.popupOpen
@@ -755,7 +780,7 @@ Panel {
           // Browse's extra button goes on the far side of them.
           ButtonGroup {
             id: tabs
-            anchors.right: expandButton.left
+            anchors.right: settingsButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -798,6 +823,23 @@ Panel {
               text: "Open the official Marketplace"
               fontFamily: root.contentFontFamily
             }
+          }
+
+          // The gear turns the card over to the settings pane and back; the
+          // same switch the expanded window shows, reached from here too.
+          PanelActionButton {
+            id: settingsButton
+            anchors.right: expandButton.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰒓"
+            fontSize: Style.font.display
+            tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
+            foreground: root.settingsOpen ? Color.accent : root.contentForeground
+            fontFamily: root.contentFontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
           }
 
           // Icon only, like the refresh beside it: the popup's header has no
@@ -1602,6 +1644,121 @@ Panel {
             fontSize: Style.font.caption
             bordered: true
             onClicked: root.clearCatalogFilters()
+          }
+        }
+      }
+
+      // ---- Settings: an overlay like the details page, so the popup's tab
+      //      flip stays a two-face card. The way back at the top, one switch
+      //      below it; the same switch the expanded window shows.
+      Rectangle {
+        id: settingsPane
+        anchors.fill: parent
+        z: 10
+        visible: root.settingsOpen
+        color: Color.popups.background
+
+        // Nothing underneath reacts to a click while the pane is up.
+        MouseArea { anchors.fill: parent }
+
+        onVisibleChanged: {
+          if (visible) forceActiveFocus()
+          else root.returnFocusToList()
+        }
+
+        // Escape and Backspace both leave the pane; the key catcher is
+        // blocked while it is up, so neither closes the popup instead.
+        Keys.onPressed: function(event) {
+          if (event.key !== Qt.Key_Escape && event.key !== Qt.Key_Backspace) return
+          root.closeSettings()
+          event.accepted = true
+        }
+
+        Button {
+          id: settingsBackButton
+          anchors.left: parent.left
+          anchors.top: parent.top
+          iconText: "󰁍"
+          text: "Back"
+          tooltipText: "Back to the list"
+          bordered: true
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          fontSize: Style.font.caption
+          onClicked: root.closeSettings()
+        }
+
+        Column {
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: settingsBackButton.bottom
+          anchors.topMargin: Style.space(16)
+          spacing: Style.space(14)
+
+          Text {
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            text: "Settings"
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+          }
+
+          // Off is the marketplace's promise; on is the user's own call, and
+          // the caption says so in the same words the confirmation will.
+          Item {
+            width: parent.width
+            height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight)
+
+            Column {
+              id: unverifiedText
+              anchors.left: parent.left
+              anchors.right: unverifiedSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Allow updating unverified plugins"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: only marketplace-verified snapshots are offered. "
+                  + "On: upstream commits nobody has reviewed can be installed, pinned to the exact commit the check observed, after a confirmation."
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: unverifiedSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.allowUnverifiedUpdates
+              interactive: true
+              busy: root.busy
+              foreground: root.contentForeground
+              onToggled: store.setAllowUnverifiedUpdates(!store.allowUnverifiedUpdates)
+
+              PanelToolTip {
+                visible: unverifiedSwitch.containsMouse
+                text: store.allowUnverifiedUpdates ? "Unreviewed commits can be installed" : "Only verified snapshots are offered"
+                fontFamily: root.contentFontFamily
+              }
+            }
           }
         }
       }

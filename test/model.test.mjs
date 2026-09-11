@@ -2842,7 +2842,7 @@ test("the tab buttons sit in the same place on both tabs; Marketplace goes to th
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 
   const tabs = panel.slice(panel.indexOf("id: tabs"), panel.indexOf("id: marketplaceLink"))
-  assert.match(tabs, /anchors\.right: expandButton\.left/)
+  assert.match(tabs, /anchors\.right: settingsButton\.left/)
   assert.doesNotMatch(tabs, /root\.browsing/)
 
   const marketplace = panel.slice(panel.indexOf("id: marketplaceLink"), panel.indexOf("id: refreshButton"))
@@ -3351,7 +3351,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 
-  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName\s*\}/)
+  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
   // Every process and script lives in the store; the panel keeps only the
   // release probe, which is about navigation rather than data.
   for (const id of ["loadProc", "updateProc", "catalogProc", "actionProc"]) {
@@ -4494,7 +4494,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /runAction\("remove", pendingLabel, \["omarchy", "plugin", "remove", pendingId, "--yes"\]\)/)
 
   // The popup keeps its bindings through aliases and thin wrappers.
-  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName\s*\}/)
+  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
   for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingVerified", "pendingPlacementNeeded", "pendingPlacement"])
     assert.match(panel, new RegExp(`property alias ${name}: store\\.${name}\\b`), name)
   for (const name of ["confirming", "placing", "placementChoices", "placementMessage", "confirmMessage"])
@@ -4520,7 +4520,8 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.match(button, /tooltipText: "Expand into a full panel"/)
   assert.match(button, /onClicked: root\.expand\(\)/)
   // The tabs now sit left of two icons.
-  assert.match(panel, /id: tabs\s*anchors\.right: expandButton\.left/)
+  assert.match(panel, /id: tabs\s*anchors\.right: settingsButton\.left/)
+  assert.match(panel, /id: settingsButton\s*anchors\.right: expandButton\.left/)
   // The count line lives on its own row now, so nothing yields to the tabs.
   assert.doesNotMatch(panel, /id: subtitle[\s\S]{0,400}anchors\.right: marketplaceLink/)
   // Close first, then summon: the popup and the panel are never up together,
@@ -4831,4 +4832,56 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.deepEqual(state.selfSettings, { position: "right" })
   state.shell = null
   assert.equal(api(true), false)
+})
+
+test("the popup's settings pane owns the same switch and writes through the bar's shell", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+
+  // The popup's store reaches updateEntryInline through the bar facade the
+  // trusted bar hands every widget; it is a binding because `bar` arrives
+  // after construction.
+  const store = panel.slice(panel.indexOf("PluginStore {"), panel.indexOf("PluginStore {") + 700)
+  assert.match(store, /shell: root\.bar \? root\.bar\.shell : null/)
+
+  // The gear sits between the tabs and the expand icon, and toggles the pane.
+  const button = panel.slice(panel.indexOf("id: settingsButton"), panel.indexOf("id: settingsButton") + 700)
+  assert.match(button, /anchors\.right: expandButton\.left/)
+  assert.match(button, /iconText: "󰒓"/)
+  assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
+  assert.match(button, /foreground: root\.settingsOpen \? Color\.accent : root\.contentForeground/)
+  assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
+  assert.match(panel, /id: tabs\s*anchors\.right: settingsButton\.left/)
+
+  // An overlay like the details page, not a third face of the two-tab flip.
+  assert.match(panel, /property bool settingsOpen: false/)
+  assert.match(panel, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = true\s*\}/)
+  assert.match(panel, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = false\s*\}/)
+  const pane = panel.slice(panel.indexOf("id: settingsPane"), panel.indexOf("PluginDetails {"))
+  assert.match(pane, /anchors\.fill: parent\s*z: 10\s*visible: root\.settingsOpen/)
+  assert.match(pane, /color: Color\.popups\.background/)
+  assert.match(pane, /MouseArea \{ anchors\.fill: parent \}/)
+  assert.match(pane, /onVisibleChanged: \{\s*if \(visible\) forceActiveFocus\(\)\s*else root\.returnFocusToList\(\)\s*\}/)
+  assert.match(pane, /if \(event\.key !== Qt\.Key_Escape && event\.key !== Qt\.Key_Backspace\) return\s*root\.closeSettings\(\)\s*event\.accepted = true/)
+  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.closeSettings\(\)/)
+  assert.match(pane, /text: "Settings"/)
+  assert.match(pane, /text: "Allow updating unverified plugins"/)
+  assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
+  assert.match(pane, /pinned to the exact commit the check observed, after a confirmation\./)
+  assert.match(pane, /id: unverifiedSwitch[\s\S]*?checked: store\.allowUnverifiedUpdates[\s\S]*?onToggled: store\.setAllowUnverifiedUpdates\(!store\.allowUnverifiedUpdates\)/)
+  // Every Text on the pane is plain text; the copy is the expanded window's.
+  const texts = pane.split(/\bText \{/).slice(1)
+  assert.ok(texts.length >= 3)
+  for (const text of texts) assert.match(text.slice(0, 200), /textFormat: Text\.PlainText/)
+  const caption = /text: "Off: only marketplace-verified snapshots are offered\. "\s*\+ "([^"]+)"/
+  assert.equal(pane.match(caption)[1], expanded.match(caption)[1], "same caption in both windows")
+
+  // While the pane is up the key catcher hands keys to it, the list never
+  // steals focus back, a tab switch drops it, and closing the popup resets it.
+  assert.match(panel, /blocked: root\.confirming \|\| root\.placing \|\| root\.detailsOpen \|\| root\.settingsOpen/)
+  const restore = panel.slice(panel.indexOf("function returnFocusToList()"), panel.indexOf("\n  }", panel.indexOf("function returnFocusToList()")))
+  assert.match(restore, /=== "list"\s*&& !root\.settingsOpen/)
+  const flip = panel.slice(panel.indexOf("function switchTab(tab)"), panel.indexOf("function applyPendingTab()"))
+  assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
+  assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; revokeReleaseNavigation\(\); return \}/)
 })
