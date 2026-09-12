@@ -49,11 +49,14 @@ const Model = new Function(
   }`
 )()
 
-test("Browse reads the canonical catalog endpoint; execution reauthorizes separately", () => {
-  const endpoint = Function(source + "; return CATALOG_URL")()
-  assert.equal(endpoint, "https://plugins.omarchy.org/catalog.json")
-  // Python's offline subprocess contract separately pins the same endpoint
-  // and rejects even valid JSON returned with a redirect status.
+test("Browse reads the canonical catalog endpoint from the helper alone", () => {
+  // The catalog is fetched, projected and cached by the pinned helper; no
+  // QML or JavaScript names the endpoint, so nothing here can be pointed at
+  // another host. Python's subprocess contract pins the same URL and rejects
+  // even valid JSON returned with a redirect status.
+  const helper = readFileSync(new URL("../helpers/pinned_update.py", import.meta.url), "utf8")
+  assert.match(helper, /^CATALOG_URL = "https:\/\/plugins\.omarchy\.org\/catalog\.json"$/m)
+  assert.doesNotMatch(source, /CATALOG_URL|plugins\.omarchy\.org/)
 })
 
 test("pinned update eligibility binds raw repo, verified status, unique id and full SHA", () => {
@@ -291,49 +294,6 @@ test("row and detail presentation name upstream and verified comparisons indepen
     }
   }
 })
-
-const CATALOG_DOWNLOAD_LIMIT = 8 * 1024 * 1024
-const STATS_DOWNLOAD_LIMIT = 1024 * 1024
-const CATALOG_PROJECTION_LIMIT = 8 * 1024 * 1024
-const CATALOG_PROJECTION_SCHEMA_VERSION = 2
-
-function catalogScript(catalogPath, statsPath) {
-  const panel = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const marker = "readonly property string catalogScript:"
-  const start = panel.indexOf(marker)
-  const end = panel.indexOf("\n\n  // No fetch", start)
-  assert.notEqual(start, -1)
-  assert.notEqual(end, -1)
-  return Function("Model", `return (${panel.slice(start + marker.length, end).trim()})`)({
-    CATALOG_URL: `file://${catalogPath}`,
-    MARKETPLACE_STATS_URL: `file://${statsPath}`
-  })
-}
-
-function catalogCache(home, value) {
-  const path = join(home, ".cache", "omarchy-plugin-manager", "catalog.json")
-  mkdirSync(join(home, ".cache", "omarchy-plugin-manager"), { recursive: true })
-  writeFileSync(path, value)
-  return path
-}
-
-function catalogProjectionTemps(home) {
-  return readdirSync(join(home, ".cache", "omarchy-plugin-manager"))
-    .filter(name => name.startsWith(".catalog.json.tmp."))
-}
-
-function runCatalogScript(home, catalogPath, statsPath, forceRefresh = "1", environment = {}) {
-  const tempRoot = join(home, "tmp")
-  mkdirSync(tempRoot, { recursive: true })
-  const result = spawnSync("bash", ["-c", catalogScript(catalogPath, statsPath), "catalog", forceRefresh], {
-    encoding: "utf8",
-    env: { ...process.env, ...environment, HOME: home, LC_ALL: "C", TMPDIR: tempRoot },
-    maxBuffer: 32 * 1024 * 1024,
-    timeout: 30_000
-  })
-  assert.deepEqual(readdirSync(tempRoot), [], "catalogScript should clean its temporary files")
-  return result
-}
 
 const payload = (list, catalog, git, manifest = "") =>
   `===list===\n${list}\n===catalog===\n${catalog}\n===git===\n${git}\n===manifest===\n${manifest}`
@@ -3469,7 +3429,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   // shared by the popup and the expanded panel.
   assert.doesNotMatch(panel, /Process \{\s*id: releaseProbe/)
   assert.match(panel, /ReleaseNavigator \{ id: releaseNavigator \}/)
-  for (const script of ["catalogScript", "updateScript", "noticeScript"]) {
+  for (const script of ["updateScript", "noticeScript"]) {
     assert.match(store, new RegExp(`readonly property string ${script}:`), script)
     assert.doesNotMatch(panel, new RegExp(`property string ${script}`), script)
   }
@@ -3543,284 +3503,50 @@ test("installing runs the pinned helper on the verified commit, never the host a
   assert.match(store, /function startAdd\(section\) \{[\s\S]*?request\.verifiedCommit !== commit[\s\S]*?launchInstall\(request, label\)/)
 })
 
-test("catalog projection joins the Marketplace engagement hearts endpoint by plugin id", () => {
-  const model = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
-  // The fetch script belongs to the store now, whichever surface asks for it.
-  const panel = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+test("the catalog is served by the pinned helper through an owner-checked cache, never a bash script", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const helper = readFileSync(new URL("../helpers/pinned_update.py", import.meta.url), "utf8")
 
-  assert.match(model, /MARKETPLACE_STATS_URL = "https:\/\/api\.omarchyplugins\.com\/v1\/stats"/)
-  assert.match(panel, /Model\.MARKETPLACE_STATS_URL/)
-  assert.match(panel, /marketplaceHearts: \(\$stats\[0\]\.plugins\[\$plugin\.id\]\.hearts \/\/ null\)/)
-  assert.match(panel, /stars,addedAt,listedAt,marketplaceHearts:/)
-  assert.match(panel, /projectionSchemaVersion: \$schema/)
-  assert.match(panel, /printf '%s' '\{\\"plugins\\":\{\}\}'/)
-})
+  // The fetch, projection and six-hour cache moved into the helper, which
+  // opens ~/.cache/omarchy-plugin-manager by descriptor and publishes with a
+  // descriptor-relative rename. No path-named mkdir/mktemp/mv remains in QML.
+  assert.doesNotMatch(store, /catalogScript|\$HOME\/\.cache|mktemp|mv \\"\$tmp\\"|jq -c --argjson schema/)
+  assert.doesNotMatch(store, /MARKETPLACE_STATS_URL|CATALOG_URL/)
+  assert.match(helper, /MARKETPLACE_STATS_URL = "https:\/\/api\.omarchyplugins\.com\/v1\/stats"/)
+  assert.match(helper, /CACHE_DIR = \("\.cache", "omarchy-plugin-manager"\)/)
+  assert.match(helper, /os\.rename\(name, CACHE_FILE, src_dir_fd=cache, dst_dir_fd=cache\)/)
 
-test("catalog producer replaces a fresh legacy cache despite its age", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-legacy-refresh-test-"))
-  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-  const statsPath = join(root, "stats.json")
-  const legacy = JSON.stringify({ generatedAt: "legacy", plugins: [{ id: "legacy" }] })
-  try {
-    mkdirSync(home, { recursive: true })
-    const cachePath = catalogCache(home, legacy)
-    writeFileSync(catalogPath, JSON.stringify({
-      generatedAt: "remote",
-      plugins: [{ id: "acme.clock", addedAt: "2026-08-20", listedAt: "2026-08-20T12:34:56.789Z" }]
-    }))
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, catalogPath, statsPath, "0")
-    assert.equal(result.status, 0, result.stderr)
-    const projected = JSON.parse(result.stdout)
-    assert.equal(projected.projectionSchemaVersion, CATALOG_PROJECTION_SCHEMA_VERSION)
-    assert.equal(projected.generatedAt, "remote")
-    assert.equal(readFileSync(cachePath, "utf8"), result.stdout)
-    assert.notEqual(result.stdout, legacy)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer atomically replaces through a destination-local temp file", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-atomic-replace-test-"))
-  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-  const statsPath = join(root, "stats.json"), bin = join(root, "bin"), moveLog = join(root, "move.log")
-  const cacheDir = join(home, ".cache", "omarchy-plugin-manager")
-  const cachePath = join(cacheDir, "catalog.json")
-  try {
-    mkdirSync(home, { recursive: true })
-    mkdirSync(bin)
-    writeFileSync(join(bin, "mv"), `#!/usr/bin/env bash
-source_path="$1"
-destination_path="$2"
-printf '%s\n' "$source_path" "$destination_path" > "$MV_LOG"
-stat -c '%d' -- "$source_path" >> "$MV_LOG"
-stat -c '%d' -- "\${destination_path%/*}" >> "$MV_LOG"
-exec /usr/bin/mv "$@"
-`)
-    chmodSync(join(bin, "mv"), 0o755)
-    writeFileSync(catalogPath, JSON.stringify({
-      generatedAt: "remote",
-      plugins: [{ id: "acme.clock", addedAt: "2026-08-20", listedAt: "2026-08-20T12:34:56.789Z" }]
-    }))
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, catalogPath, statsPath, "1", {
-      PATH: `${bin}:${process.env.PATH}`,
-      MV_LOG: moveLog
-    })
-    assert.equal(result.status, 0, result.stderr)
-    const [sourcePath, destinationPath, sourceDevice, destinationDevice] =
-      readFileSync(moveLog, "utf8").trimEnd().split("\n")
-    assert.equal(sourcePath.startsWith(`${cacheDir}/.catalog.json.tmp.`), true)
-    assert.equal(destinationPath, cachePath)
-    assert.equal(sourceDevice, destinationDevice)
-    assert.deepEqual(catalogProjectionTemps(home), [])
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer fails closed when atomic publication fails", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-publication-failure-test-"))
-  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-  const statsPath = join(root, "stats.json"), bin = join(root, "bin")
-  const legacy = JSON.stringify({ generatedAt: "legacy", plugins: [{ id: "legacy" }] })
-  try {
-    mkdirSync(home, { recursive: true })
-    mkdirSync(bin)
-    writeFileSync(join(bin, "mv"), `#!/usr/bin/env bash
-exit 73
-`)
-    chmodSync(join(bin, "mv"), 0o755)
-    const cachePath = catalogCache(home, legacy)
-    writeFileSync(catalogPath, JSON.stringify({
-      generatedAt: "remote",
-      plugins: [{ id: "acme.clock", addedAt: "2026-08-20", listedAt: "2026-08-20T12:34:56.789Z" }]
-    }))
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, catalogPath, statsPath, "1", {
-      PATH: `${bin}:${process.env.PATH}`
-    })
-    assert.equal(result.status, 1, result.stderr)
-    assert.equal(result.stdout, "")
-    assert.equal(readFileSync(cachePath, "utf8"), legacy)
-    assert.deepEqual(catalogProjectionTemps(home), [])
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer reuses a compatible fresh cache", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-compatible-cache-test-"))
-  const home = join(root, "home"), missingCatalog = join(root, "missing.json")
-  const missingStats = join(root, "missing-stats.json")
-  const cached = JSON.stringify({
-    projectionSchemaVersion: CATALOG_PROJECTION_SCHEMA_VERSION,
-    generatedAt: "cached",
-    plugins: [{ id: "cached", addedAt: null, listedAt: null }]
-  })
-  try {
-    mkdirSync(home, { recursive: true })
-    catalogCache(home, cached)
-
-    const result = runCatalogScript(home, missingCatalog, missingStats, "0")
-    assert.equal(result.status, 0, result.stderr)
-    assert.equal(result.stdout, cached)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer rejects incompatible cache contracts when refresh fails", async t => {
-  for (const scenario of [
-    {
-      name: "legacy cache without schema",
-      value: { generatedAt: "legacy", plugins: [{ id: "legacy" }] }
-    },
-    {
-      name: "wrong projection schema",
-      value: { projectionSchemaVersion: 99, generatedAt: "wrong", plugins: [] }
-    },
-    {
-      name: "plugins is not an array",
-      value: { projectionSchemaVersion: CATALOG_PROJECTION_SCHEMA_VERSION, generatedAt: "wrong", plugins: {} }
-    }
-  ]) await t.test(scenario.name, () => {
-    const root = mkdtempSync(join(tmpdir(), "plugin-catalog-incompatible-cache-test-"))
-    const home = join(root, "home"), missingCatalog = join(root, "missing.json")
-    const statsPath = join(root, "stats.json"), cached = JSON.stringify(scenario.value)
-    try {
-      mkdirSync(home, { recursive: true })
-      const cachePath = catalogCache(home, cached)
-      writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-      const result = runCatalogScript(home, missingCatalog, statsPath, "0")
-      assert.equal(result.status, 1, result.stderr)
-      assert.equal(result.stdout, "")
-      assert.equal(readFileSync(cachePath, "utf8"), cached)
-      assert.deepEqual(catalogProjectionTemps(home), [])
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-})
-
-test("catalog producer rejects an oversized catalog and serves the bounded cache", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-catalog-limit-test-"))
-  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-  const statsPath = join(root, "stats.json")
-  const cached = JSON.stringify({
-    projectionSchemaVersion: CATALOG_PROJECTION_SCHEMA_VERSION,
-    generatedAt: "cached",
-    plugins: [{ id: "cached", addedAt: null, listedAt: null }]
-  })
-  try {
-    mkdirSync(home, { recursive: true })
-    const cachePath = catalogCache(home, cached)
-    writeFileSync(catalogPath, JSON.stringify({
-      generatedAt: "remote",
-      plugins: [{ id: "oversized", description: "x".repeat(CATALOG_DOWNLOAD_LIMIT) }]
-    }))
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, catalogPath, statsPath)
-    assert.equal(result.status, 0, result.stderr)
-    assert.equal(result.stdout, cached)
-    assert.equal(readFileSync(cachePath, "utf8"), cached)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer joins valid stats and treats unavailable inputs as missing", async t => {
-  for (const scenario of [
-    {
-      name: "valid stats",
-      stats: JSON.stringify({ plugins: { "acme.clock": { hearts: 42 } } }),
-      expectedHearts: 42
-    },
-    {
-      name: "oversized stats",
-      stats: JSON.stringify({ plugins: { "acme.clock": { hearts: 42 } }, padding: "x".repeat(STATS_DOWNLOAD_LIMIT) }),
-      expectedHearts: null
-    },
-    { name: "malformed stats", stats: "{not-json", expectedHearts: null },
-    { name: "missing stats", stats: null, expectedHearts: null }
-  ]) await t.test(scenario.name, () => {
-    const root = mkdtempSync(join(tmpdir(), "plugin-stats-limit-test-"))
-    const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-    const statsPath = join(root, "stats.json")
-    try {
-      mkdirSync(home, { recursive: true })
-      writeFileSync(catalogPath, JSON.stringify({
-        generatedAt: "remote",
-        plugins: [{
-          id: "acme.clock", name: "Clock", addedAt: "2026-08-20",
-          listedAt: "2026-08-20T12:34:56.789Z"
-        }]
-      }))
-      if (scenario.stats !== null) writeFileSync(statsPath, scenario.stats)
-
-      const result = runCatalogScript(home, catalogPath, statsPath)
-      assert.equal(result.status, 0, result.stderr)
-      const projection = JSON.parse(result.stdout)
-      const projected = projection.plugins[0]
-      assert.equal(projection.projectionSchemaVersion, CATALOG_PROJECTION_SCHEMA_VERSION)
-      assert.equal(projected.marketplaceHearts, scenario.expectedHearts)
-      assert.equal(projected.addedAt, "2026-08-20")
-      assert.equal(projected.listedAt, "2026-08-20T12:34:56.789Z")
-      assert.equal(readFileSync(join(home, ".cache", "omarchy-plugin-manager", "catalog.json"), "utf8"), result.stdout)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-})
-
-test("catalog producer bounds projection amplification before replacing the cache", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-projection-limit-test-"))
-  const home = join(root, "home"), catalogPath = join(root, "catalog.json")
-  const statsPath = join(root, "stats.json")
-  const cached = JSON.stringify({
-    projectionSchemaVersion: CATALOG_PROJECTION_SCHEMA_VERSION,
-    generatedAt: "cached",
-    plugins: [{ id: "cached", addedAt: null, listedAt: null }]
-  })
-  try {
-    mkdirSync(home, { recursive: true })
-    const cachePath = catalogCache(home, cached)
-    const plugins = Array.from({ length: 40_000 }, () => ({ id: "repeat" }))
-    const catalog = JSON.stringify({ generatedAt: "remote", plugins })
-    assert.ok(catalog.length < CATALOG_DOWNLOAD_LIMIT)
-    writeFileSync(catalogPath, catalog)
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, catalogPath, statsPath)
-    assert.equal(result.status, 0, result.stderr)
-    assert.equal(result.stdout, cached)
-    assert.equal(readFileSync(cachePath, "utf8"), cached)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test("catalog producer never emits an oversized pre-existing cache", () => {
-  const root = mkdtempSync(join(tmpdir(), "plugin-cache-limit-test-"))
-  const home = join(root, "home"), missingCatalog = join(root, "missing.json")
-  const statsPath = join(root, "stats.json")
-  try {
-    mkdirSync(home, { recursive: true })
-    catalogCache(home, "x".repeat(CATALOG_PROJECTION_LIMIT + 1))
-    writeFileSync(statsPath, JSON.stringify({ plugins: {} }))
-
-    const result = runCatalogScript(home, missingCatalog, statsPath)
-    assert.equal(result.status, 1, result.stderr)
-    assert.equal(result.stdout, "")
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
+  // loadCatalog runs the helper with the exact request shape it validates,
+  // through the same scrubbed environment the transactions use.
+  const catalogProc = { running: false }
+  const state = { catalogLoading: false, catalogError: "stale", pinnedHelperPath: "/plugin/helpers/pinned_update.py" }
+  state.root = state
+  const loadCatalog = Function("state", "catalogProc", `with (state) {
+    ${qmlFunction(store, "loadCatalog")}; return loadCatalog
+  }`)(state, catalogProc)
+  loadCatalog(true)
+  assert.equal(catalogProc.running, true)
+  assert.equal(state.catalogLoading, true)
+  assert.equal(state.catalogError, "")
+  assert.deepEqual(catalogProc.command, ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
+    "/usr/bin/python3", "-I", "-S", state.pinnedHelperPath,
+    JSON.stringify({ schemaVersion: 1, catalog: { force: true } })])
+  catalogProc.running = false
+  loadCatalog()
+  assert.equal(JSON.parse(catalogProc.command[8]).catalog.force, false)
+  catalogProc.running = false
+  loadCatalog("1")
+  assert.equal(JSON.parse(catalogProc.command[8]).catalog.force, false, "only a boolean true forces")
+  // A running fetch is never doubled.
+  catalogProc.command = null
+  loadCatalog(true)
+  assert.equal(catalogProc.command, null)
+  // The helper refuses anything but that shape, with nothing on stdout.
+  const refused = spawnSync("/usr/bin/python3", ["-I", "-S", new URL("../helpers/pinned_update.py", import.meta.url).pathname,
+    JSON.stringify({ schemaVersion: 1, catalog: { force: "yes" } })], { encoding: "utf8", timeout: 10_000 })
+  assert.equal(refused.status, 1)
+  assert.equal(refused.stdout, "")
+  assert.match(refused.stderr, /Invalid catalog request/)
 })
 
 test("secondary text uses one panel-derived foreground without brightening disabled chrome", () => {

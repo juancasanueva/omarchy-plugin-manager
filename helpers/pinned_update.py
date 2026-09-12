@@ -20,6 +20,13 @@ Three request shapes, each bound to one full commit SHA-1:
                      then enabled: a named section is a placement, an empty
                      section is a plain enable. There is no backup: nothing
                      was replaced.
+  catalog: {force}   - serve the Browse catalog projection: the cached copy
+                     when it is compatible and fresh, otherwise a fresh
+                     fetch published into the cache. Every cache read and
+                     write goes through owner-checked no-follow directory
+                     descriptors, so a symlink anywhere under the cache path
+                     redirects nothing. Runs in this process, streams the
+                     projection to stdout, and touches no plugin directory.
 The CLI forks a finite, independent worker before touching the plugin root.
 All executable Python is loaded before the fork. A destroyed QML Process can
 lose its result pipe, but cannot interrupt the worker's publication/finalization.
@@ -43,6 +50,7 @@ import sys
 import time
 
 CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
+MARKETPLACE_STATS_URL = "https://api.omarchyplugins.com/v1/stats"
 OMARCHY = "/usr/share/omarchy"
 SECTIONS = ("", "left", "center", "right")
 # Recomputed by request_value on every validation, so they carry no authority
@@ -53,7 +61,21 @@ ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CATALOG = 8 * 1024 * 1024
+MAX_STATS = 1024 * 1024
 MAX_PLUGINS = 4 * 1024 * 1024
+# The Browse cache: the catalog projected down to the fields the panel reads,
+# joined with the anonymous engagement stats, reused for six hours. The
+# schema version keeps an older cache from silently omitting a field the
+# current UI requires; the key list is the projection contract.
+CACHE_DIR = (".cache", "omarchy-plugin-manager")
+CACHE_FILE = "catalog.json"
+CACHE_TTL = 6 * 60 * 60
+PROJECTION_SCHEMA = 2
+PROJECTED_KEYS = ("id", "name", "description", "author", "version", "category", "tags", "kind",
+                  "repo", "installCommand", "installAvailable", "installNote", "verificationStatus",
+                  "sourceType", "stars", "addedAt", "listedAt", "marketplaceHearts", "accent",
+                  "initials", "license", "previewThumbnail", "listingValidatedBranch",
+                  "verificationCommit")
 MAX_TREE = 16 * 1024 * 1024
 MAX_DISK = 128 * 1024 * 1024
 LIBC = ctypes.CDLL(None, use_errno=True)
@@ -145,6 +167,16 @@ def request_value(value):
     return normalized
 
 
+def catalog_request(value):
+    """The one non-transaction shape: exactly a schema version and a force flag."""
+    require(type(value) is dict and set(value) == {"schemaVersion", "catalog"}, "Invalid catalog request")
+    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1, "Unsupported request")
+    body = value["catalog"]
+    require(type(body) is dict and set(body) == {"force"} and type(body["force"]) is bool,
+            "Invalid catalog request")
+    return {"schemaVersion": 1, "catalog": {"force": body["force"]}}
+
+
 def journal_value(request):
     """The request exactly as the panel sent it, with no derived key added."""
     return {k: v for k, v in request.items() if k not in DERIVED}
@@ -152,7 +184,60 @@ def journal_value(request):
 
 def request_kind(value):
     """Which shape a raw or normalized request is, without trusting a flag."""
-    return "install" if isinstance(value, dict) and "section" in value else "update"
+    if not isinstance(value, dict):
+        return "update"
+    if "catalog" in value:
+        return "catalog"
+    return "install" if "section" in value else "update"
+
+
+def usable_projection(raw):
+    """Whether cached bytes are a projection this UI can read, or nothing."""
+    try:
+        doc = document(raw, MAX_CATALOG)
+    except Refused:
+        return False
+    return (type(doc) is dict and doc.get("projectionSchemaVersion") == PROJECTION_SCHEMA
+            and type(doc.get("plugins")) is list)
+
+
+def project_catalog(raw, stats_raw):
+    """The catalog reduced to PROJECTED_KEYS, hearts joined by plugin id.
+
+    Stats are a courtesy: anything unusable about them reads as missing
+    hearts rather than a missing storefront. The catalog itself is not: a
+    body this cannot read, an entry that is not an object or has no string
+    id, or a projection over the cache bound fails the refresh, and the
+    caller falls back to whatever compatible cache it already has.
+    """
+    doc = document(raw, MAX_CATALOG)
+    require(type(doc) is dict and type(doc.get("plugins")) is list, "Invalid catalog")
+    stats = {}
+    if stats_raw is not None:
+        try:
+            parsed = document(stats_raw, MAX_STATS)
+        except Refused:
+            parsed = None
+        if type(parsed) is dict and type(parsed.get("plugins")) is dict:
+            stats = parsed["plugins"]
+    plugins = []
+    for entry in doc["plugins"]:
+        require(type(entry) is dict and isinstance(entry.get("id"), str), "Malformed catalog entry")
+        record = stats.get(entry["id"])
+        hearts = record.get("hearts") if type(record) is dict else None
+        projected = {key: entry.get(key) for key in PROJECTED_KEYS}
+        projected["marketplaceHearts"] = None if hearts is None or hearts is False else hearts
+        plugins.append(projected)
+    # A number that overflowed to infinity on parse would serialize as a bare
+    # token no JSON parser accepts; refusing it here keeps the good cache.
+    try:
+        result = json.dumps({"projectionSchemaVersion": PROJECTION_SCHEMA, "generatedAt": doc.get("generatedAt"),
+                             "plugins": plugins}, separators=(",", ":"), ensure_ascii=False,
+                            allow_nan=False).encode()
+    except ValueError as error:
+        raise Refused("Non-finite catalog number") from error
+    require(len(result) <= MAX_CATALOG, "Projection exceeds limit")
+    return result
 
 
 def authorize(raw, request):
@@ -206,7 +291,7 @@ def read_file(parent, name, cap, sync=False):
         require(len(result) <= cap, "File grew beyond limit")
         if sync:
             os.fsync(fd)
-        return bytes(result), info.st_mode
+        return bytes(result), info
     finally:
         os.close(fd)
 
@@ -299,14 +384,20 @@ class Updater:
             "-c", "fetch.recurseSubmodules=false", "-c", "fetch.unpackLimit=1",
             "-c", "fetch.fsckObjects=true", *args], cwd=stage, extra_env=extra_env)
 
-    def catalog_bytes(self):
+    def https_bytes(self, url, cap, max_time):
         raw = self.run(["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
-            "--proto", "=https", "--noproxy", "*", "--connect-timeout", "5", "--max-time", "20",
-            "--max-filesize", str(MAX_CATALOG), "--header", "Cache-Control: no-cache",
-            "--write-out", "\n%{http_code}", "--", CATALOG_URL], cap=MAX_CATALOG + 4)
+            "--proto", "=https", "--noproxy", "*", "--connect-timeout", "5", "--max-time", str(max_time),
+            "--max-filesize", str(cap), "--header", "Cache-Control: no-cache",
+            "--write-out", "\n%{http_code}", "--", url], cap=cap + 4)
         body, status = raw.rsplit(b"\n", 1)
         require(status == b"200", "Catalog redirects or non-200 responses are refused")
         return body
+
+    def catalog_bytes(self):
+        return self.https_bytes(CATALOG_URL, MAX_CATALOG, 20)
+
+    def stats_bytes(self):
+        return self.https_bytes(MARKETPLACE_STATS_URL, MAX_STATS, 15)
 
     def catalog_ids(self):
         """Every plugin id the host already knows: first-party and installed.
@@ -334,7 +425,8 @@ class Updater:
         require(re.fullmatch(r"wayland-[0-9]{1,4}", display), "Wayland display unavailable")
         return {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}", "WAYLAND_DISPLAY": display}
 
-    def open_paths(self, plugin_id, install=False):
+    def open_home(self):
+        """The account home as a descriptor, reached without resolving any symlink."""
         require(os.path.isabs(self.home) and len(self.home.encode()) <= 512
                 and all(p not in (".", "..", "") for p in self.home.split("/")[1:]), "Unsupported home path")
         fd = self.hold(os.open("/", DIR))
@@ -347,6 +439,101 @@ class Updater:
             self.anchors.append((fd, part, identity(child)))
             fd = child
         require(os.fstat(fd).st_uid == os.getuid() and not os.fstat(fd).st_mode & 0o022, "Unsafe home")
+        return fd
+
+    def open_cache(self):
+        """The Browse cache directory, created private when missing, never by path.
+
+        Each component is created relative to its parent's descriptor and then
+        opened no-follow with the owner and mode checked, so a symlink planted
+        at ~/.cache or below it is a refusal, not a redirection. An existing
+        directory keeps whatever private-enough mode it has; only a symlink,
+        another owner, or group/world write refuses.
+        """
+        fd = self.open_home()
+        for part in CACHE_DIR:
+            try:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+                fd = self.hold(checked_dir(fd, part))
+            except OSError as error:
+                raise Refused("Cache directory unavailable") from error
+        return fd
+
+    def cached_projection(self, cache):
+        """(bytes, fresh) for a compatible cache file, or (None, False).
+
+        Read no-follow through the directory descriptor: a symlink, a foreign
+        owner, a shared-writable mode, a hard link or an oversized file is not
+        a cache, whatever it contains.
+        """
+        try:
+            raw, info = read_file(cache, CACHE_FILE, MAX_CATALOG)
+            age = time.time() - info.st_mtime
+        except (OSError, Refused):
+            return None, False
+        if not usable_projection(raw):
+            return None, False
+        return raw, 0 <= age < CACHE_TTL
+
+    def refresh_projection(self, cache):
+        """Fetch, project and publish through the held descriptor only.
+
+        The projection lands in an exclusive temp file beside the cache and is
+        renamed into place relative to the same descriptor: readers see the
+        old bytes or the new ones, never a partial file, and the name being
+        replaced is a directory entry in an owner-checked directory, so
+        whatever it pointed at is left alone. A failure after the temp file
+        exists removes it; the previous cache is never touched.
+        """
+        raw = self.catalog_bytes()
+        try:
+            stats_raw = self.stats_bytes()
+        except Exception:
+            stats_raw = None
+        projected = project_catalog(raw, stats_raw)
+        name = "." + CACHE_FILE + ".tmp." + secrets.token_hex(6)
+        try:
+            create_file(cache, name, projected)
+            os.rename(name, CACHE_FILE, src_dir_fd=cache, dst_dir_fd=cache)
+        except BaseException:
+            try:
+                os.unlink(name, dir_fd=cache)
+            except OSError:
+                pass
+            raise
+        os.fsync(cache)
+        return projected
+
+    def serve_catalog(self, request):
+        """The projection to hand the panel: cache when fresh, else refreshed.
+
+        A refresh that fails for any reason serves the compatible cache it
+        would have replaced — a stale storefront beats an empty one — and is
+        a refusal only when there is no such cache.
+        """
+        request = catalog_request(request)
+        try:
+            cache = self.open_cache()
+            cached, fresh = self.cached_projection(cache)
+            if cached is not None and fresh and not request["catalog"]["force"]:
+                return cached
+            try:
+                return self.refresh_projection(cache)
+            except Exception as error:
+                self.reason = reason_text(error)
+                require(cached is not None, "Could not fetch the catalog: " + self.reason)
+                return cached
+        finally:
+            for fd in reversed(self.fds):
+                os.close(fd)
+            self.fds.clear()
+
+    def open_paths(self, plugin_id, install=False):
+        fd = self.open_home()
         for part in (".config", "omarchy"):
             child = self.hold(checked_dir(fd, part))
             self.anchors.append((fd, part, identity(child)))
@@ -425,11 +612,11 @@ class Updater:
                                 os.close(child)
                         else:
                             require(stat.S_ISREG(info.st_mode), "Symlinks and special files refused")
-                            data, mode = read_file(fd, name, 32 * 1024 * 1024, sync=sync)
+                            data, info = read_file(fd, name, 32 * 1024 * 1024, sync=sync)
                             total += len(data)
                             require(total <= MAX_DISK, "Checkout exceeds disk limit")
                             digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-                            result[path] = ("100755" if mode & 0o111 else "100644", digest)
+                            result[path] = ("100755" if info.st_mode & 0o111 else "100644", digest)
             finally:
                 os.close(view)
             if sync:
@@ -799,10 +986,24 @@ def launch(request, factory=Updater):
 
 
 if __name__ == "__main__":
+    kind = "update"
     try:
         os.umask(0o077)
         require(len(sys.argv) == 2 and len(sys.argv[1]) <= 2048, "One bounded request required")
-        launch(request_value(document(sys.argv[1].encode(), 2048)))
+        raw_request = document(sys.argv[1].encode(), 2048)
+        kind = request_kind(raw_request)
+        if kind == "catalog":
+            # In-process and streamed: the projection is far larger than the
+            # bounded result a detached transaction worker reports, and no
+            # plugin directory is involved, so nothing needs to outlive the
+            # observer. Stdout carries the projection bytes and nothing else.
+            sys.stdout.buffer.write(Updater().serve_catalog(raw_request))
+            sys.stdout.flush()
+        else:
+            launch(request_value(raw_request))
     except Exception as error:
-        print(json.dumps({"status": "unchanged; request refused", "reason": reason_text(error), "backup": ""}))
+        if kind == "catalog":
+            print(reason_text(error), file=sys.stderr)
+        else:
+            print(json.dumps({"status": "unchanged; request refused", "reason": reason_text(error), "backup": ""}))
         sys.exit(1)

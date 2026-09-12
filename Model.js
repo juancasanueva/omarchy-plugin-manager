@@ -853,8 +853,6 @@ function actionGerund(kind) {
 // We read the install command, we never execute it — the install url is parsed
 // out and validated, then run through the same argv array the Installed tab uses.
 
-var CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
-var MARKETPLACE_STATS_URL = "https://api.omarchyplugins.com/v1/stats"
 var CATALOG_ASSET_BASE = "https://omarchyplugins.com/"
 
 // The registry publishes thumbnails as paths under its own host. Anything

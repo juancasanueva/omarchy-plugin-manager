@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import signal
+import stat
 import unittest
 from unittest.mock import patch
 
@@ -820,6 +821,360 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(result["status"], "unchanged; install refused")
         self.assertEqual(result["reason"], "Already installed")
         self.assertNotIn("backup", result)
+
+
+
+class CatalogCacheTests(unittest.TestCase):
+    """The Browse catalog cache: descriptor-relative reads and publication only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir(mode=0o700)
+        self.cache_dir = self.home / ".cache/omarchy-plugin-manager"
+        self.remote = {"generatedAt": "remote", "plugins": [
+            dict(id="acme.clock", name="Clock", addedAt="2026-08-20",
+                 listedAt="2026-08-20T12:34:56.789Z")]}
+        self.stats = {"plugins": {"acme.clock": {"hearts": 42}}}
+        self.fetches = []
+        outer = self
+
+        class FixtureUpdater(u.Updater):
+            def catalog_bytes(self):
+                outer.fetches.append("catalog")
+                if isinstance(outer.remote, BaseException):
+                    raise outer.remote
+                return outer.remote if isinstance(outer.remote, bytes) else json.dumps(outer.remote).encode()
+
+            def stats_bytes(self):
+                outer.fetches.append("stats")
+                if isinstance(outer.stats, BaseException):
+                    raise outer.stats
+                return outer.stats if isinstance(outer.stats, bytes) else json.dumps(outer.stats).encode()
+
+        self.updater = lambda: FixtureUpdater(home=str(self.home))
+
+    def serve(self, force=False):
+        return self.updater().serve_catalog({"schemaVersion": 1, "catalog": {"force": force}})
+
+    def cached(self, value, age=0, mode=0o600):
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        path = self.cache_dir / "catalog.json"
+        data = value if isinstance(value, bytes) else json.dumps(value).encode()
+        path.write_bytes(data)
+        path.chmod(mode)
+        stamp = time.time() - age
+        os.utime(path, (stamp, stamp))
+        return data
+
+    def temps(self):
+        return sorted(p.name for p in self.cache_dir.iterdir() if p.name.startswith(".catalog.json.tmp."))
+
+    def compatible(self, plugins=({"id": "cached", "addedAt": None, "listedAt": None},)):
+        return {"projectionSchemaVersion": 2, "generatedAt": "cached", "plugins": list(plugins)}
+
+    def test_catalog_request_shape_is_exact(self):
+        good = {"schemaVersion": 1, "catalog": {"force": True}}
+        self.assertEqual(u.catalog_request(good), good)
+        self.assertEqual(u.request_kind(good), "catalog")
+        self.assertEqual(u.catalog_request({"schemaVersion": 1, "catalog": {"force": False}})["catalog"]["force"], False)
+        for bad in [
+            {"schemaVersion": 2, "catalog": {"force": True}},
+            {"schemaVersion": "1", "catalog": {"force": True}},
+            {"schemaVersion": 1, "catalog": {}},
+            {"schemaVersion": 1, "catalog": {"force": 1}},
+            {"schemaVersion": 1, "catalog": {"force": "true"}},
+            {"schemaVersion": 1, "catalog": {"force": True, "extra": 1}},
+            {"schemaVersion": 1, "catalog": True},
+            {"schemaVersion": 1, "catalog": {"force": True}, "id": "acme.plugin"},
+            {"schemaVersion": 1, "catalog": {"force": True}, "verifiedCommit": "a" * 40, "section": ""},
+            {"catalog": {"force": True}},
+            [],
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(u.Refused):
+                u.catalog_request(bad)
+        # The transaction shapes never accept a catalog key, and a catalog
+        # request never reaches the transaction validator with a plugin id.
+        with self.assertRaises(u.Refused):
+            u.request_value(good)
+        with self.assertRaises(u.Refused):
+            u.request_value({"schemaVersion": 1, "id": "acme.plugin", "repository": REPO,
+                             "verifiedCommit": "a" * 40, "section": "", "catalog": {"force": True}})
+
+    def test_fresh_compatible_cache_is_served_without_fetching(self):
+        data = self.cached(self.compatible(), age=21599)
+        self.assertEqual(self.serve(), data)
+        self.assertEqual(self.fetches, [])
+
+    def test_force_refetches_and_replaces_the_cache_atomically(self):
+        self.cached(self.compatible())
+        before = os.stat(self.cache_dir / "catalog.json")
+        served = self.serve(force=True)
+        projected = json.loads(served)
+        self.assertEqual(projected["projectionSchemaVersion"], 2)
+        self.assertEqual(projected["generatedAt"], "remote")
+        self.assertEqual(projected["plugins"][0]["marketplaceHearts"], 42)
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), served)
+        after = os.stat(self.cache_dir / "catalog.json")
+        self.assertNotEqual(before.st_ino, after.st_ino, "publication renames a new file into place")
+        self.assertEqual(stat.S_IMODE(after.st_mode), 0o600)
+        self.assertEqual(self.temps(), [])
+        self.assertEqual(self.fetches, ["catalog", "stats"])
+
+    def test_stale_cache_is_refetched(self):
+        self.cached(self.compatible(), age=21601)
+        served = self.serve()
+        self.assertEqual(json.loads(served)["generatedAt"], "remote")
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), served)
+
+    def test_fetch_failure_serves_the_usable_cache_untouched(self):
+        data = self.cached(self.compatible(), age=30000)
+        self.remote = u.Refused("Command failed: curl")
+        self.assertEqual(self.serve(), data)
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+        self.assertEqual(self.temps(), [])
+        self.remote = OSError("no curl")
+        self.assertEqual(self.serve(force=True), data)
+
+    def test_fetch_failure_without_a_cache_is_refused(self):
+        self.remote = u.Refused("Command failed: curl")
+        with self.assertRaises(u.Refused):
+            self.serve()
+        self.assertTrue(self.cache_dir.is_dir())
+        self.assertFalse((self.cache_dir / "catalog.json").exists())
+        self.assertEqual(self.temps(), [])
+
+    def test_missing_directories_are_created_private(self):
+        self.assertFalse((self.home / ".cache").exists())
+        self.serve()
+        for path in (self.home / ".cache", self.cache_dir):
+            info = os.lstat(path)
+            self.assertTrue(stat.S_ISDIR(info.st_mode))
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o700, path)
+        # An existing directory with the old mkdir -p mode is still accepted:
+        # owned by the account and writable by nobody else.
+        (self.home / ".cache").chmod(0o755)
+        self.cache_dir.chmod(0o755)
+        self.assertEqual(json.loads(self.serve(force=True))["generatedAt"], "remote")
+
+    def test_unwritable_home_is_a_typed_refusal(self):
+        # A home that cannot take a new directory is a plain refusal, the same
+        # one a symlink or foreign owner produces: never a raw traceback class.
+        self.home.chmod(0o500)
+        self.addCleanup(self.home.chmod, 0o700)
+        with self.assertRaises(u.Refused) as caught:
+            self.serve()
+        self.assertEqual(str(caught.exception), "Cache directory unavailable")
+        self.assertFalse((self.home / ".cache").exists())
+
+    def test_non_finite_numbers_never_reach_the_cache(self):
+        # jq wrote 1e999 back out as a JSON number; Python's float overflows to
+        # infinity, which json.dumps would serialize as a bare Infinity token
+        # no JSON parser accepts. That projection must fail the refresh, not
+        # replace a good cache with bytes the panel can never read again.
+        good = self.compatible([{"id": "acme.clock"}])
+        self.cached(good, age=u.CACHE_TTL + 1)
+        self.remote = b'{"plugins":[{"id":"acme.clock","stars":1e999}]}'
+        served = self.serve()
+        self.assertEqual(json.loads(served), good)
+        self.assertEqual(json.loads((self.cache_dir / "catalog.json").read_bytes()), good)
+        with self.assertRaises(u.Refused):
+            u.project_catalog(self.remote, None)
+
+    def test_incompatible_cache_is_replaced_despite_its_age(self):
+        for value in [
+            {"generatedAt": "legacy", "plugins": [{"id": "legacy"}]},
+            {"projectionSchemaVersion": 99, "generatedAt": "wrong", "plugins": []},
+            {"projectionSchemaVersion": 2, "generatedAt": "wrong", "plugins": {}},
+            b"{not-json",
+        ]:
+            with self.subTest(value=value):
+                self.fetches = []
+                data = self.cached(value)
+                served = self.serve()
+                self.assertEqual(self.fetches, ["catalog", "stats"])
+                self.assertEqual(json.loads(served)["generatedAt"], "remote")
+                self.assertNotEqual(served, data)
+                # And when the refresh fails there is nothing usable to fall back on.
+                data = self.cached(value)
+                self.remote = u.Refused("Command failed: curl")
+                with self.assertRaises(u.Refused):
+                    self.serve()
+                self.remote = {"generatedAt": "remote", "plugins": [dict(id="acme.clock")]}
+                self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+                self.assertEqual(self.temps(), [])
+
+    def test_oversized_or_malformed_catalog_bodies_keep_the_bounded_cache(self):
+        data = self.cached(self.compatible(), age=30000)
+        for body in [
+            json.dumps({"generatedAt": "remote", "plugins": [
+                {"id": "oversized", "description": "x" * u.MAX_CATALOG}]}).encode(),
+            b'{"generatedAt":"remote","plugins":{}}',
+            b'{"generatedAt":"remote","plugins":[1]}',
+            b'{"generatedAt":"remote","plugins":[{"name":"no id"}]}',
+            b'{"generatedAt":"remote","plugins":[{"id":7}]}',
+            b'[]',
+            b'{not-json',
+        ]:
+            with self.subTest(body=body[:40]):
+                self.remote = body
+                self.assertEqual(self.serve(), data)
+                self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+                self.assertEqual(self.temps(), [])
+
+    def test_oversized_projection_is_refused_before_replacing_the_cache(self):
+        data = self.cached(self.compatible(), age=30000)
+        body = json.dumps({"generatedAt": "remote", "plugins": [{"id": "repeat"}] * 40000}).encode()
+        self.assertLess(len(body), u.MAX_CATALOG)
+        self.remote = body
+        self.assertEqual(self.serve(), data)
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+        self.assertEqual(self.temps(), [])
+
+    def test_oversized_cache_is_never_served(self):
+        self.cached(b"x" * (u.MAX_CATALOG + 1))
+        self.remote = u.Refused("Command failed: curl")
+        with self.assertRaises(u.Refused):
+            self.serve()
+
+    def test_stats_are_joined_by_id_and_unavailable_stats_read_as_missing(self):
+        for name, stats, expected in [
+            ("valid", {"plugins": {"acme.clock": {"hearts": 42}}}, 42),
+            ("other id", {"plugins": {"acme.other": {"hearts": 42}}}, None),
+            ("false hearts", {"plugins": {"acme.clock": {"hearts": False}}}, None),
+            ("null hearts", {"plugins": {"acme.clock": {"hearts": None}}}, None),
+            ("record is not an object", {"plugins": {"acme.clock": 5}}, None),
+            ("plugins is not an object", {"plugins": []}, None),
+            ("malformed", b"{not-json", None),
+            ("oversized", b'{"plugins":{"acme.clock":{"hearts":42}},"padding":"' + b"x" * u.MAX_STATS + b'"}', None),
+            ("fetch refused", u.Refused("Command failed: curl"), None),
+            ("fetch error", OSError("no curl"), None),
+        ]:
+            with self.subTest(name=name):
+                self.stats = stats
+                projection = json.loads(self.serve(force=True))
+                projected = projection["plugins"][0]
+                self.assertEqual(projected["marketplaceHearts"], expected)
+                self.assertEqual(projected["addedAt"], "2026-08-20")
+                self.assertEqual(projected["listedAt"], "2026-08-20T12:34:56.789Z")
+
+    def test_projection_keeps_the_exact_field_set_in_order(self):
+        self.remote = {"plugins": [{"id": "acme.clock", "name": "Relój", "stars": 3,
+                                    "secret": "dropped", "sourceType": "builtin"}]}
+        self.stats = {"plugins": {}}
+        served = self.serve(force=True)
+        self.assertNotIn(b"\n", served)
+        self.assertNotIn(b": ", served)
+        self.assertIn("Relój".encode(), served)
+        projection = json.loads(served)
+        self.assertEqual(list(projection), ["projectionSchemaVersion", "generatedAt", "plugins"])
+        self.assertIsNone(projection["generatedAt"])
+        entry = projection["plugins"][0]
+        self.assertEqual(list(entry), [
+            "id", "name", "description", "author", "version", "category", "tags", "kind", "repo",
+            "installCommand", "installAvailable", "installNote", "verificationStatus", "sourceType",
+            "stars", "addedAt", "listedAt", "marketplaceHearts", "accent", "initials", "license",
+            "previewThumbnail", "listingValidatedBranch", "verificationCommit"])
+        self.assertEqual(entry["stars"], 3)
+        self.assertEqual(entry["sourceType"], "builtin")
+        self.assertIsNone(entry["description"])
+        self.assertNotIn("secret", entry)
+
+    def test_symlinked_cache_directories_are_refused(self):
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        (self.home / ".cache").mkdir(mode=0o700)
+        self.cache_dir.symlink_to(elsewhere)
+        with self.assertRaises(u.Refused):
+            self.serve(force=True)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertEqual(self.fetches, [])
+        self.cache_dir.unlink()
+        (self.home / ".cache").rmdir()
+        (self.home / ".cache").symlink_to(elsewhere)
+        with self.assertRaises(u.Refused):
+            self.serve(force=True)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertEqual(self.fetches, [])
+
+    def test_shared_writable_cache_directories_are_refused(self):
+        self.cache_dir.mkdir(parents=True)
+        for path, mode in [(self.cache_dir, 0o775), (self.cache_dir, 0o777), (self.home / ".cache", 0o777)]:
+            with self.subTest(path=path.name, mode=oct(mode)):
+                path.chmod(mode)
+                with self.assertRaises(u.Refused):
+                    self.serve(force=True)
+                self.assertFalse((self.cache_dir / "catalog.json").exists())
+                path.chmod(0o700)
+        self.assertEqual(self.fetches, [])
+
+    def test_symlink_at_the_cache_file_is_never_followed(self):
+        decoy = Path(self.tmp.name) / "decoy.json"
+        decoy_data = json.dumps(self.compatible([{"id": "decoy"}])).encode()
+        decoy.write_bytes(decoy_data)
+        self.cache_dir.mkdir(parents=True, mode=0o700)
+        (self.cache_dir / "catalog.json").symlink_to(decoy)
+        served = self.serve()
+        self.assertNotEqual(served, decoy_data)
+        self.assertEqual(json.loads(served)["generatedAt"], "remote")
+        self.assertEqual(decoy.read_bytes(), decoy_data, "nothing is written through the link")
+        self.assertFalse((self.cache_dir / "catalog.json").is_symlink())
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), served)
+        # A world-readable cache is still the account's own file and is served;
+        # one anybody else can write is not, whatever it contains.
+        (self.cache_dir / "catalog.json").chmod(0o644)
+        self.assertEqual(self.serve(), served)
+        (self.cache_dir / "catalog.json").chmod(0o666)
+        self.fetches = []
+        self.serve()
+        self.assertEqual(self.fetches, ["catalog", "stats"])
+
+    def test_temp_file_is_removed_when_publication_fails(self):
+        data = self.cached(self.compatible(), age=30000)
+        with patch.object(os, "rename", side_effect=OSError("refused")):
+            self.assertEqual(self.serve(), data)
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+        self.assertEqual(self.temps(), [])
+        (self.cache_dir / "catalog.json").unlink()
+        with patch.object(os, "rename", side_effect=OSError("refused")), self.assertRaises(u.Refused):
+            self.serve()
+        self.assertEqual(self.temps(), [])
+
+    def test_stats_fetch_uses_the_locked_down_transport(self):
+        updater = u.Updater(home=str(self.home))
+        real_popen = subprocess.Popen
+        calls = []
+        response = b'{"plugins":{}}\n200'
+
+        def spy(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return real_popen(["/usr/bin/python3", "-I", "-S", "-c",
+                               "import os; os.write(1, " + repr(response) + ")"], **kwargs)
+        with patch.object(subprocess, "Popen", side_effect=spy):
+            self.assertEqual(updater.stats_bytes(), b'{"plugins":{}}')
+            curl, options = calls[-1]
+            self.assertEqual(curl, ["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
+                "--proto", "=https", "--noproxy", "*", "--connect-timeout", "5", "--max-time", "15",
+                "--max-filesize", str(u.MAX_STATS), "--header", "Cache-Control: no-cache",
+                "--write-out", "\n%{http_code}", "--", "https://api.omarchyplugins.com/v1/stats"])
+            self.assertTrue(options["start_new_session"])
+            for status in (b"301", b"302", b"404"):
+                response = b'{"plugins":{}}\n' + status
+                with self.subTest(status=status), self.assertRaises(u.Refused):
+                    updater.stats_bytes()
+
+    def test_cli_refuses_a_malformed_catalog_request_with_an_empty_stdout(self):
+        for request in ['{"schemaVersion":1,"catalog":{"force":"yes"}}',
+                        '{"schemaVersion":1,"catalog":{"force":true},"id":"acme.plugin"}']:
+            with self.subTest(request=request):
+                result = subprocess.run(["/usr/bin/python3", "-I", "-S", SPEC.origin, request],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                    env={"PATH": "/usr/bin:/bin", "HOME": str(self.home)})
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertIn(b"Invalid catalog request", result.stderr)
+        self.assertFalse((self.home / ".cache").exists())
 
 
 if __name__ == "__main__":

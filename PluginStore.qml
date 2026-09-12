@@ -359,11 +359,18 @@ Item {
 
   // ---- Catalog ------------------------------------------------------------
 
+  // The helper owns the cache: it opens ~/.cache/omarchy-plugin-manager by
+  // owner-checked no-follow descriptors, reads the projection through them
+  // and publishes a fresh one with a descriptor-relative rename, so nothing
+  // here names a cache path a symlink could redirect. Same scrubbed
+  // environment as the transactions; the helper takes its home from passwd.
   function loadCatalog(force) {
     if (catalogProc.running) return
     catalogLoading = true
     catalogError = ""
-    catalogProc.command = ["bash", "-c", catalogScript, "catalog", force === true ? "1" : "0"]
+    catalogProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
+      "/usr/bin/python3", "-I", "-S", pinnedHelperPath,
+      JSON.stringify({ schemaVersion: 1, catalog: { force: force === true } })]
     catalogProc.running = true
   }
 
@@ -906,48 +913,6 @@ Item {
     onRunningChanged: if (!running) root.drainFreshUpdateCycle()
   }
 
-  // Fetch, join, shrink, cache. The catalog and its anonymous engagement stats
-  // are separate Marketplace sources; jq joins hearts by plugin id while it
-  // projects the large catalog down before any of it reaches the shell's JSON
-  // parser. Missing stats stay null rather than becoming made-up zeroes. A
-  // catalog fetch failure falls back to a compatible cached copy rather than
-  // emptying the grid. The projection schema keeps a fresh legacy cache from
-  // silently omitting fields the current UI requires.
-  readonly property string catalogScript: ""
-    + "set -u -o pipefail; "
-    // The 8 MiB catalog ceiling is over 3x today's 2.4 MiB payload; the 1 MiB
-    // stats ceiling is over 15x today's 67 KiB payload. The projection should
-    // shrink the catalog, so the same 8 MiB ceiling leaves substantial growth
-    // room while placing a hard bound on cache and shell-parser input.
-    + "catalog_max=8388608; stats_max=1048576; projection_max=8388608; projection_schema=2; "
-    + "dir=\"$HOME/.cache/omarchy-plugin-manager\"; file=\"$dir/catalog.json\"; "
-    + "cache_usable() { local size; [ -s \"$file\" ] || return 1; "
-    + "  size=$(stat -c %s -- \"$file\" 2>/dev/null) || return 1; [ \"$size\" -le \"$projection_max\" ] || return 1; "
-    + "  jq -e --argjson schema \"$projection_schema\" '(.projectionSchemaVersion == $schema) and (.plugins | type == \"array\")' \"$file\" >/dev/null 2>&1; }; "
-    + "mkdir -p \"$dir\"; "
-    + "if [ \"$1\" != 1 ] && cache_usable; then "
-    + "  age=$(( $(date +%s) - $(stat -c %Y \"$file\") )); "
-    + "  if [ \"$age\" -lt 21600 ]; then cat \"$file\"; exit 0; fi; "
-    + "fi; "
-    + "catalog_tmp=$(mktemp); stats_tmp=$(mktemp); tmp=$(mktemp \"$dir/.catalog.json.tmp.XXXXXX\"); "
-    + "cleanup_catalog() { rm -f \"$catalog_tmp\" \"$stats_tmp\" \"$tmp\"; }; trap cleanup_catalog EXIT; "
-    + "curl -fsSL --max-time 25 --max-filesize \"$catalog_max\" " + Model.CATALOG_URL + " -o \"$catalog_tmp\" 2>/dev/null & catalog_pid=$!; "
-    + "curl -fsSL --max-time 15 --max-filesize \"$stats_max\" " + Model.MARKETPLACE_STATS_URL + " -o \"$stats_tmp\" 2>/dev/null & stats_pid=$!; "
-    + "wait \"$catalog_pid\"; catalog_status=$?; wait \"$stats_pid\"; stats_status=$?; "
-    + "if [ \"$stats_status\" -ne 0 ] || ! jq -e '.plugins | type == \"object\"' \"$stats_tmp\" >/dev/null 2>&1; then "
-    + "  printf '%s' '{\"plugins\":{}}' > \"$stats_tmp\"; "
-    + "fi; "
-    + "if [ \"$catalog_status\" -eq 0 ] "
-    + "   && jq -c --argjson schema \"$projection_schema\" --slurpfile stats \"$stats_tmp\" '{projectionSchemaVersion: $schema, generatedAt, plugins: [.plugins[] as $plugin | $plugin | {id,name,description,author,version,category,tags,kind,repo,installCommand,installAvailable,installNote,verificationStatus,sourceType,stars,addedAt,listedAt,marketplaceHearts: ($stats[0].plugins[$plugin.id].hearts // null),accent,initials,license,previewThumbnail,listingValidatedBranch,verificationCommit}]}' \"$catalog_tmp\" 2>/dev/null "
-    // One sentinel byte distinguishes an exact-limit projection from an
-    // oversized one; pipefail also rejects jq errors and its bounded SIGPIPE.
-    + "      | head -c \"$((projection_max + 1))\" > \"$tmp\" "
-    + "   && [ -s \"$tmp\" ] && [ \"$(stat -c %s -- \"$tmp\")\" -le \"$projection_max\" ]; then "
-    + "  if mv \"$tmp\" \"$file\"; then cat \"$file\"; else exit 1; fi; "
-    + "else "
-    + "  if cache_usable; then cat \"$file\"; else exit 1; fi; "
-    + "fi"
-
   // No fetch and no clone: ls-remote asks the remote for one sha and downloads
   // nothing, so eleven checkouts resolve in about a second. The manifest is
   // read only for the ones actually behind, pinned to the exact remote commit.
@@ -1061,6 +1026,7 @@ Item {
 
   Process {
     id: catalogProc
+    clearEnvironment: true
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyCatalog(text)
