@@ -47,10 +47,11 @@ Rectangle {
   readonly property string badge: Model.sourceBadge(row)
   readonly property bool hasUpdate: row ? row.behind === true : false
   // Two different facts share the arrow: something moved upstream, and a
-  // verified snapshot is actually installable. Orange is reserved for the
-  // second so the mark alone says whether the button will do anything.
+  // verified snapshot is actually installable. Green is reserved for the
+  // second so the mark alone says whether the button will do anything;
+  // orange says the author moved but nothing reviewed is available yet.
   readonly property bool installable: row ? row.pinnedEligible === true : false
-  readonly property color updateMarkColor: installable ? "#f28c28" : Color.muted
+  readonly property color updateMarkColor: installable ? "#5fb865" : "#f28c28"
   readonly property bool upToDate: Model.upToDate(row)
 
   // Installed but switched off. For a bar widget that means it has no place
@@ -145,8 +146,9 @@ Rectangle {
       width: parent.width
       spacing: Style.space(8)
 
-      // Match the expanded list: orange when behind, green only when confirmed
-      // current, and no mark when the update state is unknown.
+      // Match the expanded list: an arrow when behind (green for a verified
+      // snapshot, orange for an unreviewed change), a green check only when
+      // confirmed current, and no mark when the update state is unknown.
       Text {
         id: stateMark
         // Never rich text: AutoText would fetch what a crafted string points at.
@@ -247,7 +249,7 @@ Rectangle {
         textFormat: Text.PlainText
         width: parent.width - x
         text: Model.updateStatus(root.row)
-        color: root.installable ? root.updateMarkColor : root.foreground
+        color: root.updateMarkColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap

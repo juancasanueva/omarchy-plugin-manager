@@ -38,8 +38,8 @@ summary counts, the opening animation and the card flip between tabs are the
 ones the popup has; what changes is how much each tab can show.
 
 **Installed** becomes a list beside a details pane. The rows are summaries:
-a mark leads the name — a green check when the checkout is up to date, an
-orange arrow when an update is confirmed — followed by the `verified` pill
+a mark leads the name — a green check when the checkout is up to date, a
+green arrow when a verified update is installable — followed by the `verified` pill
 and, on the right, the repository's GitHub star count, with one line of
 description underneath. Everything else moves to the pane on the right, which
 shows the selected plugin in full: its name, the on/off switch and the Update,
@@ -186,8 +186,8 @@ there to offer. The background check still records what it observed.
 **Allow updating unverified plugins**, in the settings pane (the gear in the
 header of both the popup and the expanded panel; it is one setting, shared),
 changes that. It is **off by default**. Switched on, every
-checkout with observed upstream changes shows again, with a grey arrow rather
-than the orange one, and is counted. Update works for GitHub origins: the
+checkout with observed upstream changes shows again, with an orange arrow rather
+than the green one, and is counted. Update works for GitHub origins: the
 button installs the exact upstream commit the check observed after a
 confirmation that names that commit and links its diff. A checkout hosted
 elsewhere shows its arrow and **update needs a GitHub origin**, with the

@@ -78,8 +78,8 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(8)
 
-        // The state mark leads the name, as in a package list: a bold orange
-        // arrow when an update is waiting, a green check when the checkout is
+        // The state mark leads the name, as in a package list: a bold arrow
+        // when an update is waiting, a green check when the checkout is
         // confirmed current. Fixed colours rather than the accent: the shell
         // has no warm or green token, and these are verdicts, not decoration.
         // Nothing when unchecked or not updatable — silence, not a guess.
@@ -90,12 +90,12 @@ Rectangle {
           anchors.verticalCenter: parent.verticalCenter
           readonly property bool behind: root.row ? root.row.behind === true : false
           readonly property bool current: Model.upToDate(root.row)
-          // Orange only when a verified snapshot is installable; grey says the
-          // author moved but nothing reviewed is available yet.
+          // Green only when a verified snapshot is installable; orange says
+          // the author moved but nothing reviewed is available yet.
           readonly property bool installable: root.row ? root.row.pinnedEligible === true : false
           visible: behind || current
           text: behind ? "󰜷" : "󰸞"
-          color: behind ? (installable ? "#f28c28" : Color.muted) : "#5fb865"
+          color: behind ? (installable ? "#5fb865" : "#f28c28") : "#5fb865"
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
           font.bold: true
@@ -172,10 +172,10 @@ Rectangle {
       width: parent.width
       visible: !!root.row && root.row.behind === true
       spacing: Style.space(6)
-      // Orange only when a verified snapshot is installable; grey says the
+      // Green only when a verified snapshot is installable; orange says the
       // author moved but nothing reviewed is available yet.
       readonly property bool installable: !!root.row && root.row.pinnedEligible === true
-      readonly property color markColor: installable ? "#f28c28" : Color.muted
+      readonly property color markColor: installable ? "#5fb865" : "#f28c28"
 
       Text {
         textFormat: Text.PlainText
@@ -190,7 +190,7 @@ Rectangle {
         textFormat: Text.PlainText
         width: parent.width - x
         text: Model.updateStatus(root.row)
-        color: parent.installable ? parent.markColor : root.foreground
+        color: parent.markColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap

@@ -4184,12 +4184,15 @@ test("the small panel row marks updatable plugins and leaves unknown states unma
   assert.match(row, /readonly property bool upToDate: Model\.upToDate\(row\)/)
   assert.match(mark, /visible: root\.hasUpdate \|\| root\.upToDate/)
   assert.match(mark, /text: root\.hasUpdate \? "󰜷" : "󰸞"/)
-  // Orange is reserved for an installable verified snapshot; an upstream-only
-  // change shares the arrow but in the muted grey, so the mark alone says
-  // whether the Update button will do anything.
+  // Green is reserved for an installable verified snapshot; an upstream-only
+  // change shares the arrow but in orange, so the mark alone says whether
+  // the Update button will do anything. The status line takes the same
+  // colour as the arrow in both cases.
   assert.match(row, /readonly property bool installable: row \? row\.pinnedEligible === true : false/)
-  assert.match(row, /readonly property color updateMarkColor: installable \? "#f28c28" : Color\.muted/)
+  assert.match(row, /readonly property color updateMarkColor: installable \? "#5fb865" : "#f28c28"/)
   assert.match(mark, /color: root\.hasUpdate \? root\.updateMarkColor : "#5fb865"/)
+  assert.match(row, /text: Model\.updateStatus\(root\.row\)\s+color: root\.updateMarkColor/)
+  assert.doesNotMatch(row, /root\.installable \? root\.updateMarkColor : root\.foreground/)
   assert.match(mark, /textFormat: Text\.PlainText/)
   assert.match(mark, /font\.family: root\.fontFamily/)
   assert.match(mark, /font\.pixelSize: Style\.font\.title/)
@@ -4233,9 +4236,10 @@ test("the expanded list row marks updatable plugins and shows their stars", () =
   assert.equal(expanded.split("stars: Model.rowStarLabel(modelData, root.starsById)").length - 1, 2)
 
   assert.match(row, /property string stars: ""/)
-  // A state mark leads the name, as in a package list: a bold orange arrow
-  // when an update is waiting, a green check when the checkout is confirmed
-  // current, nothing when unchecked or not updatable.
+  // A state mark leads the name, as in a package list: a bold arrow when an
+  // update is waiting (green for a verified snapshot, orange for an
+  // unreviewed upstream change), a green check when the checkout is
+  // confirmed current, nothing when unchecked or not updatable.
   assert.ok(row.indexOf("id: stateMark") < row.indexOf("id: name\n"), "the mark comes before the name")
   const mark = row.slice(row.indexOf("id: stateMark"), row.indexOf("id: stateMark") + 900)
   assert.match(mark, /readonly property bool behind: root\.row \? root\.row\.behind === true : false/)
@@ -4245,7 +4249,11 @@ test("the expanded list row marks updatable plugins and shows their stars", () =
   // marks share a weight.
   assert.match(mark, /text: behind \? "󰜷" : "󰸞"/)
   assert.match(mark, /readonly property bool installable: root\.row \? root\.row\.pinnedEligible === true : false/)
-  assert.match(mark, /color: behind \? \(installable \? "#f28c28" : Color\.muted\) : "#5fb865"/)
+  assert.match(mark, /color: behind \? \(installable \? "#5fb865" : "#f28c28"\) : "#5fb865"/)
+  // The status line under the name takes the arrow's colour in both cases.
+  assert.match(row, /readonly property color markColor: installable \? "#5fb865" : "#f28c28"/)
+  assert.match(row, /text: Model\.updateStatus\(root\.row\)\s+color: parent\.markColor/)
+  assert.doesNotMatch(row, /parent\.installable \? parent\.markColor : root\.foreground/)
   assert.match(mark, /font\.pixelSize: Style\.font\.title/)
   assert.match(mark, /textFormat: Text\.PlainText/)
   assert.doesNotMatch(row, /id: updateArrow/)
