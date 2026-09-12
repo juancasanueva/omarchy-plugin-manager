@@ -469,6 +469,19 @@ Item {
                 Model.enableCommand(row, section))
   }
 
+  // The shell is the process every surface of this plugin lives in, so a
+  // restart is the one action that is certain to outlive its own status
+  // line: detached, like enable, with the notification landing on the new
+  // shell once the host reports it ready. Nothing in flight is interrupted —
+  // an install or update already runs in its own worker — but a plain host
+  // action would die with the shell, so the button waits for it.
+  function restartShell() {
+    if (busy || actionProc.running) return
+    runDetached("Shell restart",
+                "The QML cache was cleared and every plugin reloaded.",
+                Model.restartShellCommand())
+  }
+
   // Run a command, then say what happened where the answer will still exist:
   // $1 summary, $2 detail, and everything after that is the command itself,
   // passed as separate arguments so none of it is ever parsed as shell.

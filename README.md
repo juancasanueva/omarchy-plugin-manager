@@ -224,6 +224,17 @@ the setting off, a checkout whose only difference is an unreviewed upstream
 commit carries neither the arrow nor the green check: the panel does not claim
 it is current, it says **No verified update available**.
 
+**Restart Shell**, the button under both switches, clears Quickshell's
+compiled-QML cache and runs `omarchy restart shell`, so every plugin, this one
+included, is loaded again from what is on disk. Reach for it when a plugin
+edited in place keeps showing its old self after a rescan. What is removed is
+exactly `quickshell/qmlcache` under `$XDG_CACHE_HOME` (`~/.cache` when unset),
+a cache Quickshell rebuilds on its next start; nothing else is touched, a
+symlink planted on that name is left alone rather than followed, and a cache
+that does not exist yet is simply not there to remove. The host refuses the
+restart while the session is locked. The result arrives as a notification,
+because the panel does not survive its own restart.
+
 - **Upstream changes — not verified** (setting on) means the observed branch
   tip does not match an authorized verification snapshot. Being at an older
   verified SHA does not make the checkout current. **Unreviewed commit …

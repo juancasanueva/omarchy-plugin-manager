@@ -2,7 +2,7 @@
 // and evaluating the source keeps the shipped file free of node-isms while
 // still letting the parsing rules be tested outside a running shell.
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -46,7 +46,7 @@ const Model = new Function(
     actionVerb, actionGerund, successMessage, failureMessage,
     needsPlacement, canEnable, placementOptions, enableCommand, findRow,
     parseLayoutSections, canMove, moveOptions, moveCommand, moveNote,
-    canDisable, disableCommand, enableNote, disableNote,
+    canDisable, disableCommand, enableNote, disableNote, restartShellCommand,
     catalogNeedsPlacement, browseModalFocusOwner, catalogPlacementConfirmationNote
   }`
 )()
@@ -592,6 +592,88 @@ test("needsPlacement refuses to place a plugin that IS the bar", () => {
 
 test("placementOptions offers the three sections the bar actually has", () => {
   assert.deepEqual(Model.placementOptions().map(o => o.value), ["left", "center", "right"])
+})
+
+// The restart runs detached with a stub `omarchy` on PATH, so what is
+// asserted is what the shell will do, not the text of the script.
+function runRestartShell(env) {
+  const bin = mkdtempSync(join(tmpdir(), "pm-restart-bin-"))
+  try {
+    writeFileSync(join(bin, "omarchy"), "#!/bin/bash\nprintf '%s\\n' \"$*\" > \"$CALLED\"\n")
+    chmodSync(join(bin, "omarchy"), 0o755)
+    const cmd = Model.restartShellCommand()
+    return spawnSync(cmd[0], cmd.slice(1), {
+      env: { ...env, PATH: bin + ":/usr/bin:/bin", CALLED: join(bin, "called") },
+      encoding: "utf8"
+    })
+  } finally {
+    // Read before the directory goes, so the caller sees what was invoked.
+    runRestartShell.called = existsSync(join(bin, "called")) ? readFileSync(join(bin, "called"), "utf8") : null
+    rmSync(bin, { recursive: true, force: true })
+  }
+}
+
+test("restartShellCommand is a constant argv: bash runs a fixed script and no data", () => {
+  const cmd = Model.restartShellCommand()
+  assert.equal(cmd.length, 4)
+  assert.deepEqual(cmd.slice(0, 2), ["bash", "-c"])
+  assert.equal(cmd[3], "restart-shell")
+  assert.deepEqual(Model.restartShellCommand(), cmd)
+})
+
+test("restartShellCommand drops the compiled-QML cache under HOME, then hands the restart to the host", () => {
+  const home = mkdtempSync(join(tmpdir(), "pm-restart-home-"))
+  try {
+    const cache = join(home, ".cache", "quickshell", "qmlcache")
+    mkdirSync(cache, { recursive: true })
+    writeFileSync(join(cache, "0aeff5ea.qmlc"), "stale")
+    const run = runRestartShell({ HOME: home })
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(existsSync(cache), false)
+    assert.equal(existsSync(join(home, ".cache", "quickshell")), true)
+    assert.equal(runRestartShell.called, "restart shell\n")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("restartShellCommand honours XDG_CACHE_HOME and restarts even when there is no cache yet", () => {
+  const home = mkdtempSync(join(tmpdir(), "pm-restart-home-"))
+  try {
+    const xdg = join(home, "elsewhere")
+    const cache = join(xdg, "quickshell", "qmlcache")
+    mkdirSync(cache, { recursive: true })
+    writeFileSync(join(cache, "0aeff5ea.qmlc"), "stale")
+    const run = runRestartShell({ HOME: home, XDG_CACHE_HOME: xdg })
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(existsSync(cache), false)
+    assert.equal(runRestartShell.called, "restart shell\n")
+
+    const bare = runRestartShell({ HOME: home, XDG_CACHE_HOME: join(home, "nothing-here") })
+    assert.equal(bare.status, 0, bare.stderr)
+    assert.equal(runRestartShell.called, "restart shell\n")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("restartShellCommand leaves a symlink planted on the cache name where it is", () => {
+  const home = mkdtempSync(join(tmpdir(), "pm-restart-home-"))
+  try {
+    const victim = join(home, "victim")
+    mkdirSync(victim)
+    writeFileSync(join(victim, "keep.txt"), "must survive")
+    mkdirSync(join(home, ".cache", "quickshell"), { recursive: true })
+    const cache = join(home, ".cache", "quickshell", "qmlcache")
+    symlinkSync(victim, cache)
+    const run = runRestartShell({ HOME: home })
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(readFileSync(join(victim, "keep.txt"), "utf8"), "must survive")
+    assert.equal(lstatSync(cache).isSymbolicLink(), true)
+    assert.equal(runRestartShell.called, "restart shell\n")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test("enableCommand passes the section only when one was chosen", () => {

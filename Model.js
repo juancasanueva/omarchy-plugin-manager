@@ -777,6 +777,24 @@ function enableCommand(row, section) {
   return command
 }
 
+// Restarting the shell restarts the process this panel lives in, so the
+// command runs detached (PluginStore.runDetached) and carries no data at all:
+// one constant script, in one argv, that drops Quickshell's compiled-QML
+// cache and then hands the restart to the host's own command. The cache is
+// wherever Qt keeps it, `quickshell/qmlcache` under $XDG_CACHE_HOME, and a
+// real directory there is the only thing removed: a symlink planted on that
+// name is left where it is rather than followed. A cache that is not there
+// yet is nothing to remove, not a reason to skip the restart.
+var RESTART_SHELL_SCRIPT = ""
+  + "set -u; "
+  + "cache=\"${XDG_CACHE_HOME:-$HOME/.cache}/quickshell/qmlcache\"; "
+  + "if [ -d \"$cache\" ] && [ ! -L \"$cache\" ]; then rm -rf -- \"$cache\" || exit 1; fi; "
+  + "exec omarchy restart shell"
+
+function restartShellCommand() {
+  return ["bash", "-c", RESTART_SHELL_SCRIPT, "restart-shell"]
+}
+
 // Moving is enabling with a section: `omarchy plugin enable <id> <section>`
 // hands the placement to the shell, which moves a widget that is already in
 // the bar rather than adding it a second time. Only a widget that takes a

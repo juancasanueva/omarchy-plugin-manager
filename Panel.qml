@@ -1829,6 +1829,23 @@ Panel {
               }
             }
           }
+
+          // Restarting the shell is how every plugin, this one included, is
+          // read again from disk: Quickshell keeps compiled QML in a cache
+          // that a restart alone can go on serving.
+          Button {
+            id: restartShellButton
+            iconText: "󰜉"
+            text: "Restart Shell"
+            tooltipText: "Clear the QML cache and restart the shell so every plugin reloads"
+            bordered: true
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            fontSize: Style.font.caption
+            onClicked: store.restartShell()
+          }
         }
       }
 
