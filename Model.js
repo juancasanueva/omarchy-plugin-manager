@@ -1425,9 +1425,13 @@ function installState(entry) {
   return "unavailable"
 }
 
+// Why an "unavailable" listing has no Install button. The registry's note is
+// the reason only while the registry itself withholds installation: every
+// listing it offers carries the same boilerplate about how Omarchy installs,
+// and when this panel is the one refusing, that sentence explains nothing.
 function installBlockedReason(entry) {
   if (!entry) return ""
-  if (entry.installNote !== "") return entry.installNote
+  if (entry.installAvailable !== true && entry.installNote !== "") return entry.installNote
   if (entry.installUrl === "") return "This listing has no usable clone url."
   if (!entry.updateSnapshot) return "The marketplace has not verified a snapshot of this listing."
   if (canonicalUpdateRepository(entry.installUrl) !== entry.updateSnapshot.repository)

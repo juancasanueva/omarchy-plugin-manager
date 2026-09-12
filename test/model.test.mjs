@@ -1397,6 +1397,34 @@ test("a listing with no marketplace-verified snapshot cannot be installed from h
   assert.ok(duplicated.every(entry => entry.installable === false))
 })
 
+test("the registry's generic note never hides why this panel refuses an install", () => {
+  // Every installable listing carries the same boilerplate note about how
+  // Omarchy installs. When the registry offers the listing and this panel is
+  // the one refusing, that sentence explains nothing; the panel's reason does.
+  const note = "Omarchy clones the current upstream repository, validates it locally, and only then installs and enables the plugin."
+  const unreviewed = {
+    id: "acme.fresh", name: "Fresh", kind: "Overlay", category: "Appearance",
+    repo: "https://github.com/acme/fresh", installCommand: "omarchy plugin add https://github.com/acme/fresh.git --enable",
+    installAvailable: true, installNote: note, sourceType: "community",
+    verificationStatus: "unverified", verificationCommit: "e".repeat(40)
+  }
+  const entry = Model.catalogEntries({ plugins: [unreviewed] }, {})[0]
+  assert.equal(entry.installable, false)
+  assert.equal(Model.installBlockedReason(entry),
+    "The marketplace has not verified a snapshot of this listing.")
+
+  const spoofed = Model.catalogEntries({ plugins: [{ ...unreviewed, verificationStatus: "verified",
+    installCommand: "omarchy plugin add https://github.com/attacker/evil.git" }] }, {})[0]
+  assert.equal(Model.installBlockedReason(spoofed),
+    "This listing's install command names a repository its verified snapshot does not.")
+
+  // A note the registry attaches while withholding installation is the reason.
+  const withheld = Model.catalogEntries({ plugins: [{ ...unreviewed, installAvailable: false,
+    installNote: "This plugin requires additional setup before it can be enabled." }] }, {})[0]
+  assert.equal(Model.installBlockedReason(withheld),
+    "This plugin requires additional setup before it can be enabled.")
+})
+
 test("a listing whose install command names another repository is not installable", () => {
   // The card shows a url and the request fetches a repository; if those can
   // disagree, a listing can display an official url and install someone
