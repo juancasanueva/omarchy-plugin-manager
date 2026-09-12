@@ -8,12 +8,12 @@ details pane.
 
 ![kind: bar-widget](https://img.shields.io/badge/kind-bar--widget-informational)
 
-![The popup's Installed tab: a puzzle icon and Plugins heading with an
-installed, total, and to-update summary, Installed and Browse tabs, expand and
-refresh icons, labelled Source, Kind, and Status dropdowns, a Search field, and
-separated plugin rows with descriptions, metadata, repository links, update
-badges, switches, and actions above a hint bar with filter keys on the left and
-row actions on the right](preview.png)
+![The expanded panel's Installed tab: the same heading and summary, a search
+box and Source, Kind, and Status dropdowns in one labelled row, a list of
+plugin rows with state marks, verified pills, star counts, and one-line
+descriptions beside a details pane showing the selected plugin's name, on/off
+switch, Update, Remove, and Open repository buttons, its screenshot, and its
+description, above a hint bar with tab, action, and close keys](preview-expanded.png)
 
 ## What it does
 
@@ -22,14 +22,14 @@ what the shell actually found on disk, and **Browse**, which is the
 marketplace. Both are described below. When the popup is too small for the
 job, the same two tabs open in a full-size panel.
 
-## The expanded panel
+![The popup's Installed tab: a puzzle icon and Plugins heading with an
+installed, total, and to-update summary, Installed and Browse tabs, expand and
+refresh icons, labelled Source, Kind, and Status dropdowns, a Search field, and
+separated plugin rows with descriptions, metadata, repository links, update
+badges, switches, and actions above a hint bar with filter keys on the left and
+row actions on the right](preview.png)
 
-![The expanded panel's Installed tab: the same heading and summary, a search
-box and Source, Kind, and Status dropdowns in one labelled row, a list of
-plugin rows with state marks, verified pills, star counts, and one-line
-descriptions beside a details pane showing the selected plugin's name, on/off
-switch, Update, Remove, and Open repository buttons, its screenshot, and its
-description, above a hint bar with tab, action, and close keys](preview-expanded.png)
+## The expanded panel
 
 The popup is built for a glance. When you want room, the icon left of the
 refresh button (`󰊓`) hands the same manager to a full-size panel, and the `󰊔`
