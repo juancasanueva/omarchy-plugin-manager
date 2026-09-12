@@ -127,12 +127,20 @@ Item {
   readonly property bool allowUnverifiedUpdates: Model.allowUnverifiedUpdates(selfSettings)
   onAllowUnverifiedUpdatesChanged: rows = Model.applyPinnedUpdates(rows, catalog, allowUnverifiedUpdates)
 
-  // Persist the one setting through the host, merged over the entry as it
-  // was loaded. The local copies move only when the host accepted the
-  // write; the watcher reload then confirms it on every surface.
-  function setAllowUnverifiedUpdates(value) {
+  // Installing code nobody reviewed is a different decision from updating to
+  // it, so it is a different key. Flipping it re-stamps the cards already on
+  // screen: the answer is derived from data the panel is holding, and making
+  // the user wait on a refetch for it would be theatre.
+  readonly property bool allowUnverifiedInstalls: Model.allowUnverifiedInstalls(selfSettings)
+  onAllowUnverifiedInstallsChanged: restampCatalog()
+
+  // Persist one setting through the host, merged over the entry as it was
+  // loaded. The local copies move only when the host accepted the write; the
+  // watcher reload then confirms it on every surface. `current` is the value
+  // in force, so asking for what is already set is a no-op rather than a write.
+  function writeSelfSetting(key, value, current) {
     var want = value === true
-    if (want === allowUnverifiedUpdates) return true
+    if (want === current) return true
     if (!selfEntryLoaded || !selfEntry) {
       setStatus("Settings unavailable until the plugin list loads", true)
       return false
@@ -141,7 +149,7 @@ Item {
       setStatus("Could not save the setting: no shell connection", true)
       return false
     }
-    var next = Model.withSelfSetting(selfEntry, "allowUnverifiedUpdates", want)
+    var next = Model.withSelfSetting(selfEntry, key, want)
     if (shell.updateEntryInline(selfId, next) !== true) {
       setStatus("Could not save the setting", true)
       return false
@@ -151,6 +159,14 @@ Item {
     return true
   }
 
+  function setAllowUnverifiedUpdates(value) {
+    return writeSelfSetting("allowUnverifiedUpdates", value, allowUnverifiedUpdates)
+  }
+
+  function setAllowUnverifiedInstalls(value) {
+    return writeSelfSetting("allowUnverifiedInstalls", value, allowUnverifiedInstalls)
+  }
+
   property string pendingKind: ""
   property string pendingId: ""
   property string pendingLabel: ""
@@ -158,6 +174,9 @@ Item {
   // The one commit an open install question names, so the answer can be held
   // to exactly that snapshot when the catalog has moved on underneath it.
   property string pendingVerifiedCommit: ""
+  // The branch an open unreviewed install question names, for the same reason:
+  // there is no commit to hold it to until the helper resolves one.
+  property string pendingBranch: ""
   readonly property bool confirming: pendingKind !== "" && pendingKind !== "place" && pendingKind !== "move"
 
   // Enabling a bar widget is a different question from the yes/no ones above:
@@ -190,6 +209,8 @@ Item {
     ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
 
   readonly property string confirmMessage: {
+    if (pendingKind === "install" && pendingBranch !== "")
+      return Model.installUnverifiedConfirmMessage(pendingLabel, pendingUrl, pendingBranch, pendingPlacementNeeded)
     if (pendingKind === "install")
       return "Install " + pendingLabel + "?\n\n"
         + pendingUrl + "\n\n"
@@ -223,12 +244,15 @@ Item {
   signal rowsLoaded()
   signal actionFinished(string kind, string label, int exitCode)
 
-  // Installing something changes which cards should read "installed". Re-stamp
-  // rather than rebuild: the catalog's sort and its fetch both survive.
-  onRowsChanged: {
+  // Installing something changes which cards should read "installed", and the
+  // install opt-in changes which are offered at all. Re-stamp rather than
+  // rebuild: the catalog's sort and its fetch both survive.
+  onRowsChanged: restampCatalog()
+
+  function restampCatalog() {
     if (catalog.length === 0) return
     var stampedState = Model.restampCatalogInstallState(
-      catalog, Model.installedIdSet(rows), null)
+      catalog, Model.installedIdSet(rows), null, allowUnverifiedInstalls)
     // Nothing changed, nothing assigned: a fresh array would reset the grid
     // and rebuild every visible card, right in the middle of an animation.
     if (!stampedState.changed) return
@@ -408,6 +432,10 @@ Item {
     catalog = message.entries
     catalogLoaded = true
     catalogError = ""
+    // The worker knows nothing about this plugin's own settings, so it builds
+    // every entry with the install opt-in off. One re-stamp here is what makes
+    // a fresh fetch agree with the switch; it assigns nothing when it is off.
+    restampCatalog()
   }
 
   // ---- Actions ------------------------------------------------------------
@@ -461,19 +489,27 @@ Item {
 
   // Installing from the catalog runs the bundled helper on one reviewed
   // commit — the registry's own install command is read for its url, shown,
-  // and never executed. Only a listing with a verified snapshot is
-  // installable, so there is always a commit to name.
+  // and never executed. Under the install opt-in a listing the marketplace
+  // never reviewed offers its validated branch instead, and the helper
+  // resolves that branch to one commit and pins it.
   function askInstall(entry) {
-    // Fail closed on the snapshot too: `installable` is derived from it,
-    // and the confirmation is about to name the commit it carries.
-    if (!entry || !entry.installable || !entry.updateSnapshot || busy) return false
+    // Fail closed on the snapshot too: `installable` is derived from it, and
+    // the confirmation is about to name what it carries.
+    if (!entry || !entry.installable || busy) return false
+    var unreviewed = entry.installUnverified === true
+    // The setting is re-read here rather than taken from the stamp on the
+    // entry, which a re-stamp may not have caught up with yet.
+    if (unreviewed && !allowUnverifiedInstalls) return false
+    var snapshot = unreviewed ? entry.unverifiedSnapshot : entry.updateSnapshot
+    if (!snapshot) return false
     // The url the question shows is the repository the request fetches, not
     // the registry's free-text install command: a dialog that named a
     // different place than the one being cloned would be worse than silent.
-    pendingUrl = String(entry.updateSnapshot.repository)
+    pendingUrl = String(snapshot.repository)
     pendingLabel = entry.name
     pendingId = entry.id
-    pendingVerifiedCommit = String(entry.updateSnapshot.verifiedCommit)
+    pendingBranch = unreviewed ? String(snapshot.branch) : ""
+    pendingVerifiedCommit = unreviewed ? "" : String(snapshot.verifiedCommit)
     pendingPlacementNeeded = Model.catalogNeedsPlacement(entry)
     pendingKind = "install"
     return true
@@ -587,6 +623,7 @@ Item {
     pendingKind = ""
     pendingUnverifiedSha = ""
     pendingVerifiedCommit = ""
+    pendingBranch = ""
     pendingSection = ""
     pendingId = ""
     pendingLabel = ""
@@ -634,19 +671,21 @@ Item {
   // above. The pending state is cleared first: by the time the checkout lands
   // the surface no longer exists to clear anything.
   //
-  // Re-gated on the live catalog, exactly as an update is: the grid may have
-  // refetched while the question was on screen. Only the commit the dialog
-  // named is ever installed; a snapshot that moved is a no-op, never a
-  // substitute.
+  // Re-gated on the live catalog and on the setting, exactly as an update is:
+  // the grid may have refetched and the switch may have gone off while the
+  // question was on screen. Only what the dialog named is ever installed; a
+  // snapshot or a branch that moved is a no-op, never a substitute.
   function startAdd(section) {
     var id = pendingId
     var label = pendingLabel
     var commit = pendingVerifiedCommit
+    var branch = pendingBranch
     cancelPending()
     var entry = Model.findRow(catalog, id)
-    var request = Model.installRequest(entry, section)
-    if (!request || request.verifiedCommit !== commit) {
-      setStatus("Could not install " + label + ": the verified snapshot changed", true)
+    var request = Model.installRequest(entry, section, allowUnverifiedInstalls)
+    if (!request || String(request.verifiedCommit || "") !== commit
+        || String(request.branch || "") !== branch) {
+      setStatus("Could not install " + label + ": the listing changed", true)
       return
     }
     launchInstall(request, label)
@@ -667,8 +706,11 @@ Item {
     pinnedOutput = ""
     pinnedExited = false
     pinnedOverflow = false
-    setStatus("Installing the verified snapshot of " + label
-      + "; closing this window does not cancel it", false)
+    setStatus(request.branch
+      ? "Installing the unreviewed tip of " + label
+        + "; closing this window does not cancel it"
+      : "Installing the verified snapshot of " + label
+        + "; closing this window does not cancel it", false)
     // Process.command is QStringList; avoid the environment property's
     // QVariantHash binding, which this installed QML toolchain cannot type.
     pinnedProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",

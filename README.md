@@ -184,7 +184,7 @@ verified update available** and offers nothing, because nothing reviewed is
 there to offer. The background check still records what it observed.
 
 **Allow updating unverified plugins**, in the settings pane (the gear in the
-header of both the popup and the expanded panel; it is one setting, shared),
+header of both the popup and the expanded panel; the settings are shared),
 changes that. It is **off by default**. Switched on, every
 checkout with observed upstream changes shows again, with an orange arrow rather
 than the green one, and is counted. Update works for GitHub origins: the
@@ -200,9 +200,24 @@ when there is no verified snapshot ahead of the checkout, and a checkout meeting
 both conditions is counted once. With the setting on you are choosing to run
 code the marketplace has not reviewed.
 
-The setting is stored in this plugin's own entry in
-`~/.config/omarchy/shell.json` as `allowUnverifiedUpdates: true`, written
-through the host and merged over whatever else that entry holds. The switch
+**Allow installing unverified plugins**, the second switch in the same pane,
+is the matching opt-in for Browse, and also **off by default**. Installing
+unreviewed code is a separate decision from updating to it, so it is a
+separate switch under a separate key; neither reads the other's value.
+Switched on, a listing the marketplace never verified a snapshot of becomes
+installable from the tip of the branch its listing names, after a
+confirmation that names the repository and the branch. The helper resolves
+that branch to one commit before it fetches anything and installs exactly
+that commit, so the install is pinned even though the offer was not. The
+listing's own url and the repository behind it must still agree, exactly as
+for a verified listing, and a listing that names no branch stays uninstallable
+rather than having `main` guessed for it. Flipping the switch re-labels the
+cards already on screen; nothing is refetched.
+
+Both settings are stored in this plugin's own entry in
+`~/.config/omarchy/shell.json`, as `allowUnverifiedUpdates: true` and
+`allowUnverifiedInstalls: true`, written
+through the host and merged over whatever else that entry holds. A switch
 refuses to write until the plugin list has loaded and that entry was read
 whole, so a failed read can never rewrite the entry from an empty copy. With
 the setting off, a checkout whose only difference is an unreviewed upstream
@@ -242,9 +257,13 @@ an upstream SHA and no confirmation that overrides a refusal.
   It installs only that commit, never `origin HEAD` or a branch tip, and the
   host `omarchy plugin add` command is deliberately not used. A listing the
   marketplace has not verified a snapshot of cannot be installed from the
-  panel at all, and neither can one whose install command names a repository
-  its verified snapshot does not: the card states the reason instead of
-  offering a button. The confirmation names the short verified commit and the
+  panel at all — unless **Allow installing unverified plugins** is switched
+  on, in which case it is offered from the tip of its validated branch, marked
+  **Installable (unreviewed)** in details, and installed as the one commit the
+  helper resolves that branch to. A listing whose install command names a
+  repository its own listing does not is refused under either setting: the
+  card states the reason instead of offering a button. The confirmation names
+  the short verified commit, or the branch when there is none, and the
   repository the request will actually fetch — the same one the helper
   reauthorizes — rather than the registry's free-text install command.
 - **Enable / disable** — one switch per row, not a pair of icons that trade
@@ -290,10 +309,11 @@ an upstream SHA and no confirmation that overrides a refusal.
 
 Installs and updates are the same transaction with a different publication
 step, and everything below applies to both. An install request carries the
-repository, the verified commit, the id, and the bar section instead of an
-expected installed HEAD; it refuses outright when `~/.config/omarchy/plugins`
-already holds that name (directory, file or symlink) or when the host already
-knows that plugin id, and there is no unverified install shape at all.
+repository, the id, and the bar section instead of an expected installed HEAD,
+plus either the verified commit or — under **Allow installing unverified
+plugins** — the validated branch to resolve. Either shape refuses outright
+when `~/.config/omarchy/plugins` already holds that name (directory, file or
+symlink) or when the host already knows that plugin id.
 
 The helper reads `https://plugins.omarchy.org/catalog.json` directly over HTTPS,
 without redirects or cached fallback, before fetching and again before
@@ -301,9 +321,13 @@ publication. Browse reads the same canonical URL, but through its own cache;
 execution never consults that cache and rejects every redirect response.
 A unique community listing must still be verified at exactly the
 requested repository and full SHA. For an unverified request, made only under
-**Allow updating unverified plugins**, the catalog is not consulted at all: the
-target is the exact upstream commit the panel observed, and every other check
-below applies unchanged. HTTPS and `git@github.com:` / `ssh://git@github.com/`
+**Allow updating unverified plugins** or **Allow installing unverified
+plugins**, the catalog is not consulted at all: the target is the exact
+upstream commit the panel observed, or — for an unverified install — the
+commit a single `ls-remote` resolves the requested branch to, before anything
+is fetched. No fetch and no checkout ever names a branch, and an ambiguous or
+unreadable answer refuses instead of picking among candidates. Every other
+check below applies unchanged. HTTPS and `git@github.com:` / `ssh://git@github.com/`
 origins compare canonically; network Git always uses canonical HTTPS. Repository
 moves, revoked verification, malformed metadata, or unavailable objects refuse
 rather than silently choosing another target.
@@ -440,7 +464,9 @@ marketplace-verified snapshot for the panel to install exactly, and some name
 one repository in their install command and another in the snapshot that was
 reviewed. Those cards show
 a visible blocked reason, with the full explanation in details, instead of a
-button that could only fail.
+button that could only fail. A listing blocked only for want of a verified
+snapshot, and carrying a branch the marketplace validated, says so: its reason
+adds that **Allow installing unverified plugins** would offer it.
 Plugins you already have carry an `installed` badge on the preview, beside the
 `verified` one, rather than offering themselves again.
 

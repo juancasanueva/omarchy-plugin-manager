@@ -63,6 +63,11 @@ class TransactionTests(unittest.TestCase):
         self.new_tip = self.new_commit("unreviewed tip")
         self.install = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO,
                             verifiedCommit=self.new_target, section="right")
+        # The branch a listing says the marketplace validated, for the install
+        # shape that has no reviewed commit to name.
+        self.git("-C", str(self.new_remote), "branch", "-f", "validated", self.new_tip)
+        self.tip_install = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO,
+                                branch="validated", section="right")
         self.catalog = {"plugins": [
             dict(id="acme.plugin", repo=REPO, verificationStatus="verified",
                  verificationCommit=self.target, sourceType="community"),
@@ -80,6 +85,13 @@ class TransactionTests(unittest.TestCase):
                 source = outer.new_remote if sha in outer.new_commits else outer.remote
                 self.git(stage, "-c", "protocol.file.allow=always", "fetch", "--no-tags", "--depth=256",
                          "file://" + str(source), sha, extra_env={"GIT_ALLOW_PROTOCOL": "file"})
+
+            def ls_remote(self, stage, branch):
+                # Same in-process transport injection as fetch; the production
+                # lookup asks the configured origin over HTTPS and nothing else.
+                return self.git(stage, "-c", "protocol.file.allow=always", "ls-remote",
+                                "--exit-code", "--", "file://" + str(outer.new_remote),
+                                "refs/heads/" + branch, extra_env={"GIT_ALLOW_PROTOCOL": "file"})
 
             def reload(self):
                 outer.reloaded = True
@@ -800,6 +812,120 @@ class TransactionTests(unittest.TestCase):
                                     "target": self.new_tip})
         self.assertTrue(injected["install"])
         self.assertEqual(injected["target"], self.new_target)
+
+    def test_unverified_install_request_shape_is_exact(self):
+        base = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO, section="right")
+        for good in ("main", "release/1.0", "dev_main", "v2", "a" * 200):
+            value = u.request_value({**base, "branch": good})
+            self.assertTrue(value["install"])
+            self.assertFalse(value["verified"], "there is no reviewed snapshot behind it")
+            self.assertEqual(value["target"], "", "the commit is resolved later, from the branch")
+            self.assertEqual(value["branch"], good)
+            self.assertEqual(u.request_kind(value), "install")
+            self.assertEqual(u.request_value(value), value, "a normalized request validates again unchanged")
+            self.assertEqual(u.journal_value(value), {**base, "branch": good})
+        # Branch names are validated the way the panel validates them: no
+        # option shape, no traversal, no reflog syntax, no lock file.
+        for bad in ("", "-main", "--upload-pack=x", "/main", ".main", "main/", "main.",
+                    "main.lock", "a..b", "a//b", "ma@{in", "a" * 201, "ma in", "main\n",
+                    "ma;in", "réf", None, 7, True):
+            with self.subTest(bad=bad), self.assertRaises(u.Refused):
+                u.request_value({**base, "branch": bad})
+        # The four shapes are exact: no mixing, no extras.
+        for bad in (dict(branch="main", verifiedCommit=self.new_target),
+                    dict(branch="main", unverifiedCommit=self.new_tip),
+                    dict(branch="main", expectedLocalHead=self.new_base),
+                    dict(branch="main", extra=1)):
+            with self.subTest(bad=bad), self.assertRaises(u.Refused):
+                u.request_value({**base, **bad})
+        for section in ("", "left", "center"):
+            self.assertEqual(u.request_value({**base, "branch": "main", "section": section})["section"], section)
+        for section in ("bogus", "Right", None, 0):
+            with self.subTest(section=section), self.assertRaises(u.Refused):
+                u.request_value({**base, "branch": "main", "section": section})
+        # The derived keys carry no authority: a request that arrives claiming
+        # to be verified, or naming a target, has both recomputed.
+        injected = u.request_value({**base, "branch": "main", "verified": True,
+                                    "install": False, "target": self.new_target})
+        self.assertFalse(injected["verified"])
+        self.assertTrue(injected["install"])
+        self.assertEqual(injected["target"], "")
+
+    def test_unverified_install_resolves_the_branch_tip_and_pins_that_commit(self):
+        updater = self.updater()
+
+        def never(*_):
+            raise AssertionError("the catalog is not consulted for an unverified install")
+        updater.catalog_bytes = never
+        fetched, original = [], updater.fetch
+        updater.fetch = lambda stage, sha: fetched.append(sha) or original(stage, sha)
+
+        result = updater.execute(self.tip_install)
+        self.assertEqual(result, {"status": "installed"})
+        self.assertEqual(fetched, [self.new_tip], "only the resolved commit is ever fetched")
+        self.assertEqual((self.new_plugin / "BarWidget.qml").read_text(), "unreviewed tip")
+        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "HEAD"), self.new_tip)
+        # Detached on the commit, not on the branch it came from.
+        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+        self.assertEqual(self.git("-C", str(self.new_plugin), "remote", "get-url", "origin"), NEW_REPO)
+        self.assertTrue(self.reloaded)
+        self.assertEqual(self.enabled, [(NEW_ID, "right")])
+        # The journal records the shape the panel sent, with no derived key.
+        state = self.home / ".config/omarchy/plugin-manager-updates"
+        journaled = json.loads(next(iter(state.glob("txn-*/request.json"))).read_text())
+        self.assertEqual(journaled, self.tip_install)
+        self.assertNotIn("target", journaled)
+        calls = []
+        updater.run = lambda argv, **kwargs: calls.append(argv) or b""
+        updater.notify(u.request_value(self.tip_install), result)
+        self.assertEqual(calls[0][3], "Pinned plugin install (unverified)")
+        self.assertEqual(calls[0][4], NEW_ID + ": installed")
+
+    def test_unverified_install_refuses_an_unreadable_branch_reference(self):
+        for raw in (b"", b"\n", b"x" * 40 + b"\trefs/heads/validated\n",
+                    self.new_tip.encode() + b"\trefs/heads/other\n",
+                    self.new_tip.encode() + b"\trefs/tags/validated\n",
+                    self.new_tip.encode() + b" refs/heads/validated\n",
+                    self.new_tip.encode() + b"\n",
+                    self.new_tip.encode() + b"\trefs/heads/validated\n"
+                    + self.new_base.encode() + b"\trefs/heads/validated\n"):
+            with self.subTest(raw=raw):
+                updater = self.updater()
+                updater.ls_remote = lambda stage, branch, raw=raw: raw
+                with self.assertRaises(u.Refused):
+                    updater.execute(self.tip_install)
+                self.assertFalse(self.new_plugin.exists())
+                self.assertEqual(self.enabled, [])
+        # Nothing downstream accepts anything but a full SHA-1, so a resolver
+        # that handed back a name could still not make git see a branch.
+        updater = self.updater()
+        updater.resolve_tip = lambda stage, branch: "validated"
+        with self.assertRaises(u.Refused):
+            updater.execute(self.tip_install)
+        self.assertFalse(self.new_plugin.exists())
+
+    def test_unverified_install_keeps_every_other_install_refusal(self):
+        # No catalog authorization to lose, but the host's id check, the
+        # manifest check and the no-replace publication all still apply.
+        updater = self.updater()
+        updater.catalog_ids = lambda: {NEW_ID}
+        with self.assertRaisesRegex(u.Refused, "already"):
+            updater.execute(self.tip_install)
+        self.assertFalse(self.new_plugin.exists())
+
+        self.new_plugin.mkdir()
+        with self.assertRaisesRegex(u.Refused, "Already installed"):
+            self.updater().execute(self.tip_install)
+        self.new_plugin.rmdir()
+
+        self.new_manifest["id"] = "acme.other"
+        (self.new_remote / "manifest.json").write_text(json.dumps(self.new_manifest))
+        self.new_commit("changed id")
+        self.git("-C", str(self.new_remote), "branch", "-f", "validated", "HEAD")
+        with self.assertRaises(u.Refused):
+            self.updater().execute(self.tip_install)
+        self.assertFalse(self.new_plugin.exists())
+        self.assertEqual(self.enabled, [])
 
     def test_install_refusal_is_reported_as_its_own_shape(self):
         self.new_plugin.mkdir()

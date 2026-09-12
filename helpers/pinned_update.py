@@ -2,7 +2,8 @@
 """Exact pinned plugin installs and updates; no installed Git configuration is executed.
 
 CLI: python3 -I -S pinned_update.py REQUEST_JSON
-Three request shapes, each bound to one full commit SHA-1:
+Four transaction request shapes, each bound to one full commit SHA-1 before
+anything is fetched or checked out:
   verifiedCommit + expectedLocalHead
                    - update to a marketplace-verified snapshot; the live
                      catalog must authorize exactly this repository and
@@ -20,6 +21,13 @@ Three request shapes, each bound to one full commit SHA-1:
                      then enabled: a named section is a placement, an empty
                      section is a plain enable. There is no backup: nothing
                      was replaced.
+  branch + section   - a first install of a listing the marketplace never
+                     verified, allowed only by the user's setting. No catalog
+                     authorization is consulted, exactly as for an unverified
+                     update. The branch is resolved against the remote to one
+                     commit before any fetch, and that commit is what the rest
+                     of the transaction installs: no fetch and no checkout
+                     ever names a branch. Recorded as unverified.
   catalog: {force}   - serve the Browse catalog projection: the cached copy
                      when it is compatible and fresh, otherwise a fresh
                      fetch published into the cache. Every cache read and
@@ -58,6 +66,7 @@ SECTIONS = ("", "left", "center", "right")
 DERIVED = ("target", "verified", "install")
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 MAX_CATALOG = 8 * 1024 * 1024
@@ -136,33 +145,58 @@ def document(raw, cap):
         raise Refused("Invalid JSON") from error
 
 
+def branch_name(value):
+    """A branch this is willing to name to Git, or "".
+
+    Deliberately narrower than Git's own rules: no option shape, no path
+    traversal, no reflog syntax and no lock file, so the name stays a ref and
+    can never become an argument. The panel validates identically, so a
+    listing either carries a usable branch or none at all.
+    """
+    if not isinstance(value, str) or not BRANCH.fullmatch(value):
+        return ""
+    if ".." in value or "//" in value or "@{" in value:
+        return ""
+    if value.endswith(("/", ".", ".lock")):
+        return ""
+    return value
+
+
 def request_value(value):
     require(type(value) is dict, "Invalid request fields")
     # The derived keys are recomputed on every validation, never trusted: a
     # normalized request re-enters here through launch() and execute().
     value = {k: v for k, v in value.items() if k not in DERIVED}
-    install = set(value) == {"schemaVersion", "id", "repository", "verifiedCommit", "section"}
-    verified = set(value) == {"schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}
-    unverified = set(value) == {"schemaVersion", "id", "repository", "unverifiedCommit", "expectedLocalHead"}
-    require(install or verified or unverified, "Invalid request fields")
-    commit_key = "unverifiedCommit" if unverified else "verifiedCommit"
+    keys = set(value)
+    install = keys == {"schemaVersion", "id", "repository", "verifiedCommit", "section"}
+    tip_install = keys == {"schemaVersion", "id", "repository", "branch", "section"}
+    verified = keys == {"schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}
+    unverified = keys == {"schemaVersion", "id", "repository", "unverifiedCommit", "expectedLocalHead"}
+    require(install or tip_install or verified or unverified, "Invalid request fields")
     require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1, "Unsupported request")
     require(isinstance(value["id"], str) and ID.fullmatch(value["id"])
             and ".." not in value["id"] and not value["id"].startswith("omarchy."), "Invalid plugin id")
     require(repository(value["repository"]) == value["repository"] != "", "Noncanonical repository")
-    keys = (commit_key,) if install else (commit_key, "expectedLocalHead")
-    for key in keys:
-        require(isinstance(value[key], str) and SHA.fullmatch(value[key]), "Full SHA-1 required")
-    if install:
+    commit_key = "unverifiedCommit" if unverified else "verifiedCommit"
+    if tip_install:
+        # The one shape that arrives without a commit: it is resolved from the
+        # branch inside the staged repository, before anything is fetched.
+        require(branch_name(value["branch"]) == value["branch"] != "", "Invalid branch")
+    else:
+        for key in (commit_key,) if install else (commit_key, "expectedLocalHead"):
+            require(isinstance(value[key], str) and SHA.fullmatch(value[key]), "Full SHA-1 required")
+    if install or tip_install:
         # An empty section enables without a placement; anything else is one
         # of the three bar sections the host accepts, matched exactly.
         require(type(value["section"]) is str and value["section"] in SECTIONS, "Invalid bar section")
     # `target`, `verified` and `install` are derived for the transaction; the
     # original shape is what gets journaled, so a record says which kind it was.
-    normalized = {**value, commit_key: value[commit_key].lower(),
-                  "target": value[commit_key].lower(), "verified": verified or install,
-                  "install": install}
-    if not install:
+    normalized = {**value, "target": "", "verified": verified or install,
+                  "install": install or tip_install}
+    if not tip_install:
+        normalized[commit_key] = value[commit_key].lower()
+        normalized["target"] = value[commit_key].lower()
+    if verified or unverified:
         normalized["expectedLocalHead"] = value["expectedLocalHead"].lower()
     return normalized
 
@@ -781,20 +815,20 @@ class Updater:
         self.cancelled = False
         try:
             self.run(["/usr/bin/notify-send", "--app-name=Plugin Manager", "--",
-                      "Pinned plugin install" if request_kind(request) == "install"
-                      else "Pinned plugin update" + ("" if request.get("verified", True) else " (unverified)"),
+                      ("Pinned plugin install" if request_kind(request) == "install"
+                       else "Pinned plugin update")
+                      + ("" if request.get("verified", True) else " (unverified)"),
                       request["id"] + ": " + result["status"]
                       + (" (" + result["reason"] + ")" if result.get("reason") else "")], cap=4096,
                      extra_env={"DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{os.getuid()}/bus"})
         except Exception:
             pass
 
-    def stage_snapshot(self, request):
-        """Everything both shapes do: open a transaction, fetch and vet the tree.
+    def open_stage(self, request):
+        """The transaction and an empty staged repository bound to the remote.
 
-        Returns the staged checkout's descriptor at a detached HEAD on exactly
-        the requested commit, validated by the host and byte-identical to the
-        tree the commit names.
+        Deliberately stops short of fetching: an unverified install still has
+        a branch to resolve, and it resolves it through this very remote.
         """
         self.transaction = "txn-" + secrets.token_hex(12)
         os.mkdir(self.transaction, 0o700, dir_fd=self.state)
@@ -807,10 +841,42 @@ class Updater:
         self.anchors.append((self.tx, "checkout", identity(stage)))
         self.git(stage, "init", "--quiet", "--template=", "--object-format=sha1")
         self.git(stage, "config", "remote.origin.url", request["repository"])
+        return stage
+
+    def fetch_stage(self, stage, request):
+        """Exactly the requested commit, proven to be what arrived."""
+        require(SHA.fullmatch(request["target"] or ""), "Full SHA-1 required")
         self.fetch(stage, request["target"])
         fetched = self.git(stage, "rev-parse", "FETCH_HEAD^{commit}").decode().strip()
         require(fetched == request["target"], "Fetched object is not the requested commit")
-        return stage, fetched
+        return fetched
+
+    def stage_snapshot(self, request):
+        """Everything the update shapes do: open a transaction and fetch.
+
+        Returns the staged checkout's descriptor and the commit that arrived,
+        ready for vet_stage to check out, validate and compare.
+        """
+        stage = self.open_stage(request)
+        return stage, self.fetch_stage(stage, request)
+
+    def ls_remote(self, stage, branch):
+        return self.git(stage, "ls-remote", "--exit-code", "--", "origin", "refs/heads/" + branch)
+
+    def resolve_tip(self, stage, branch):
+        """The one commit a validated branch names right now.
+
+        Asked of the remote before anything is fetched, so every later step
+        binds a full SHA-1 exactly as a verified request does. Exactly one
+        matching line is required: an ambiguous or unreadable answer is a
+        refusal, never a pick among candidates.
+        """
+        lines = self.ls_remote(stage, branch).decode("utf-8", "replace").splitlines()
+        require(len(lines) == 1, "Branch does not name exactly one commit")
+        parts = lines[0].split("\t")
+        require(len(parts) == 2 and SHA.fullmatch(parts[0])
+                and parts[1] == "refs/heads/" + branch, "Unreadable branch reference")
+        return parts[0].lower()
 
     def vet_stage(self, stage, fetched, request, target_tree):
         self.git(stage, "checkout", "--quiet", "--detach", fetched)
@@ -822,18 +888,30 @@ class Updater:
         self.scan(stage, sync=True)
 
     def install(self, request):
-        """A first install of one verified snapshot into a name nothing holds."""
+        """A first install into a name nothing holds: one verified snapshot,
+        or the current tip of a listing's validated branch under the user's
+        setting."""
         self.open_paths(request["id"], install=True)
         # The host refuses an id another plugin already answers to under some
         # other directory name, or that ships with Omarchy; so does this. It is
         # an early, readable refusal, not the guarantee: publication below is
-        # still a no-replace rename through the descriptor opened above.
+        # still a no-replace rename through the descriptor opened above. It
+        # applies to both shapes: the id collision is about this machine.
         require(request["id"] not in self.catalog_ids(), "Plugin id is already in use")
-        authorize(self.catalog_bytes(), request)
-        stage, fetched = self.stage_snapshot(request)
+        if request["verified"]:
+            authorize(self.catalog_bytes(), request)
+        stage = self.open_stage(request)
+        if not request["verified"]:
+            # There is no catalog snapshot to authorize against, exactly as an
+            # unverified update never consults one. The branch becomes a single
+            # commit here, before any fetch, and only that commit is ever
+            # fetched, checked out or published.
+            request["target"] = self.resolve_tip(stage, request["branch"])
+        fetched = self.fetch_stage(stage, request)
         target_tree = self.tree(stage, fetched)
         self.vet_stage(stage, fetched, request, target_tree)
-        authorize(self.catalog_bytes(), request)
+        if request["verified"]:
+            authorize(self.catalog_bytes(), request)
         self.check_anchors()
         create_file(self.tx, "prepared.json", json.dumps({"replacement": identity(stage)}).encode())
         self.checkpoint("before-publication")

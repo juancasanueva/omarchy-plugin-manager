@@ -1773,6 +1773,62 @@ Panel {
               }
             }
           }
+
+          // Installing something unreviewed is a separate decision from
+          // updating to it, so it is a separate switch under its own key.
+          Item {
+            width: parent.width
+            height: Math.max(unverifiedInstallText.implicitHeight, unverifiedInstallSwitch.implicitHeight)
+
+            Column {
+              id: unverifiedInstallText
+              anchors.left: parent.left
+              anchors.right: unverifiedInstallSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Allow installing unverified plugins"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: only listings with a marketplace-verified snapshot can be installed. "
+                  + "On: unverified listings can be installed from the current tip of their validated branch, pinned to that exact commit, after a confirmation."
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: unverifiedInstallSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.allowUnverifiedInstalls
+              interactive: true
+              busy: root.busy
+              foreground: root.contentForeground
+              onToggled: store.setAllowUnverifiedInstalls(!store.allowUnverifiedInstalls)
+
+              PanelToolTip {
+                visible: unverifiedInstallSwitch.containsMouse
+                text: store.allowUnverifiedInstalls ? "Unverified listings can be installed" : "Only verified listings can be installed"
+                fontFamily: root.contentFontFamily
+              }
+            }
+          }
         }
       }
 

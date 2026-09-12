@@ -182,11 +182,18 @@ function withSelfSetting(entry, key, value) {
   return out
 }
 
-// The one setting the panel acts on. Strictly the boolean true: a string
-// "true", 1, or anything else a hand edit might produce leaves it off.
+// The settings the panel acts on, one key at a time. Strictly the boolean
+// true: a string "true", 1, or anything else a hand edit might produce leaves
+// a setting off. Installing unreviewed code and updating to it are separate
+// decisions, so neither key ever stands in for the other.
 function allowUnverifiedUpdates(settings) {
   return !!settings && hasOwnKey(settings, "allowUnverifiedUpdates")
     && settings.allowUnverifiedUpdates === true
+}
+
+function allowUnverifiedInstalls(settings) {
+  return !!settings && hasOwnKey(settings, "allowUnverifiedInstalls")
+    && settings.allowUnverifiedInstalls === true
 }
 
 // One compact JSON object per line, with path, remote, exactTag and the
@@ -1014,10 +1021,12 @@ function installUrlFor(entry) {
 }
 
 // Whether the panel can install a listing at all. It installs one exact
-// marketplace-verified commit through the pinned helper and nothing else, so a
-// listing with no unambiguous verified snapshot — unreviewed, duplicated id,
-// non-GitHub repository, no full SHA — has nothing exact to install and gets a
-// stated reason instead of a button that could only fail.
+// marketplace-verified commit through the pinned helper, so a listing with no
+// unambiguous verified snapshot — unreviewed, duplicated id, non-GitHub
+// repository, no full SHA — has nothing exact to install and gets a stated
+// reason instead of a button that could only fail. `allowUnverified` is the
+// user's own opt-in (see allowUnverifiedInstalls), which adds the second path
+// below; with it off, which is the default, this is the whole of the offer.
 //
 // The displayed url and the fetched repository must also be the same place.
 // `installCommand` is free text the registry supplies and `repo` is what the
@@ -1025,13 +1034,36 @@ function installUrlFor(entry) {
 // could show an official url in the confirmation and install somebody else's
 // repository. Comparison is canonical, so a `.git` suffix, a trailing slash,
 // an ssh form or a different case are still the same repository.
-function catalogInstallable(entry, isInstalled) {
-  if (!entry || entry.installAvailable !== true || entry.installUrl === "" || isInstalled) return false
+function catalogInstallable(entry, isInstalled, allowUnverified) {
+  return catalogVerifiedInstallable(entry, isInstalled)
+    || catalogUnverifiedInstallable(entry, isInstalled, allowUnverified)
+}
+
+// What both paths need before either can be considered: a listing the
+// registry actually offers, with a usable url, that is not already here.
+function catalogInstallOffered(entry, isInstalled) {
+  return !!entry && entry.installAvailable === true && entry.installUrl !== "" && !isInstalled
+}
+
+function catalogVerifiedInstallable(entry, isInstalled) {
+  if (!catalogInstallOffered(entry, isInstalled)) return false
   var snapshot = entry.updateSnapshot
   return !!snapshot && canonicalUpdateRepository(entry.installUrl) === snapshot.repository
 }
 
-function catalogEntries(doc, installedIds) {
+// The opt-in path (see allowUnverifiedInstalls), for a listing the
+// marketplace never reviewed. A verified snapshot always wins, so this is
+// reached only when there is nothing reviewed to install; the displayed url
+// and the fetched repository must agree here exactly as they must there,
+// since a listing that could disagree could install somebody else's code.
+function catalogUnverifiedInstallable(entry, isInstalled, allowUnverified) {
+  if (allowUnverified !== true || catalogVerifiedInstallable(entry, isInstalled)) return false
+  if (!catalogInstallOffered(entry, isInstalled)) return false
+  var tip = entry.unverifiedSnapshot
+  return !!tip && canonicalUpdateRepository(entry.installUrl) === tip.repository
+}
+
+function catalogEntries(doc, installedIds, allowUnverified) {
   if (!doc || !Array.isArray(doc.plugins)) return []
   var installed = installedIds || {}
   var out = []
@@ -1079,6 +1111,11 @@ function catalogEntries(doc, installedIds) {
       // statement about this snapshot, not about the branch it came from.
       verifiedCommit: normalizeGitObjectId(p.verificationCommit),
       updateSnapshot: ids[p.id] === 1 ? catalogUpdateSnapshot(p) : null,
+      // What the install opt-in would have to work with instead: the branch
+      // the marketplace validated, on a listing it never verified a snapshot
+      // of. Null whenever a verified snapshot exists, so the reviewed path
+      // is the only one the rest of the panel can reach for such a listing.
+      unverifiedSnapshot: ids[p.id] === 1 ? catalogUnverifiedSnapshot(p) : null,
       branch: String(p.listingValidatedBranch || ""),
       repoPreview: repoPreviewUrl(p.repo, p.listingValidatedBranch),
       installed: hasOwnKey(installed, p.id)
@@ -1093,7 +1130,10 @@ function catalogEntries(doc, installedIds) {
     // A listing with no usable url, or no verified snapshot to install exactly,
     // cannot be installed from here whatever the registry claims: the flag
     // follows the evidence rather than the other way round.
-    entry.installable = catalogInstallable(entry, entry.installed)
+    entry.installable = catalogInstallable(entry, entry.installed, allowUnverified)
+    // Set only when the opt-in path is the only one on offer, so a surface can
+    // say so rather than presenting an unreviewed tip as a reviewed snapshot.
+    entry.installUnverified = catalogUnverifiedInstallable(entry, entry.installed, allowUnverified)
     out.push(entry)
   }
 
@@ -1433,16 +1473,23 @@ function installBlockedReason(entry) {
   if (!entry) return ""
   if (entry.installAvailable !== true && entry.installNote !== "") return entry.installNote
   if (entry.installUrl === "") return "This listing has no usable clone url."
-  if (!entry.updateSnapshot) return "The marketplace has not verified a snapshot of this listing."
+  if (!entry.updateSnapshot) {
+    var unreviewed = "The marketplace has not verified a snapshot of this listing."
+    // Only where the opt-in would actually change the answer: pointing at a
+    // switch that cannot help this listing is an offer nothing can honour.
+    return catalogUnverifiedInstallable(entry, entry.installed, true)
+      ? unreviewed + " Settings can allow installing its unreviewed upstream tip." : unreviewed
+  }
   if (canonicalUpdateRepository(entry.installUrl) !== entry.updateSnapshot.repository)
     return "This listing's install command names a repository its verified snapshot does not."
   return "This plugin cannot be installed from here."
 }
 
 // Re-stamps install state onto an already-built catalog. Installing something
-// changes which cards should say "installed", and re-deriving the whole list
-// from the raw document to learn that would throw away the sort and the fetch.
-function markInstalled(entries, installedIds) {
+// changes which cards should say "installed", and switching the install opt-in
+// changes which cards are offered at all; re-deriving the whole list from the
+// raw document to learn either would throw away the sort and the fetch.
+function markInstalled(entries, installedIds, allowUnverified) {
   var installed = installedIds || {}
   var out = []
   for (var i = 0; i < (entries || []).length; i++) {
@@ -1451,7 +1498,8 @@ function markInstalled(entries, installedIds) {
     var copy = {}
     for (var key in entry) copy[key] = entry[key]
     copy.installed = isInstalled
-    copy.installable = catalogInstallable(entry, isInstalled)
+    copy.installable = catalogInstallable(entry, isInstalled, allowUnverified)
+    copy.installUnverified = catalogUnverifiedInstallable(entry, isInstalled, allowUnverified)
     out.push(copy)
   }
   return out
@@ -1462,11 +1510,11 @@ function markInstalled(entries, installedIds) {
 // Assigning a fresh array resets the grid's model, and a reset tears down and
 // rebuilds every visible card — a stall the eye notices when it lands during
 // an animation, which is exactly when every open triggers a reload.
-function restampCatalogInstallState(entries, installedIds, detailsEntry) {
-  if (!installStateDiffers(entries, installedIds)) {
+function restampCatalogInstallState(entries, installedIds, detailsEntry, allowUnverified) {
+  if (!installStateDiffers(entries, installedIds, allowUnverified)) {
     return { entries: entries, detailsEntry: detailsEntry || null, changed: false }
   }
-  var stamped = markInstalled(entries, installedIds)
+  var stamped = markInstalled(entries, installedIds, allowUnverified)
   return {
     entries: stamped,
     detailsEntry: detailsEntry ? findRow(stamped, detailsEntry.id) : null,
@@ -1474,13 +1522,15 @@ function restampCatalogInstallState(entries, installedIds, detailsEntry) {
   }
 }
 
-function installStateDiffers(entries, installedIds) {
+function installStateDiffers(entries, installedIds, allowUnverified) {
   var installed = installedIds || Object.create(null)
   for (var i = 0; i < (entries || []).length; i++) {
     var entry = entries[i]
     var isInstalled = hasOwnKey(installed, entry.id)
     if (entry.installed !== isInstalled
-        || entry.installable !== catalogInstallable(entry, isInstalled)) return true
+        || entry.installable !== catalogInstallable(entry, isInstalled, allowUnverified)
+        || entry.installUnverified !== catalogUnverifiedInstallable(entry, isInstalled, allowUnverified))
+      return true
   }
   return false
 }
@@ -1862,6 +1912,35 @@ function catalogUpdateSnapshot(entry) {
   return repo !== "" && sha !== "" ? { id: entry.id, repository: repo, verifiedCommit: sha } : null
 }
 
+// A branch name this panel is willing to hand the helper, or "". Deliberately
+// narrower than git's own rules: no option shape, no path traversal, no reflog
+// syntax and no lock file, so the name stays a ref and can never become an
+// argument. The helper validates identically before it asks the remote.
+var LISTING_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/
+
+function listingBranch(value) {
+  if (typeof value !== "string" || !LISTING_BRANCH.test(value)) return ""
+  if (value.indexOf("..") >= 0 || value.indexOf("//") >= 0 || value.indexOf("@{") >= 0) return ""
+  if (/[\/.]$/.test(value) || /\.lock$/.test(value)) return ""
+  return value
+}
+
+// What an unreviewed listing offers instead of a snapshot: the branch the
+// marketplace validated, which the helper resolves to one commit and pins.
+// The id rules are catalogUpdateSnapshot's, and only a listing the
+// marketplace itself calls unverified qualifies: one it calls verified but
+// names no usable commit for has nothing exact to install, and wearing the
+// verified badge beside an "unreviewed" label would contradict itself. A
+// listing with no branch has nothing to install rather than a guessed "main".
+function catalogUnverifiedSnapshot(entry) {
+  if (!entry || typeof entry.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.id)
+      || entry.id.indexOf("..") >= 0 || entry.id.indexOf("omarchy.") === 0
+      || entry.sourceType !== "community" || entry.verificationStatus === "verified") return null
+  var repo = canonicalUpdateRepository(entry.repo)
+  var branch = listingBranch(entry.listingValidatedBranch)
+  return repo !== "" && branch !== "" ? { id: entry.id, repository: repo, branch: branch } : null
+}
+
 function pinnedRequest(row, entries) {
   if (!row || row.firstParty || !row.gitManaged || !/^[0-9a-fA-F]{40}$/.test(String(row.headSha || ""))) return null
   var found = null, count = 0
@@ -1881,16 +1960,39 @@ function pinnedRequest(row, entries) {
 // Cached catalog data chooses the request and never authorizes publication;
 // the helper rechecks the live catalog before the fetch and again before it
 // publishes, and refuses if anything about the listing moved.
-function installRequest(entry, section) {
-  // Re-derived from the entry, never read off its `installable` flag: the
-  // grid may have refetched and withdrawn the listing while the question was
-  // on screen, exactly as canStartUpdate re-gates an update.
-  if (!catalogInstallable(entry, entry && entry.installed)) return null
-  var snapshot = entry.updateSnapshot
-  if (snapshot.id !== entry.id) return null
+function installRequest(entry, section, allowUnverified) {
   if (typeof section !== "string" || (section !== "" && BAR_SECTIONS.indexOf(section) < 0)) return null
-  return { schemaVersion: 1, id: snapshot.id, repository: snapshot.repository,
-    verifiedCommit: snapshot.verifiedCommit, section: section }
+  // Re-derived from the entry, never read off its `installable` flag, and the
+  // opt-in is re-read rather than trusted from the stamp: the grid may have
+  // refetched and the setting may have been switched off while the question
+  // was on screen, exactly as canStartUpdate re-gates an update.
+  var installed = entry && entry.installed
+  if (catalogVerifiedInstallable(entry, installed)) {
+    var snapshot = entry.updateSnapshot
+    if (snapshot.id !== entry.id) return null
+    return { schemaVersion: 1, id: snapshot.id, repository: snapshot.repository,
+      verifiedCommit: snapshot.verifiedCommit, section: section }
+  }
+  if (!catalogUnverifiedInstallable(entry, installed, allowUnverified)) return null
+  // No commit to bind: the helper resolves the branch to one commit of its
+  // own accord and installs exactly that, so nothing here names a tip.
+  var tip = entry.unverifiedSnapshot
+  if (tip.id !== entry.id) return null
+  return { schemaVersion: 1, id: tip.id, repository: tip.repository,
+    branch: tip.branch, section: section }
+}
+
+// The question before a listing nobody reviewed is installed. Plain text
+// only; the label is the sanitized listing name, the repository is the
+// canonical one the request carries, and the branch has been validated.
+function installUnverifiedConfirmMessage(label, repository, branch, needsPlacement) {
+  return "Install " + label + " from an unreviewed listing?\n\n"
+    + repository + "\n\n"
+    + "The marketplace has not verified any snapshot of this listing. The current tip of branch "
+    + branch + " is fetched, validated and installed, pinned to that exact commit — nobody has "
+    + "reviewed what it runs. Plugins run unsandboxed inside omarchy-shell. Only add repositories "
+    + "whose code you are willing to run."
+    + catalogPlacementConfirmationNote(needsPlacement)
 }
 
 // The request for an upstream commit nobody has reviewed. It binds the exact

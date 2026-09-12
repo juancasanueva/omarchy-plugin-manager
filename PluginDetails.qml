@@ -43,8 +43,11 @@ Item {
   readonly property string versionText: Model.catalogVersionLabel(entry)
   readonly property var versionReleaseCandidates: Model.catalogVersionReleaseCandidates(entry)
   readonly property string versionFallbackUrl: Model.catalogVersionFallbackUrl(entry)
+  // An unreviewed listing is offered under the install opt-in, but the row
+  // says which offer it is rather than borrowing the marketplace's word.
   readonly property string stateText: !entry ? ""
     : entry.installed ? "Installed"
+    : entry.installUnverified === true ? "Installable (unreviewed)"
     : entry.installable ? "Available to install"
     : "Not installable here"
   readonly property string blockedReason: entry && !entry.installed && !entry.installable
