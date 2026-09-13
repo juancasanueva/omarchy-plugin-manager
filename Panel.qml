@@ -1830,6 +1830,62 @@ Panel {
             }
           }
 
+          // Which window the expanded panel opens as. The window is chosen at
+          // open time, so the switch is a decision about the next one.
+          Item {
+            width: parent.width
+            height: Math.max(tiledPanelText.implicitHeight, tiledPanelSwitch.implicitHeight)
+
+            Column {
+              id: tiledPanelText
+              anchors.left: parent.left
+              anchors.right: tiledPanelSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Open expanded panel as a tiled window"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: the expanded panel is an overlay above everything, closed by Esc or a click outside. "
+                  + "On: it opens as a regular window that Hyprland tiles in the current workspace, so it can sit beside a terminal. Takes effect on the next open."
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: tiledPanelSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.tiledExpandedPanel
+              interactive: true
+              busy: root.busy
+              foreground: root.contentForeground
+              onToggled: store.setTiledExpandedPanel(!store.tiledExpandedPanel)
+
+              PanelToolTip {
+                visible: tiledPanelSwitch.containsMouse
+                text: store.tiledExpandedPanel ? "The expanded panel opens as a tiled window" : "The expanded panel opens as an overlay"
+                fontFamily: root.contentFontFamily
+              }
+            }
+          }
+
           // Restarting the shell is how every plugin, this one included, is
           // read again from disk: Quickshell keeps compiled QML in a cache
           // that a restart alone can go on serving.

@@ -33,6 +33,7 @@ const Model = new Function(
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, installRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
+    tiledExpandedPanel, selfEntryFromShellConfig,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -4781,9 +4782,10 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(window, /exclusionMode: ExclusionMode\.Ignore/)
   assert.match(window, /WlrLayershell\.layer: WlrLayer\.Overlay/)
   assert.match(window, /WlrLayershell\.keyboardFocus: WlrKeyboardFocus\.Exclusive/)
-  // Card size follows the screen, never exceeds it.
-  assert.match(expanded, /width: Math\.min\(Style\.space\(1180\), window\.width - Style\.gapsOut \* 4\)/)
-  assert.match(expanded, /height: Math\.min\(Style\.space\(820\), window\.height - Style\.gapsOut \* 4\)/)
+  // Card size follows the screen, never exceeds it (the tiled window sizes the
+  // card itself; see the tiled-window test below).
+  assert.match(expanded, /: Math\.min\(Style\.space\(1180\), window\.width - Style\.gapsOut \* 4\)/)
+  assert.match(expanded, /: Math\.min\(Style\.space\(820\), window\.height - Style\.gapsOut \* 4\)/)
 
   // Lifecycle: the shell calls open(payload)/close(); we never flip our own
   // open state behind its back, so dismissing goes through shell.hide.
@@ -5073,6 +5075,65 @@ test("the plugin's own entry is kept whole for writing and null when it could no
   assert.deepEqual(Model.withSelfSetting(null, "allowUnverifiedUpdates", true), { allowUnverifiedUpdates: true })
 })
 
+test("the expanded panel's window type is the boolean true only, read from shell.json as the loader's jq reads it", () => {
+  const id = "io.github.juancasanueva.plugin-manager"
+
+  // Same strictness as the other two settings, and no key stands in for another.
+  assert.equal(Model.tiledExpandedPanel({ tiledExpandedPanel: true }), true)
+  for (const value of ["true", 1, "yes", null, undefined, {}, []])
+    assert.equal(Model.tiledExpandedPanel({ tiledExpandedPanel: value }), false, String(value))
+  assert.equal(Model.tiledExpandedPanel({}), false)
+  assert.equal(Model.tiledExpandedPanel(null), false)
+  assert.equal(Model.tiledExpandedPanel(Object.create({ tiledExpandedPanel: true })), false, "own key only")
+  assert.equal(Model.tiledExpandedPanel({ allowUnverifiedInstalls: true }), false, "separate keys")
+  assert.equal(Model.allowUnverifiedInstalls({ tiledExpandedPanel: true }), false, "separate keys")
+
+  // The entry is looked for in bar.layout first, whichever section holds it,
+  // and in .plugins after, exactly as the loader's `first` does.
+  const entry = { id: id, tiledExpandedPanel: true }
+  const inLayout = JSON.stringify({
+    bar: { layout: { left: [{ id: "omarchy.clock" }], right: [{ id: "acme.widget" }, entry] } },
+    plugins: [{ id: id, other: 1 }]
+  })
+  assert.deepEqual(JSON.parse(Model.selfEntryFromShellConfig(inLayout, id)), entry, "the layout wins")
+  const inPlugins = JSON.stringify({ bar: { layout: { right: [{ id: "acme.widget" }] } }, plugins: [{ id: "other" }, entry] })
+  assert.deepEqual(JSON.parse(Model.selfEntryFromShellConfig(inPlugins, id)), entry)
+  // What the window actually asks: the text feeds straight into the strict view.
+  assert.equal(Model.tiledExpandedPanel(Model.parseSelfSettings(Model.selfEntryFromShellConfig(inPlugins, id))), true)
+  assert.equal(Model.tiledExpandedPanel(Model.parseSelfSettings(Model.selfEntryFromShellConfig("", id))), false)
+  // jq's tostring compares a numeric id as its text; nothing else is an id.
+  assert.deepEqual(JSON.parse(Model.selfEntryFromShellConfig(JSON.stringify({ plugins: [{ id: 42, tiledExpandedPanel: true }] }), "42")),
+    { id: 42, tiledExpandedPanel: true })
+  for (const hostileId of [true, null, ["x"], { k: 1 }])
+    assert.equal(Model.selfEntryFromShellConfig(JSON.stringify({ plugins: [{ id: hostileId }] }), String(hostileId)), "",
+      JSON.stringify(hostileId))
+
+  // Nothing to read, nothing to parse, nothing of the right shape: no entry.
+  for (const raw of ["", "   ", "nonsense", "null", '"x"', "[]", `[{"id":"${id}"}]`,
+    JSON.stringify({ plugins: [{ id: "other" }] }), JSON.stringify({ bar: { layout: { right: "not-a-list" } } }),
+    JSON.stringify({ bar: "not-an-object" }), JSON.stringify({ plugins: { right: [entry] } }),
+    JSON.stringify({ bar: { layout: { right: ["a-string", null, [entry]] } } })])
+    assert.equal(Model.selfEntryFromShellConfig(raw, id), "", JSON.stringify(raw.slice(0, 24)))
+  assert.equal(Model.selfEntryFromShellConfig(JSON.stringify({ plugins: [entry] }), ""), "", "no id, no entry")
+
+  // The loader reads at most a megabyte of shell.json; so does this.
+  const oversized = JSON.stringify({ plugins: [entry, { id: "pad", pad: "x".repeat(1048576) }] })
+  assert.ok(oversized.length > 1048576)
+  assert.equal(Model.selfEntryFromShellConfig(oversized, id), "", "bounded")
+
+  // A crafted key never reaches a prototype: a section named __proto__ is not
+  // walked, and one inside the entry is dropped by the strict view.
+  assert.equal(Model.selfEntryFromShellConfig(`{"bar":{"layout":{"__proto__":[{"id":"${id}"}]}}}`, id), "")
+  const hostile = `{"plugins":[{"id":"${id}","tiledExpandedPanel":true,"__proto__":{"polluted":true}}]}`
+  assert.deepEqual(Model.parseSelfSettings(Model.selfEntryFromShellConfig(hostile, id)), { tiledExpandedPanel: true })
+  assert.equal(({}).polluted, undefined, "no prototype was touched")
+
+  // Stored like the other two: the boolean true, or removed.
+  const on = Model.withSelfSetting({ position: "right" }, "tiledExpandedPanel", true)
+  assert.deepEqual(on, { position: "right", tiledExpandedPanel: true })
+  assert.deepEqual(Model.withSelfSetting(on, "tiledExpandedPanel", false), { position: "right" })
+})
+
 test("the expanded window's settings face owns the one switch and reads back through the store", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
@@ -5248,6 +5309,76 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   const flip = panel.slice(panel.indexOf("function switchTab(tab)"), panel.indexOf("function applyPendingTab()"))
   assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
   assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; revokeReleaseNavigation\(\); return \}/)
+})
+
+test("the expanded panel opens as a tiled window when the setting says so, and as the overlay otherwise", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+
+  // The store owns the value and writes it like the other two settings.
+  assert.match(store, /readonly property bool tiledExpandedPanel: Model\.tiledExpandedPanel\(selfSettings\)/)
+  assert.match(store, /function setTiledExpandedPanel\(value\) \{\s*return writeSelfSetting\("tiledExpandedPanel", value, tiledExpandedPanel\)\s*\}/)
+
+  // The window type cannot wait for that store: the panel is built again on
+  // every summon and its first load is a second away, so open() reads the file
+  // itself, blocking, once, and holds the answer for the life of that open.
+  assert.match(expanded, /^import Quickshell\.Io$/m)
+  assert.match(expanded, /property bool tiled: false/)
+  const view = expanded.slice(expanded.indexOf("FileView {"), expanded.indexOf("FileView {") + 400)
+  assert.match(view, /id: configView/)
+  assert.match(view, /path: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json"/)
+  assert.match(view, /blockLoading: true/)
+  assert.match(view, /printErrors: false/)
+  assert.match(expanded, /tiled = Model\.tiledExpandedPanel\(Model\.parseSelfSettings\(\s*Model\.selfEntryFromShellConfig\(configView\.text\(\), pluginId\)\)\)/)
+  const open = expanded.slice(expanded.indexOf("function open(payloadJson)"), expanded.indexOf("function loadEverything()"))
+  assert.ok(open.indexOf("tiled = Model.tiledExpandedPanel") < open.indexOf("opened = true"), "decided before the window shows")
+
+  // Two hosts: the overlay keeps its scrim, the tiled window has no outside
+  // to click, and Hyprland's own close goes back through dismiss().
+  const overlay = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("FloatingWindow {"))
+  assert.match(overlay, /id: window\s*visible: root\.opened && !root\.tiled/)
+  assert.match(overlay, /color: Color\.menu\.scrim[\s\S]*?onClicked: root\.dismiss\(\)/)
+  const tiled = expanded.slice(expanded.indexOf("FloatingWindow {"), expanded.indexOf("BorderSurface {"))
+  assert.match(tiled, /id: tiledWindow/)
+  assert.match(tiled, /visible: root\.opened && root\.tiled/)
+  assert.match(tiled, /title: "Plugin Manager"/)
+  assert.match(tiled, /color: Color\.menu\.background/)
+  assert.match(tiled, /minimumSize: Qt\.size\(640, 480\)/)
+  assert.doesNotMatch(tiled, /scrim/)
+  assert.match(tiled, /onVisibleChanged: \{\s*if \(!visible && root\.opened && root\.tiled\) root\.dismiss\(\)\s*\}/)
+
+  // One card, hosted by whichever window is up: reparented, never duplicated,
+  // so every root.* to keyCatcher, searchField and listScroll still resolves.
+  assert.equal(expanded.split("BorderSurface {").length - 1, 1, "one card, not one per window")
+  assert.match(expanded, /readonly property Item cardHost: tiled \? tiledWindow\.contentItem : window\.contentItem/)
+  const card = expanded.slice(expanded.indexOf("BorderSurface {"), expanded.indexOf("id: keyCatcher"))
+  assert.match(card, /parent: root\.cardHost/)
+  assert.match(card, /width: root\.tiled \? root\.cardHost\.width\s*: Math\.min\(Style\.space\(1180\), window\.width - Style\.gapsOut \* 4\)/)
+  assert.match(card, /height: root\.tiled \? root\.cardHost\.height\s*: Math\.min\(Style\.space\(820\), window\.height - Style\.gapsOut \* 4\)/)
+  assert.match(card, /radius: root\.tiled \? 0 : Style\.cornerRadius/)
+  assert.match(card, /borderSpec: root\.tiled \? Border\.none\(\)/)
+
+  // The row sits under the two opt-ins and above Restart Shell, in both panes,
+  // and both panes say the same thing.
+  for (const [surface, source, fg] of [["Expanded.qml", expanded, "root.foreground"], ["Panel.qml", panel, "root.contentForeground"]]) {
+    const pane = source.slice(source.indexOf("id: settingsPane"), source.indexOf("id: restartShellButton"))
+    assert.match(pane, /text: "Open expanded panel as a tiled window"/, surface)
+    assert.match(pane, /Off: the expanded panel is an overlay above everything, closed by Esc or a click outside\. /, surface)
+    assert.match(pane, /Takes effect on the next open\./, surface)
+    assert.match(pane, new RegExp(`id: tiledPanelSwitch[\\s\\S]*?checked: store\\.tiledExpandedPanel[\\s\\S]*?foreground: ${fg.replace(".", "\\.")}[\\s\\S]*?onToggled: store\\.setTiledExpandedPanel\\(!store\\.tiledExpandedPanel\\)`), surface)
+    assert.match(pane, /text: store\.tiledExpandedPanel \? "The expanded panel opens as a tiled window" : "The expanded panel opens as an overlay"/, surface)
+    assert.ok(pane.indexOf("id: unverifiedInstallSwitch") < pane.indexOf("id: tiledPanelSwitch"), surface + ": after the install opt-in")
+    // Every Text on the new row is plain text, like the rows above it.
+    const row = pane.slice(pane.indexOf('text: "Open expanded panel as a tiled window"') - 400, pane.indexOf("id: tiledPanelSwitch"))
+    for (const text of row.split(/\bText \{/).slice(1)) assert.match(text.slice(0, 200), /textFormat: Text\.PlainText/, surface)
+  }
+  const caption = /text: "Off: the expanded panel is an overlay above everything, closed by Esc or a click outside\. "\s*\+ "([^"]+)"/
+  assert.equal(panel.match(caption)[1], expanded.match(caption)[1], "same caption in both windows")
+
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
+  assert.match(readme, /\*\*Open expanded panel as a tiled window\*\*/)
+  assert.match(readme, /windowrule = float, title:\^\(Plugin Manager\)\$/)
 })
 
 // ---- Moving a bar widget between sections ---------------------------------

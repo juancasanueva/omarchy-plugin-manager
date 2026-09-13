@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
@@ -39,6 +40,31 @@ Item {
   readonly property string pluginId: manifest && manifest.id
     ? String(manifest.id) : "io.github.juancasanueva.plugin-manager"
 
+  // Which window hosts this open: the layer-shell overlay, or a plain toplevel
+  // the compositor tiles. Decided once in open() and fixed for the life of that
+  // open, so flipping the switch applies on the next open, as the caption says.
+  property bool tiled: false
+
+  // One card, two hosts. The card is declared once and reparented into
+  // whichever window is up, so every root.* reference to keyCatcher,
+  // searchField or listScroll keeps resolving across the move.
+  readonly property Item cardHost: tiled ? tiledWindow.contentItem : window.contentItem
+
+  // The window type has to be known before the first frame, and the store's
+  // first load is a second away (see initialLoad), so this one setting is read
+  // from shell.json here, blocking, rather than waited for. The store still
+  // owns the value the settings pane shows and writes. The whole file is read
+  // before Model can bound it, which is the shell's own bargain: shell.json is
+  // the shell's configuration, read whole on this same thread before any
+  // plugin loads. No watch: this panel is built afresh on every summon (it is
+  // not keepLoaded), so open() reads once and the instance never reads again.
+  FileView {
+    id: configView
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    blockLoading: true
+    printErrors: false
+  }
+
   readonly property color foreground: Color.menu.text
   readonly property color secondaryForeground: Util.alpha(foreground, 0.54)
   readonly property string fontFamily: Style.font.family
@@ -59,6 +85,9 @@ Item {
   // ---- Lifecycle (called by the shell) --------------------------------------
 
   function open(payloadJson) {
+    // Before the window shows, because it decides which window shows.
+    tiled = Model.tiledExpandedPanel(Model.parseSelfSettings(
+      Model.selfEntryFromShellConfig(configView.text(), pluginId)))
     activeTab = Model.expandedTabFromPayload(payloadJson)
     targetScreenName = Model.expandedScreenFromPayload(payloadJson)
     selectedIndex = -1
@@ -494,11 +523,15 @@ Item {
     keyCatcher.forceActiveFocus()
   }
 
-  // ---- Window ------------------------------------------------------------------
+  // ---- Windows -----------------------------------------------------------------
+  //
+  // Two hosts for one card: the overlay this panel has always been, and a
+  // plain toplevel the compositor tiles. Only one of them is ever up, and the
+  // card below is reparented into it.
 
   PanelWindow {
     id: window
-    visible: root.opened
+    visible: root.opened && !root.tiled
     screen: root.targetScreen
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
@@ -516,1179 +549,1263 @@ Item {
         onClicked: root.dismiss()
       }
     }
+  }
 
-    BorderSurface {
-      id: card
-      anchors.centerIn: parent
-      width: Math.min(Style.space(1180), window.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(820), window.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius
-      color: Color.menu.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-      padding: Style.spacing.panelPadding
+  // A tiled window has no outside, so it has no scrim and nothing to click
+  // past: the compositor decides where it sits, and the summon payload's
+  // screen is the overlay's business alone.
+  FloatingWindow {
+    id: tiledWindow
+    visible: root.opened && root.tiled
+    title: "Plugin Manager"
+    color: Color.menu.background
+    minimumSize: Qt.size(640, 480)
+    implicitWidth: Style.space(1180)
+    implicitHeight: Style.space(820)
 
-      MouseArea { anchors.fill: parent; onClicked: {} }
+    // Hyprland can close this window itself (a kill-active bind, say). The
+    // shell's open-set has to agree with what is on screen, so a close from
+    // outside goes back through dismiss(). That also breaks the binding above,
+    // which is not put back here: this plugin is not keepLoaded, so the next
+    // summon builds the window again from scratch.
+    onVisibleChanged: {
+      if (!visible && root.opened && root.tiled) root.dismiss()
+    }
+  }
 
+  BorderSurface {
+    id: card
+    parent: root.cardHost
+    anchors.centerIn: parent
+    // Tiled, the window is the card: it fills what the compositor gave it, and
+    // the border and the rounding around it are Hyprland's to draw.
+    width: root.tiled ? root.cardHost.width
+      : Math.min(Style.space(1180), window.width - Style.gapsOut * 4)
+    height: root.tiled ? root.cardHost.height
+      : Math.min(Style.space(820), window.height - Style.gapsOut * 4)
+    radius: root.tiled ? 0 : Style.cornerRadius
+    color: Color.menu.background
+    borderSpec: root.tiled ? Border.none()
+      : Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+    padding: Style.spacing.panelPadding
+
+    MouseArea { anchors.fill: parent; onClicked: {} }
+
+    Item {
+      id: keyCatcher
+      anchors.fill: parent
+      anchors.leftMargin: card.contentLeftInset
+      anchors.rightMargin: card.contentRightInset
+      anchors.topMargin: card.contentTopInset
+      anchors.bottomMargin: card.contentBottomInset
+      focus: true
+
+      Keys.onPressed: function(event) {
+        if (root.confirming || root.placing) return
+        var text = event.text
+        if (event.key === Qt.Key_Escape) {
+          root.dismiss()
+          event.accepted = true
+        }
+        else if (event.key === Qt.Key_Backspace && root.settingsOpen && !searchField.activeFocus) {
+          root.closeSettings()
+          event.accepted = true
+        }
+        else if (event.key === Qt.Key_Backspace && root.browsing && root.detailsOpen && !searchField.activeFocus) {
+          root.closeDetails()
+          event.accepted = true
+        }
+        else if (text === "1") { root.switchTab("installed"); event.accepted = true }
+        else if (text === "2") { root.switchTab("browse"); event.accepted = true }
+        else if (root.detailsOpen || root.settingsOpen) return
+        else if (event.key === Qt.Key_Down || text === "j") { root.moveSelection(0, 1); event.accepted = true }
+        else if (event.key === Qt.Key_Up || text === "k") { root.moveSelection(0, -1); event.accepted = true }
+        else if (event.key === Qt.Key_Right || text === "l") { root.moveSelection(1, 0); event.accepted = true }
+        else if (event.key === Qt.Key_Left || text === "h") { root.moveSelection(-1, 0); event.accepted = true }
+        else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+          if (root.browsing) root.openDetails(root.selectedEntry)
+          else if (root.selectedRow) root.startUpdate(root.selectedRow)
+          event.accepted = true
+        }
+        else if (event.key === Qt.Key_Delete && !root.browsing) {
+          if (root.selectedRow && root.selectedRow.removable === true && !root.busy) store.askRemove(root.selectedRow)
+          event.accepted = true
+        }
+        // The popup's filter keys, unchanged: f kind, s source (Installed) or
+        // sort (Browse), t status, c category, a availability.
+        else if ((text === "f" || text === "F")) root.browsing ? root.cycleCatalogKindFilter() : root.cycleKindFilter()
+        else if ((text === "s" || text === "S")) root.browsing ? root.cycleCatalogSort() : root.cycleGroupFilter()
+        else if ((text === "t" || text === "T") && !root.browsing) root.cycleStatusFilter()
+        else if ((text === "c" || text === "C") && root.browsing) root.cycleCategoryFilter()
+        else if ((text === "a" || text === "A") && root.browsing) root.cycleAvailabilityFilter()
+        else if (text === "/") { searchField.forceActiveFocus(); event.accepted = true }
+        else if (text === "r" || text === "R") {
+          if (root.browsing) store.loadCatalog(true)
+          else { store.reload(); store.checkUpdates() }
+          event.accepted = true
+        }
+      }
+
+      // ---- Header: what this is, the tabs, and the two icons.
       Item {
-        id: keyCatcher
-        anchors.fill: parent
-        anchors.leftMargin: card.contentLeftInset
-        anchors.rightMargin: card.contentRightInset
-        anchors.topMargin: card.contentTopInset
-        anchors.bottomMargin: card.contentBottomInset
-        focus: true
+        id: header
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: Math.max(title.implicitHeight, refreshButton.height)
 
-        Keys.onPressed: function(event) {
-          if (root.confirming || root.placing) return
-          var text = event.text
-          if (event.key === Qt.Key_Escape) {
-            root.dismiss()
-            event.accepted = true
+        Text {
+          id: titleIcon
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.left: parent.left
+          anchors.baseline: title.baseline
+          text: "󰐱"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: title.font.pixelSize
+          transformOrigin: Item.Center
+
+          // A puzzle piece should arrive like one: oversized and tilted, it
+          // travels into its slot and lands with a small "click" — a dip, a
+          // bounce and a wiggle. Anchors are untouched by scale and rotation,
+          // so the title beside it never moves.
+          //
+          // The travel is a smooth in-out rather than a back easing: a back
+          // easing does nearly all its motion in the first quarter and spends
+          // the rest on an invisible overshoot, which is how a one-second
+          // animation came to look like a 200ms flash.
+          SequentialAnimation {
+            id: titleIconIntro
+
+            PauseAnimation { duration: 120 }
+
+            ParallelAnimation {
+              NumberAnimation {
+                target: titleIcon
+                property: "scale"
+                from: 3
+                to: 1
+                duration: 700
+                easing.type: Easing.InOutCubic
+              }
+              NumberAnimation {
+                target: titleIcon
+                property: "rotation"
+                from: -150
+                to: 0
+                duration: 700
+                easing.type: Easing.InOutCubic
+              }
+              NumberAnimation {
+                target: titleIcon
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: 250
+              }
+            }
+
+            // The click: the piece compresses into the slot, springs back a
+            // touch past size, and settles; a wiggle rides along with it.
+            ParallelAnimation {
+              id: titleIconSettle
+              SequentialAnimation {
+                NumberAnimation { target: titleIcon; property: "scale"; to: 0.88; duration: 90; easing.type: Easing.OutQuad }
+                NumberAnimation { target: titleIcon; property: "scale"; to: 1.08; duration: 110; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: titleIcon; property: "scale"; to: 1; duration: 120; easing.type: Easing.OutQuad }
+              }
+              SequentialAnimation {
+                NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 110; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 110; easing.type: Easing.InOutQuad }
+                NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 100; easing.type: Easing.OutQuad }
+              }
+            }
           }
-          else if (event.key === Qt.Key_Backspace && root.settingsOpen && !searchField.activeFocus) {
-            root.closeSettings()
-            event.accepted = true
-          }
-          else if (event.key === Qt.Key_Backspace && root.browsing && root.detailsOpen && !searchField.activeFocus) {
-            root.closeDetails()
-            event.accepted = true
-          }
-          else if (text === "1") { root.switchTab("installed"); event.accepted = true }
-          else if (text === "2") { root.switchTab("browse"); event.accepted = true }
-          else if (root.detailsOpen || root.settingsOpen) return
-          else if (event.key === Qt.Key_Down || text === "j") { root.moveSelection(0, 1); event.accepted = true }
-          else if (event.key === Qt.Key_Up || text === "k") { root.moveSelection(0, -1); event.accepted = true }
-          else if (event.key === Qt.Key_Right || text === "l") { root.moveSelection(1, 0); event.accepted = true }
-          else if (event.key === Qt.Key_Left || text === "h") { root.moveSelection(-1, 0); event.accepted = true }
-          else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.browsing) root.openDetails(root.selectedEntry)
-            else if (root.selectedRow) root.startUpdate(root.selectedRow)
-            event.accepted = true
-          }
-          else if (event.key === Qt.Key_Delete && !root.browsing) {
-            if (root.selectedRow && root.selectedRow.removable === true && !root.busy) store.askRemove(root.selectedRow)
-            event.accepted = true
-          }
-          // The popup's filter keys, unchanged: f kind, s source (Installed) or
-          // sort (Browse), t status, c category, a availability.
-          else if ((text === "f" || text === "F")) root.browsing ? root.cycleCatalogKindFilter() : root.cycleKindFilter()
-          else if ((text === "s" || text === "S")) root.browsing ? root.cycleCatalogSort() : root.cycleGroupFilter()
-          else if ((text === "t" || text === "T") && !root.browsing) root.cycleStatusFilter()
-          else if ((text === "c" || text === "C") && root.browsing) root.cycleCategoryFilter()
-          else if ((text === "a" || text === "A") && root.browsing) root.cycleAvailabilityFilter()
-          else if (text === "/") { searchField.forceActiveFocus(); event.accepted = true }
-          else if (text === "r" || text === "R") {
-            if (root.browsing) store.loadCatalog(true)
-            else { store.reload(); store.checkUpdates() }
-            event.accepted = true
+
+          // The intro is clocked from the window's first rendered frame, not
+          // from `opened`: Browse's first frame is drawn noticeably later
+          // than Installed's, and an animation started at `opened` had
+          // finished before that frame ever reached the screen. The piece is
+          // hidden at open so that first frame shows an empty slot.
+          Connections {
+            id: titleIconIntroTrigger
+            target: titleIcon.Window.window
+            enabled: root.titleIconIntroArmed
+            function onFrameSwapped() {
+              root.titleIconIntroArmed = false
+              titleIconIntro.restart()
+            }
           }
         }
 
-        // ---- Header: what this is, the tabs, and the two icons.
-        Item {
-          id: header
-          anchors.left: parent.left
+        Text {
+          id: title
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.left: titleIcon.right
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Plugins"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.display
+          font.bold: true
+        }
+
+        Text {
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.left: title.right
+          anchors.leftMargin: Style.space(10)
+          anchors.baseline: title.baseline
+          text: {
+            if (root.browsing) {
+              if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
+              if (root.catalog.length === 0) return ""
+              return "showing " + root.visibleCatalog.length + " of " + root.catalog.length
+            }
+            if (root.loading && root.rows.length === 0) return "reading…"
+            if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
+            var summary = root.installedTotal + " installed  ·  " + root.rows.length + " total"
+            if (root.behindCount > 0) return summary + "  ·  " + root.behindCount + " to update"
+            return summary
+          }
+          color: root.secondaryForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          id: marketplaceLink
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.right: tabs.left
+          anchors.rightMargin: Style.space(10)
+          anchors.verticalCenter: parent.verticalCenter
+          visible: root.browsing
+          text: "󰖟  Marketplace"
+          color: marketplaceMouse.containsMouse ? Color.accent : root.secondaryForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.underline: marketplaceMouse.containsMouse
+
+          MouseArea {
+            id: marketplaceMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.navigateExternalUrl("https://omarchyplugins.com/")
+          }
+
+          PanelToolTip {
+            visible: marketplaceMouse.containsMouse
+            text: "Open the official Marketplace"
+            fontFamily: root.fontFamily
+          }
+        }
+
+        ButtonGroup {
+          id: tabs
+          anchors.right: settingsButton.left
+          anchors.rightMargin: Style.space(10)
+          anchors.verticalCenter: parent.verticalCenter
+          options: root.tabOptions
+          value: root.pendingTab !== "" ? root.pendingTab : root.activeTab
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          focusable: false
+          onChanged: function(value) { root.switchTab(value) }
+        }
+
+        // The one switch this panel has lives behind the gear; the face it
+        // opens is another turn of the same card.
+        PanelActionButton {
+          id: settingsButton
+          anchors.right: collapseButton.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: "󰒓"
+          fontSize: Style.font.display
+          tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
+          foreground: root.settingsOpen ? Color.accent : root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
+        }
+
+        // The way back. Same slot the popup's expand icon sits in, so the
+        // eye finds the pair of them in the same corner on both surfaces.
+        PanelActionButton {
+          id: collapseButton
+          anchors.right: refreshButton.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: "󰊔"
+          fontSize: Style.font.display
+          tooltipText: "Back to the popup"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.collapse()
+        }
+
+        PanelActionButton {
+          id: refreshButton
           anchors.right: parent.right
-          anchors.top: parent.top
-          height: Math.max(title.implicitHeight, refreshButton.height)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.refreshing ? "" : "󰑐"
+          fontSize: Style.font.display
+          tooltipText: root.browsing ? "Re-fetch the catalog" : "Re-read the plugin list"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          enabled: !root.loading && !root.catalogLoading && !root.busy
+          opacity: root.busy ? 0.4 : 1
+          onClicked: {
+            if (root.browsing) { store.loadCatalog(true); return }
+            store.reload()
+            store.checkUpdates()
+          }
 
           Text {
-            id: titleIcon
+            id: refreshSpinner
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            anchors.centerIn: parent
+            visible: root.refreshing
+            text: "󰑐"
+            color: refreshButton.foreground
+            font.family: refreshButton.fontFamily
+            font.pixelSize: refreshButton.fontSize
+
+            RotationAnimation on rotation {
+              running: root.refreshing
+              from: 0
+              to: 360
+              direction: RotationAnimation.Clockwise
+              duration: 900
+              loops: Animation.Infinite
+            }
+          }
+        }
+      }
+
+      PanelSeparator {
+        id: headerRule
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(10)
+        foreground: root.foreground
+      }
+
+      // ---- Search plus the tab's filters: three on Installed, four on
+      //      Browse. One row, shared by both tabs so the search box never moves.
+      Item {
+        id: controls
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: headerRule.bottom
+        anchors.topMargin: shown ? Style.space(10) : 0
+        // These filter the grid. On the details page there is no grid to
+        // filter, and the page is better off with the height.
+        readonly property bool shown: !(root.browsing && root.detailsOpen)
+        visible: shown
+        // Every control carries its caption above it; the row is as tall
+        // as a captioned dropdown and everything sits on its bottom edge.
+        height: !shown ? 0 : (root.browsing ? browseFilters.implicitHeight : installedFilters.implicitHeight)
+
+        readonly property real gap: Style.space(6)
+        readonly property real filterWidth: Style.space(150)
+
+        // The search is the first control in the row, so it wears the same
+        // caption above and the same control height as the dropdowns beside
+        // it — one row of labelled controls, not a box with some menus.
+        Item {
+          id: searchControl
+          anchors.left: parent.left
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.right: root.browsing ? browseFilters.left : installedFilters.left
+          anchors.rightMargin: controls.gap
+
+          Text {
+            id: searchLabel
             // Never rich text: AutoText would fetch what a crafted string points at.
             textFormat: Text.PlainText
             anchors.left: parent.left
-            anchors.baseline: title.baseline
-            text: "󰐱"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: title.font.pixelSize
-            transformOrigin: Item.Center
-
-            // A puzzle piece should arrive like one: oversized and tilted, it
-            // travels into its slot and lands with a small "click" — a dip, a
-            // bounce and a wiggle. Anchors are untouched by scale and rotation,
-            // so the title beside it never moves.
-            //
-            // The travel is a smooth in-out rather than a back easing: a back
-            // easing does nearly all its motion in the first quarter and spends
-            // the rest on an invisible overshoot, which is how a one-second
-            // animation came to look like a 200ms flash.
-            SequentialAnimation {
-              id: titleIconIntro
-
-              PauseAnimation { duration: 120 }
-
-              ParallelAnimation {
-                NumberAnimation {
-                  target: titleIcon
-                  property: "scale"
-                  from: 3
-                  to: 1
-                  duration: 700
-                  easing.type: Easing.InOutCubic
-                }
-                NumberAnimation {
-                  target: titleIcon
-                  property: "rotation"
-                  from: -150
-                  to: 0
-                  duration: 700
-                  easing.type: Easing.InOutCubic
-                }
-                NumberAnimation {
-                  target: titleIcon
-                  property: "opacity"
-                  from: 0
-                  to: 1
-                  duration: 250
-                }
-              }
-
-              // The click: the piece compresses into the slot, springs back a
-              // touch past size, and settles; a wiggle rides along with it.
-              ParallelAnimation {
-                id: titleIconSettle
-                SequentialAnimation {
-                  NumberAnimation { target: titleIcon; property: "scale"; to: 0.88; duration: 90; easing.type: Easing.OutQuad }
-                  NumberAnimation { target: titleIcon; property: "scale"; to: 1.08; duration: 110; easing.type: Easing.InOutQuad }
-                  NumberAnimation { target: titleIcon; property: "scale"; to: 1; duration: 120; easing.type: Easing.OutQuad }
-                }
-                SequentialAnimation {
-                  NumberAnimation { target: titleIcon; property: "rotation"; to: 8; duration: 110; easing.type: Easing.InOutQuad }
-                  NumberAnimation { target: titleIcon; property: "rotation"; to: -5; duration: 110; easing.type: Easing.InOutQuad }
-                  NumberAnimation { target: titleIcon; property: "rotation"; to: 0; duration: 100; easing.type: Easing.OutQuad }
-                }
-              }
-            }
-
-            // The intro is clocked from the window's first rendered frame, not
-            // from `opened`: Browse's first frame is drawn noticeably later
-            // than Installed's, and an animation started at `opened` had
-            // finished before that frame ever reached the screen. The piece is
-            // hidden at open so that first frame shows an empty slot.
-            Connections {
-              id: titleIconIntroTrigger
-              target: titleIcon.Window.window
-              enabled: root.titleIconIntroArmed
-              function onFrameSwapped() {
-                root.titleIconIntroArmed = false
-                titleIconIntro.restart()
-              }
-            }
-          }
-
-          Text {
-            id: title
-            // Never rich text: AutoText would fetch what a crafted string points at.
-            textFormat: Text.PlainText
-            anchors.left: titleIcon.right
-            anchors.leftMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Plugins"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.display
-            font.bold: true
-          }
-
-          Text {
-            // Never rich text: AutoText would fetch what a crafted string points at.
-            textFormat: Text.PlainText
-            anchors.left: title.right
-            anchors.leftMargin: Style.space(10)
-            anchors.baseline: title.baseline
-            text: {
-              if (root.browsing) {
-                if (root.catalogLoading && root.catalog.length === 0) return "fetching catalog…"
-                if (root.catalog.length === 0) return ""
-                return "showing " + root.visibleCatalog.length + " of " + root.catalog.length
-              }
-              if (root.loading && root.rows.length === 0) return "reading…"
-              if (root.filtered) return "showing " + root.visibleRows.length + " of " + root.rows.length
-              var summary = root.installedTotal + " installed  ·  " + root.rows.length + " total"
-              if (root.behindCount > 0) return summary + "  ·  " + root.behindCount + " to update"
-              return summary
-            }
+            anchors.top: parent.top
+            text: "Search"
             color: root.secondaryForeground
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+            font.bold: true
           }
 
-          Text {
-            id: marketplaceLink
-            // Never rich text: AutoText would fetch what a crafted string points at.
-            textFormat: Text.PlainText
-            anchors.right: tabs.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.browsing
-            text: "󰖟  Marketplace"
-            color: marketplaceMouse.containsMouse ? Color.accent : root.secondaryForeground
+          TextField {
+            id: searchField
+            anchors.left: parent.left
+            // The field gives the clear button room only while it shows,
+            // so an empty search box runs the full width like the others.
+            anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
+            anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
+            anchors.bottom: parent.bottom
+            height: Style.spacing.controlHeight
+            placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
+            foreground: root.foreground
+            placeholderTextColor: root.secondaryForeground
             font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.underline: marketplaceMouse.containsMouse
+            font.pixelSize: Style.font.body
 
-            MouseArea {
-              id: marketplaceMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.navigateExternalUrl("https://omarchyplugins.com/")
+            onTextChanged: {
+              if (text === "") root.flushSearch()
+              else searchDebounce.restart()
             }
-
-            PanelToolTip {
-              visible: marketplaceMouse.containsMouse
-              text: "Open the official Marketplace"
-              fontFamily: root.fontFamily
+            onAccepted: {
+              root.flushSearch()
+              root.returnFocusToList()
+            }
+            Keys.onPressed: function(event) {
+              if (event.key !== Qt.Key_Escape) return
+              // Escape clears before it leaves: a search box that keeps a
+              // stale term after you back out of it silently hides plugins.
+              if (searchField.text !== "") root.clearSearch()
+              else root.returnFocusToList()
+              event.accepted = true
             }
           }
 
-          ButtonGroup {
-            id: tabs
-            anchors.right: settingsButton.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            options: root.tabOptions
-            value: root.pendingTab !== "" ? root.pendingTab : root.activeTab
+          // The popup's clear (x): appears the moment there is a term to
+          // clear and takes the keyboard back to the list once it is gone.
+          PanelActionButton {
+            id: clearSearchButton
+            anchors.right: parent.right
+            anchors.verticalCenter: searchField.verticalCenter
+            visible: searchField.text !== ""
+            iconText: "󰅙"
+            tooltipText: "Clear the search"
             foreground: root.foreground
             fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            focusable: false
-            onChanged: function(value) { root.switchTab(value) }
+            onClicked: {
+              root.clearSearch()
+              root.returnFocusToList()
+            }
           }
+        }
 
-          // The one switch this panel has lives behind the gear; the face it
-          // opens is another turn of the same card.
-          PanelActionButton {
-            id: settingsButton
-            anchors.right: collapseButton.left
-            anchors.rightMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: "󰒓"
-            fontSize: Style.font.display
-            tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
-            foreground: root.settingsOpen ? Color.accent : root.foreground
-            fontFamily: root.fontFamily
-            onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
-          }
+        Row {
+          id: installedFilters
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          visible: !root.browsing
+          spacing: controls.gap
 
-          // The way back. Same slot the popup's expand icon sits in, so the
-          // eye finds the pair of them in the same corner on both surfaces.
-          PanelActionButton {
-            id: collapseButton
-            anchors.right: refreshButton.left
-            anchors.rightMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: "󰊔"
-            fontSize: Style.font.display
-            tooltipText: "Back to the popup"
+          Dropdown {
+            id: groupDropdown
+            width: controls.filterWidth
+            label: "Source"
+            options: root.groupOptions
+            value: root.groupFilter
             foreground: root.foreground
             fontFamily: root.fontFamily
-            onClicked: root.collapse()
+            onChanged: function(value) { root.setGroupFilter(value) }
           }
 
-          PanelActionButton {
-            id: refreshButton
+          Dropdown {
+            id: kindDropdown
+            width: controls.filterWidth
+            label: "Kind"
+            options: root.kindOptions
+            value: root.kindFilter
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.setKindFilter(value) }
+          }
+
+          Dropdown {
+            id: statusDropdown
+            width: controls.filterWidth
+            label: "Status"
+            options: root.statusOptions
+            value: root.statusFilter
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.setStatusFilter(value) }
+          }
+        }
+
+        Row {
+          id: browseFilters
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          visible: root.browsing
+          spacing: controls.gap
+
+          Dropdown {
+            id: categoryDropdown
+            width: controls.filterWidth
+            label: "Category"
+            options: root.categoryOptions
+            value: root.categoryFilter
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.categoryFilter = value }
+          }
+
+          Dropdown {
+            id: catalogKindDropdown
+            width: controls.filterWidth
+            label: "Kind"
+            options: root.catalogKindOptions
+            value: root.catalogKindFilter
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.catalogKindFilter = value }
+          }
+
+          Dropdown {
+            id: availabilityDropdown
+            width: controls.filterWidth
+            label: "Availability"
+            options: root.availabilityOptions
+            value: root.availabilityFilter
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.availabilityFilter = value }
+          }
+
+          Dropdown {
+            id: sortDropdown
+            width: controls.filterWidth
+            label: "Sort"
+            options: root.catalogSortOptions
+            value: root.catalogSort
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) { root.catalogSort = value }
+          }
+        }
+      }
+
+      // ---- Status: the last thing that happened, good or bad.
+      Text {
+        id: statusLine
+        // Never rich text: AutoText would fetch what a crafted string points at.
+        textFormat: Text.PlainText
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: controls.bottom
+        anchors.topMargin: text !== "" ? Style.space(8) : 0
+        height: text !== "" ? implicitHeight : 0
+        text: {
+          if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
+          if (root.browsing && root.catalogError !== "") return root.catalogError
+          if (!root.browsing && root.loadError !== "") return root.loadError
+          return root.status
+        }
+        color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
+      // ---- Key hints, pinned to the bottom: the filter keys on the left
+      //      name the filter and light up when one is narrowing; the row
+      //      actions and the way out sit on the right, as in the popup.
+      Column {
+        id: hintBar
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        spacing: Style.space(8)
+
+        PanelSeparator { foreground: root.foreground }
+
+        Item {
+          width: parent.width
+          height: Math.max(filterHints.implicitHeight, actionHints.implicitHeight)
+
+          Row {
+            id: filterHints
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(10)
+
+            Repeater {
+              model: root.browsing && root.detailsOpen ? [] : (root.browsing ? root.browseFilterHints : root.installedFilterHints)
+              delegate: hintDelegate
+            }
+          }
+
+          Row {
+            id: actionHints
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: root.refreshing ? "" : "󰑐"
-            fontSize: Style.font.display
-            tooltipText: root.browsing ? "Re-fetch the catalog" : "Re-read the plugin list"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            enabled: !root.loading && !root.catalogLoading && !root.busy
-            opacity: root.busy ? 0.4 : 1
-            onClicked: {
-              if (root.browsing) { store.loadCatalog(true); return }
-              store.reload()
-              store.checkUpdates()
-            }
+            spacing: Style.space(10)
 
-            Text {
-              id: refreshSpinner
-              // Never rich text: AutoText would fetch what a crafted string points at.
-              textFormat: Text.PlainText
-              anchors.centerIn: parent
-              visible: root.refreshing
-              text: "󰑐"
-              color: refreshButton.foreground
-              font.family: refreshButton.fontFamily
-              font.pixelSize: refreshButton.fontSize
-
-              RotationAnimation on rotation {
-                running: root.refreshing
-                from: 0
-                to: 360
-                direction: RotationAnimation.Clockwise
-                duration: 900
-                loops: Animation.Infinite
-              }
+            Repeater {
+              // The tab keys lead, with the current tab lit: the bar then
+              // also says where you are, not only where you can go.
+              model: [
+                { key: "1", text: "INSTALLED", active: !root.browsing },
+                { key: "2", text: "BROWSE", active: root.browsing }
+              ].concat(root.browsing && root.detailsOpen
+                ? [{ key: "backspace", text: "BACK", active: false }]
+                : Model.actionHints(root.browsing).concat([{ key: "esc", text: "CLOSE", active: false }]))
+              delegate: hintDelegate
             }
           }
         }
 
-        PanelSeparator {
-          id: headerRule
-          anchors.top: header.bottom
-          anchors.topMargin: Style.space(10)
-          foreground: root.foreground
-        }
+        Component {
+          id: hintDelegate
 
-        // ---- Search plus the tab's filters: three on Installed, four on
-        //      Browse. One row, shared by both tabs so the search box never moves.
-        Item {
-          id: controls
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: headerRule.bottom
-          anchors.topMargin: shown ? Style.space(10) : 0
-          // These filter the grid. On the details page there is no grid to
-          // filter, and the page is better off with the height.
-          readonly property bool shown: !(root.browsing && root.detailsOpen)
-          visible: shown
-          // Every control carries its caption above it; the row is as tall
-          // as a captioned dropdown and everything sits on its bottom edge.
-          height: !shown ? 0 : (root.browsing ? browseFilters.implicitHeight : installedFilters.implicitHeight)
-
-          readonly property real gap: Style.space(6)
-          readonly property real filterWidth: Style.space(150)
-
-          // The search is the first control in the row, so it wears the same
-          // caption above and the same control height as the dropdowns beside
-          // it — one row of labelled controls, not a box with some menus.
-          Item {
-            id: searchControl
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.right: root.browsing ? browseFilters.left : installedFilters.left
-            anchors.rightMargin: controls.gap
+          Row {
+            id: hint
+            required property var modelData
+            spacing: Style.space(4)
 
             Text {
-              id: searchLabel
               // Never rich text: AutoText would fetch what a crafted string points at.
               textFormat: Text.PlainText
-              anchors.left: parent.left
-              anchors.top: parent.top
-              text: "Search"
-              color: root.secondaryForeground
+              text: "[" + hint.modelData.key.toUpperCase() + "]"
+              color: Color.accent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
             }
 
-            TextField {
-              id: searchField
-              anchors.left: parent.left
-              // The field gives the clear button room only while it shows,
-              // so an empty search box runs the full width like the others.
-              anchors.right: clearSearchButton.visible ? clearSearchButton.left : parent.right
-              anchors.rightMargin: clearSearchButton.visible ? Style.space(4) : 0
-              anchors.bottom: parent.bottom
-              height: Style.spacing.controlHeight
-              placeholderText: root.browsing ? "󰍉  Search the catalog…" : "󰍉  Search by name…"
-              foreground: root.foreground
-              placeholderTextColor: root.secondaryForeground
+            Text {
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              text: hint.modelData.text
+              color: hint.modelData.active ? root.foreground : root.secondaryForeground
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-
-              onTextChanged: {
-                if (text === "") root.flushSearch()
-                else searchDebounce.restart()
-              }
-              onAccepted: {
-                root.flushSearch()
-                root.returnFocusToList()
-              }
-              Keys.onPressed: function(event) {
-                if (event.key !== Qt.Key_Escape) return
-                // Escape clears before it leaves: a search box that keeps a
-                // stale term after you back out of it silently hides plugins.
-                if (searchField.text !== "") root.clearSearch()
-                else root.returnFocusToList()
-                event.accepted = true
-              }
-            }
-
-            // The popup's clear (x): appears the moment there is a term to
-            // clear and takes the keyboard back to the list once it is gone.
-            PanelActionButton {
-              id: clearSearchButton
-              anchors.right: parent.right
-              anchors.verticalCenter: searchField.verticalCenter
-              visible: searchField.text !== ""
-              iconText: "󰅙"
-              tooltipText: "Clear the search"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onClicked: {
-                root.clearSearch()
-                root.returnFocusToList()
-              }
+              font.pixelSize: Style.font.caption
             }
           }
+        }
+      }
 
-          Row {
-            id: installedFilters
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            visible: !root.browsing
-            spacing: controls.gap
+      // ---- Installed: the list on the left, one plugin in full on the right.
+      Item {
+        id: installedPane
+        visible: !root.browsing && !root.settingsOpen
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: statusLine.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        // One face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: installedPane.width / 2
+          origin.y: installedPane.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
 
-            Dropdown {
-              id: groupDropdown
-              width: controls.filterWidth
-              label: "Source"
-              options: root.groupOptions
-              value: root.groupFilter
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.setGroupFilter(value) }
+        Flickable {
+          id: listScroll
+          anchors.left: parent.left
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          width: Style.space(440)
+          contentWidth: width
+          contentHeight: listColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          interactive: contentHeight > height
+
+          Column {
+            id: listColumn
+            width: listScroll.width
+            spacing: Style.space(2)
+
+            Text {
+              // Never rich text: AutoText would fetch what a crafted string points at.
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.visibleRows.length === 0 && root.rows.length > 0
+              text: Model.emptyMessage("all", "all", root.searchQuery, "all")
+              color: root.secondaryForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              topPadding: Style.space(12)
+              bottomPadding: Style.space(12)
+              horizontalAlignment: Text.AlignHCenter
             }
 
-            Dropdown {
-              id: kindDropdown
-              width: controls.filterWidth
-              label: "Kind"
-              options: root.kindOptions
-              value: root.kindFilter
+            PanelSectionHeader {
+              visible: root.installedRows.length > 0
+              text: Model.sectionHeading(root.visibleRows, "installed")
               foreground: root.foreground
+              color: root.secondaryForeground
               fontFamily: root.fontFamily
-              onChanged: function(value) { root.setKindFilter(value) }
+              bottomPadding: Style.space(4)
             }
 
-            Dropdown {
-              id: statusDropdown
-              width: controls.filterWidth
-              label: "Status"
-              options: root.statusOptions
-              value: root.statusFilter
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.setStatusFilter(value) }
-            }
-          }
+            Repeater {
+              id: installedRepeater
+              model: root.installedRows
 
-          Row {
-            id: browseFilters
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            visible: root.browsing
-            spacing: controls.gap
+              InstalledListRow {
+                required property int index
+                required property var modelData
 
-            Dropdown {
-              id: categoryDropdown
-              width: controls.filterWidth
-              label: "Category"
-              options: root.categoryOptions
-              value: root.categoryFilter
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.categoryFilter = value }
+                width: listColumn.width
+                row: modelData
+                verified: Model.isVerified(modelData, root.verifiedIds)
+                stars: Model.rowStarLabel(modelData, root.starsById)
+                selected: root.selectedIndex === index
+                showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
+                foreground: root.foreground
+                secondaryForeground: root.secondaryForeground
+                fontFamily: root.fontFamily
+
+                onClicked: root.selectedIndex = index
+              }
             }
 
-            Dropdown {
-              id: catalogKindDropdown
-              width: controls.filterWidth
-              label: "Kind"
-              options: root.catalogKindOptions
-              value: root.catalogKindFilter
+            PanelSectionHeader {
+              visible: root.builtinRows.length > 0
+              text: Model.sectionHeading(root.visibleRows, "built-in")
               foreground: root.foreground
+              color: root.secondaryForeground
               fontFamily: root.fontFamily
-              onChanged: function(value) { root.catalogKindFilter = value }
+              topPadding: Style.space(12)
+              bottomPadding: Style.space(4)
             }
 
-            Dropdown {
-              id: availabilityDropdown
-              width: controls.filterWidth
-              label: "Availability"
-              options: root.availabilityOptions
-              value: root.availabilityFilter
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.availabilityFilter = value }
-            }
+            Repeater {
+              id: builtinRepeater
+              model: root.builtinRows
 
-            Dropdown {
-              id: sortDropdown
-              width: controls.filterWidth
-              label: "Sort"
-              options: root.catalogSortOptions
-              value: root.catalogSort
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.catalogSort = value }
+              InstalledListRow {
+                required property int index
+                required property var modelData
+
+                readonly property int globalIndex: root.installedRows.length + index
+
+                width: listColumn.width
+                row: modelData
+                verified: Model.isVerified(modelData, root.verifiedIds)
+                stars: Model.rowStarLabel(modelData, root.starsById)
+                selected: root.selectedIndex === globalIndex
+                showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
+                foreground: root.foreground
+                secondaryForeground: root.secondaryForeground
+                fontFamily: root.fontFamily
+
+                onClicked: root.selectedIndex = globalIndex
+              }
             }
           }
         }
 
-        // ---- Status: the last thing that happened, good or bad.
-        Text {
-          id: statusLine
-          // Never rich text: AutoText would fetch what a crafted string points at.
-          textFormat: Text.PlainText
-          anchors.left: parent.left
+        Rectangle {
+          id: paneRule
+          anchors.left: listScroll.right
+          anchors.leftMargin: Style.space(12)
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          width: 1
+          color: root.foreground
+          opacity: 0.12
+        }
+
+        InstalledDetails {
+          id: installedDetails
+          anchors.left: paneRule.right
+          anchors.leftMargin: Style.space(16)
           anchors.right: parent.right
-          anchors.top: controls.bottom
-          anchors.topMargin: text !== "" ? Style.space(8) : 0
-          height: text !== "" ? implicitHeight : 0
-          text: {
-            if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
-            if (root.browsing && root.catalogError !== "") return root.catalogError
-            if (!root.browsing && root.loadError !== "") return root.loadError
-            return root.status
-          }
-          color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          row: root.selectedRow
+          catalogEntry: Model.findRow(root.catalog, root.selectedRow ? root.selectedRow.id : "")
+          previewsEnabled: root.previewsSupported
+          verified: Model.isVerified(root.selectedRow, root.verifiedIds)
+          actionsEnabled: !root.busy
+          updateEnabled: root.updateActionsEnabled
+          updating: root.busyKind === "update" && root.selectedRow !== null && root.busyRowId === root.selectedRow.id
+          foreground: root.foreground
+          secondaryForeground: root.secondaryForeground
+          fontFamily: root.fontFamily
+
+          onUpdateRequested: root.startUpdate(root.selectedRow)
+          onRemoveRequested: store.askRemove(root.selectedRow)
+          onEnableRequested: store.askEnable(root.selectedRow)
+          onDisableRequested: store.askDisable(root.selectedRow)
+          onMoveRequested: function(section) { store.startMoveTo(root.selectedRow, section) }
+          onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+          onPreviewUndecodable: root.previewsSupported = false
+        }
+      }
+
+      // ---- Browse: the popup's card grid, one column wider.
+      GridView {
+        id: catalogGrid
+        visible: root.browsing && !root.detailsOpen && !root.settingsOpen
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: statusLine.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        // One face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: catalogGrid.width / 2
+          origin.y: catalogGrid.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        cacheBuffer: Math.round(cellHeight * 2)
+
+        readonly property int columns: 4
+        cellWidth: Math.floor(width / columns)
+
+        // Worst-case compact-card content, expressed from the same line and
+        // spacing metrics as the delegate: three description lines, one
+        // blocked-reason line, and a two-line-or-button footer.
+        readonly property real compactDelegateMargin: Style.space(4)
+        readonly property real compactCardPadding: Style.space(8)
+        readonly property real compactContentSpacing: Style.space(6)
+        readonly property real compactContentWidth: cellWidth
+          - compactDelegateMargin * 2 - compactCardPadding * 2
+        readonly property real compactActionHeight: Math.max(
+          Style.space(22), Style.font.icon + Style.spacing.sm * 2)
+        readonly property real compactFooterHeight: Math.max(
+          Math.ceil(cardTextMetrics.lineSpacing * 2) + Style.space(3),
+          compactActionHeight)
+        cellHeight: Math.round(compactContentWidth * 9 / 16)
+          + Math.ceil(cardNameMetrics.lineSpacing)
+          + Math.ceil(cardTextMetrics.lineSpacing * 4)
+          + compactFooterHeight
+          + compactContentSpacing * 4
+          + compactCardPadding * 2
+          + compactDelegateMargin * 2
+
+        FontMetrics {
+          id: cardNameMetrics
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        FontMetrics {
+          id: cardTextMetrics
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
         }
 
-        // ---- Key hints, pinned to the bottom: the filter keys on the left
-        //      name the filter and light up when one is narrowing; the row
-        //      actions and the way out sit on the right, as in the popup.
-        Column {
-          id: hintBar
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.bottom: parent.bottom
-          spacing: Style.space(8)
+        // No model until Browse has been shown once. A GridView builds the
+        // delegates for its viewport whether or not it is visible, so the
+        // hidden grid used to build a screenful of cards — and fetch their
+        // previews — the moment the catalog landed, on every open that never
+        // left Installed. Once shown it stays warm: the cards survive a trip
+        // back to Installed, as they always did.
+        model: root.browseVisited ? root.visibleCatalog : []
 
-          PanelSeparator { foreground: root.foreground }
+        delegate: Item {
+          required property int index
+          required property var modelData
 
-          Item {
-            width: parent.width
-            height: Math.max(filterHints.implicitHeight, actionHints.implicitHeight)
+          width: catalogGrid.cellWidth
+          height: catalogGrid.cellHeight
 
-            Row {
-              id: filterHints
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(10)
+          CatalogCard {
+            anchors.fill: parent
+            anchors.margins: Style.space(4)
+            entry: modelData
+            selected: root.selectedIndex === index
+            actionsEnabled: !root.busy
+            previewsEnabled: root.previewsSupported
+            showActions: false
+            showMeta: false
+            foreground: root.foreground
+            secondaryForeground: root.secondaryForeground
+            fontFamily: root.fontFamily
 
-              Repeater {
-                model: root.browsing && root.detailsOpen ? [] : (root.browsing ? root.browseFilterHints : root.installedFilterHints)
-                delegate: hintDelegate
-              }
+            onPreviewUndecodable: root.previewsSupported = false
+            onDetailsRequested: {
+              root.selectedIndex = index
+              root.openDetails(modelData)
             }
-
-            Row {
-              id: actionHints
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(10)
-
-              Repeater {
-                // The tab keys lead, with the current tab lit: the bar then
-                // also says where you are, not only where you can go.
-                model: [
-                  { key: "1", text: "INSTALLED", active: !root.browsing },
-                  { key: "2", text: "BROWSE", active: root.browsing }
-                ].concat(root.browsing && root.detailsOpen
-                  ? [{ key: "backspace", text: "BACK", active: false }]
-                  : Model.actionHints(root.browsing).concat([{ key: "esc", text: "CLOSE", active: false }]))
-                delegate: hintDelegate
-              }
+            onInstallRequested: {
+              root.selectedIndex = index
+              root.askInstall(modelData)
             }
           }
+        }
 
-          Component {
-            id: hintDelegate
+        Column {
+          anchors.centerIn: parent
+          width: parent.width - Style.space(40)
+          visible: root.visibleCatalog.length === 0
+          spacing: Style.space(10)
 
-            Row {
-              id: hint
-              required property var modelData
+          Text {
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            width: parent.width
+            text: {
+              if (root.catalogLoading) return "Fetching the catalog from omarchyplugins.com…"
+              if (root.catalogError !== "") return root.catalogError
+              if (root.catalog.length === 0) return "No catalog yet."
+              return Model.catalogEmptyMessage(
+                root.categoryFilter, root.catalogKindFilter,
+                root.availabilityFilter, root.searchQuery)
+            }
+            color: root.secondaryForeground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.catalogFiltered && !root.catalogLoading
+            height: visible ? implicitHeight : 0
+            text: "Clear filters"
+            tooltipText: "Show the full catalog"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            bordered: true
+            onClicked: root.clearCatalogFilters()
+          }
+        }
+      }
+
+      // ---- Browse details: the grid turned over. Cover left, listing
+      //      right, and the way back at the top; the third face of the flip.
+      CatalogDetailsPane {
+        id: browseDetailsPane
+        visible: root.browsing && root.detailsOpen && !root.settingsOpen
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: statusLine.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        // One face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: browseDetailsPane.width / 2
+          origin.y: browseDetailsPane.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
+        entry: root.detailsEntry
+        previewsEnabled: root.previewsSupported
+        actionsEnabled: !root.busy
+        background: Color.menu.background
+        foreground: root.foreground
+        secondaryForeground: root.secondaryForeground
+        fontFamily: root.fontFamily
+
+        onBackRequested: root.closeDetails()
+        onInstallRequested: root.askInstall(root.detailsEntry)
+        onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+        onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+        onPreviewUndecodable: root.previewsSupported = false
+      }
+
+      // ---- Settings: the way back at the top, one switch below it; the
+      //      face the gear turns the card over to.
+      Item {
+        id: settingsPane
+        visible: root.settingsOpen
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: statusLine.bottom
+        anchors.topMargin: Style.space(10)
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        // One face of the tab-flip card; see contentFlip.
+        transform: Rotation {
+          origin.x: settingsPane.width / 2
+          origin.y: settingsPane.height / 2
+          axis { x: 0; y: 1; z: 0 }
+          angle: root.contentFlipAngle
+        }
+        scale: root.contentFlipScale
+        layer.enabled: root.contentFlipping
+
+        Button {
+          id: settingsBackButton
+          anchors.left: parent.left
+          anchors.top: parent.top
+          iconText: "󰁍"
+          text: "Back"
+          tooltipText: "Back to the list"
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.closeSettings()
+        }
+
+        Column {
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: settingsBackButton.bottom
+          anchors.topMargin: Style.space(16)
+          spacing: Style.space(14)
+
+          Text {
+            // Never rich text: AutoText would fetch what a crafted string points at.
+            textFormat: Text.PlainText
+            text: "Settings"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+          }
+
+          // Off is the marketplace's promise; on is the user's own call, and
+          // the caption says so in the same words the confirmation will.
+          Item {
+            width: parent.width
+            height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight)
+
+            Column {
+              id: unverifiedText
+              anchors.left: parent.left
+              anchors.right: unverifiedSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(4)
 
               Text {
                 // Never rich text: AutoText would fetch what a crafted string points at.
                 textFormat: Text.PlainText
-                text: "[" + hint.modelData.key.toUpperCase() + "]"
-                color: Color.accent
+                width: parent.width
+                text: "Allow updating unverified plugins"
+                color: root.foreground
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
               }
-
-              Text {
-                // Never rich text: AutoText would fetch what a crafted string points at.
-                textFormat: Text.PlainText
-                text: hint.modelData.text
-                color: hint.modelData.active ? root.foreground : root.secondaryForeground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
-          }
-        }
-
-        // ---- Installed: the list on the left, one plugin in full on the right.
-        Item {
-          id: installedPane
-          visible: !root.browsing && !root.settingsOpen
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: statusLine.bottom
-          anchors.topMargin: Style.space(10)
-          anchors.bottom: hintBar.top
-          anchors.bottomMargin: Style.space(10)
-          // One face of the tab-flip card; see contentFlip.
-          transform: Rotation {
-            origin.x: installedPane.width / 2
-            origin.y: installedPane.height / 2
-            axis { x: 0; y: 1; z: 0 }
-            angle: root.contentFlipAngle
-          }
-          scale: root.contentFlipScale
-          layer.enabled: root.contentFlipping
-
-          Flickable {
-            id: listScroll
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: Style.space(440)
-            contentWidth: width
-            contentHeight: listColumn.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            interactive: contentHeight > height
-
-            Column {
-              id: listColumn
-              width: listScroll.width
-              spacing: Style.space(2)
 
               Text {
                 // Never rich text: AutoText would fetch what a crafted string points at.
                 textFormat: Text.PlainText
                 width: parent.width
-                visible: root.visibleRows.length === 0 && root.rows.length > 0
-                text: Model.emptyMessage("all", "all", root.searchQuery, "all")
+                text: "Off: only marketplace-verified snapshots are offered. "
+                  + "On: upstream commits nobody has reviewed can be installed, pinned to the exact commit the check observed, after a confirmation."
                 color: root.secondaryForeground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                topPadding: Style.space(12)
-                bottomPadding: Style.space(12)
-                horizontalAlignment: Text.AlignHCenter
-              }
-
-              PanelSectionHeader {
-                visible: root.installedRows.length > 0
-                text: Model.sectionHeading(root.visibleRows, "installed")
-                foreground: root.foreground
-                color: root.secondaryForeground
-                fontFamily: root.fontFamily
-                bottomPadding: Style.space(4)
-              }
-
-              Repeater {
-                id: installedRepeater
-                model: root.installedRows
-
-                InstalledListRow {
-                  required property int index
-                  required property var modelData
-
-                  width: listColumn.width
-                  row: modelData
-                  verified: Model.isVerified(modelData, root.verifiedIds)
-                  stars: Model.rowStarLabel(modelData, root.starsById)
-                  selected: root.selectedIndex === index
-                  showSeparator: index < root.installedRows.length - 1 // qmllint disable unqualified
-                  foreground: root.foreground
-                  secondaryForeground: root.secondaryForeground
-                  fontFamily: root.fontFamily
-
-                  onClicked: root.selectedIndex = index
-                }
-              }
-
-              PanelSectionHeader {
-                visible: root.builtinRows.length > 0
-                text: Model.sectionHeading(root.visibleRows, "built-in")
-                foreground: root.foreground
-                color: root.secondaryForeground
-                fontFamily: root.fontFamily
-                topPadding: Style.space(12)
-                bottomPadding: Style.space(4)
-              }
-
-              Repeater {
-                id: builtinRepeater
-                model: root.builtinRows
-
-                InstalledListRow {
-                  required property int index
-                  required property var modelData
-
-                  readonly property int globalIndex: root.installedRows.length + index
-
-                  width: listColumn.width
-                  row: modelData
-                  verified: Model.isVerified(modelData, root.verifiedIds)
-                  stars: Model.rowStarLabel(modelData, root.starsById)
-                  selected: root.selectedIndex === globalIndex
-                  showSeparator: index < root.builtinRows.length - 1 // qmllint disable unqualified
-                  foreground: root.foreground
-                  secondaryForeground: root.secondaryForeground
-                  fontFamily: root.fontFamily
-
-                  onClicked: root.selectedIndex = globalIndex
-                }
+                wrapMode: Text.WordWrap
               }
             }
-          }
 
-          Rectangle {
-            id: paneRule
-            anchors.left: listScroll.right
-            anchors.leftMargin: Style.space(12)
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: 1
-            color: root.foreground
-            opacity: 0.12
-          }
-
-          InstalledDetails {
-            id: installedDetails
-            anchors.left: paneRule.right
-            anchors.leftMargin: Style.space(16)
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            row: root.selectedRow
-            catalogEntry: Model.findRow(root.catalog, root.selectedRow ? root.selectedRow.id : "")
-            previewsEnabled: root.previewsSupported
-            verified: Model.isVerified(root.selectedRow, root.verifiedIds)
-            actionsEnabled: !root.busy
-            updateEnabled: root.updateActionsEnabled
-            updating: root.busyKind === "update" && root.selectedRow !== null && root.busyRowId === root.selectedRow.id
-            foreground: root.foreground
-            secondaryForeground: root.secondaryForeground
-            fontFamily: root.fontFamily
-
-            onUpdateRequested: root.startUpdate(root.selectedRow)
-            onRemoveRequested: store.askRemove(root.selectedRow)
-            onEnableRequested: store.askEnable(root.selectedRow)
-            onDisableRequested: store.askDisable(root.selectedRow)
-            onMoveRequested: function(section) { store.startMoveTo(root.selectedRow, section) }
-            onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
-            onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
-            onPreviewUndecodable: root.previewsSupported = false
-          }
-        }
-
-        // ---- Browse: the popup's card grid, one column wider.
-        GridView {
-          id: catalogGrid
-          visible: root.browsing && !root.detailsOpen && !root.settingsOpen
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: statusLine.bottom
-          anchors.topMargin: Style.space(10)
-          anchors.bottom: hintBar.top
-          anchors.bottomMargin: Style.space(10)
-          // One face of the tab-flip card; see contentFlip.
-          transform: Rotation {
-            origin.x: catalogGrid.width / 2
-            origin.y: catalogGrid.height / 2
-            axis { x: 0; y: 1; z: 0 }
-            angle: root.contentFlipAngle
-          }
-          scale: root.contentFlipScale
-          layer.enabled: root.contentFlipping
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          cacheBuffer: Math.round(cellHeight * 2)
-
-          readonly property int columns: 4
-          cellWidth: Math.floor(width / columns)
-
-          // Worst-case compact-card content, expressed from the same line and
-          // spacing metrics as the delegate: three description lines, one
-          // blocked-reason line, and a two-line-or-button footer.
-          readonly property real compactDelegateMargin: Style.space(4)
-          readonly property real compactCardPadding: Style.space(8)
-          readonly property real compactContentSpacing: Style.space(6)
-          readonly property real compactContentWidth: cellWidth
-            - compactDelegateMargin * 2 - compactCardPadding * 2
-          readonly property real compactActionHeight: Math.max(
-            Style.space(22), Style.font.icon + Style.spacing.sm * 2)
-          readonly property real compactFooterHeight: Math.max(
-            Math.ceil(cardTextMetrics.lineSpacing * 2) + Style.space(3),
-            compactActionHeight)
-          cellHeight: Math.round(compactContentWidth * 9 / 16)
-            + Math.ceil(cardNameMetrics.lineSpacing)
-            + Math.ceil(cardTextMetrics.lineSpacing * 4)
-            + compactFooterHeight
-            + compactContentSpacing * 4
-            + compactCardPadding * 2
-            + compactDelegateMargin * 2
-
-          FontMetrics {
-            id: cardNameMetrics
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          FontMetrics {
-            id: cardTextMetrics
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          // No model until Browse has been shown once. A GridView builds the
-          // delegates for its viewport whether or not it is visible, so the
-          // hidden grid used to build a screenful of cards — and fetch their
-          // previews — the moment the catalog landed, on every open that never
-          // left Installed. Once shown it stays warm: the cards survive a trip
-          // back to Installed, as they always did.
-          model: root.browseVisited ? root.visibleCatalog : []
-
-          delegate: Item {
-            required property int index
-            required property var modelData
-
-            width: catalogGrid.cellWidth
-            height: catalogGrid.cellHeight
-
-            CatalogCard {
-              anchors.fill: parent
-              anchors.margins: Style.space(4)
-              entry: modelData
-              selected: root.selectedIndex === index
-              actionsEnabled: !root.busy
-              previewsEnabled: root.previewsSupported
-              showActions: false
-              showMeta: false
+            ToggleSwitch {
+              id: unverifiedSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.allowUnverifiedUpdates
+              interactive: true
+              busy: root.busy
               foreground: root.foreground
-              secondaryForeground: root.secondaryForeground
-              fontFamily: root.fontFamily
+              onToggled: store.setAllowUnverifiedUpdates(!store.allowUnverifiedUpdates)
 
-              onPreviewUndecodable: root.previewsSupported = false
-              onDetailsRequested: {
-                root.selectedIndex = index
-                root.openDetails(modelData)
-              }
-              onInstallRequested: {
-                root.selectedIndex = index
-                root.askInstall(modelData)
+              PanelToolTip {
+                visible: unverifiedSwitch.containsMouse
+                text: store.allowUnverifiedUpdates ? "Unreviewed commits can be installed" : "Only verified snapshots are offered"
+                fontFamily: root.fontFamily
               }
             }
           }
 
-          Column {
-            anchors.centerIn: parent
-            width: parent.width - Style.space(40)
-            visible: root.visibleCatalog.length === 0
-            spacing: Style.space(10)
+          // Installing something unreviewed is a separate decision from
+          // updating to it, so it is a separate switch under its own key.
+          Item {
+            width: parent.width
+            height: Math.max(unverifiedInstallText.implicitHeight, unverifiedInstallSwitch.implicitHeight)
 
-            Text {
-              // Never rich text: AutoText would fetch what a crafted string points at.
-              textFormat: Text.PlainText
-              width: parent.width
-              text: {
-                if (root.catalogLoading) return "Fetching the catalog from omarchyplugins.com…"
-                if (root.catalogError !== "") return root.catalogError
-                if (root.catalog.length === 0) return "No catalog yet."
-                return Model.catalogEmptyMessage(
-                  root.categoryFilter, root.catalogKindFilter,
-                  root.availabilityFilter, root.searchQuery)
+            Column {
+              id: unverifiedInstallText
+              anchors.left: parent.left
+              anchors.right: unverifiedInstallSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Allow installing unverified plugins"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
               }
-              color: root.secondaryForeground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-              horizontalAlignment: Text.AlignHCenter
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: only listings with a marketplace-verified snapshot can be installed. "
+                  + "On: unverified listings can be installed from the current tip of their validated branch, pinned to that exact commit, after a confirmation."
+                color: root.secondaryForeground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
             }
 
-            Button {
-              anchors.horizontalCenter: parent.horizontalCenter
-              visible: root.catalogFiltered && !root.catalogLoading
-              height: visible ? implicitHeight : 0
-              text: "Clear filters"
-              tooltipText: "Show the full catalog"
+            ToggleSwitch {
+              id: unverifiedInstallSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.allowUnverifiedInstalls
+              interactive: true
+              busy: root.busy
               foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              bordered: true
-              onClicked: root.clearCatalogFilters()
+              onToggled: store.setAllowUnverifiedInstalls(!store.allowUnverifiedInstalls)
+
+              PanelToolTip {
+                visible: unverifiedInstallSwitch.containsMouse
+                text: store.allowUnverifiedInstalls ? "Unverified listings can be installed" : "Only verified listings can be installed"
+                fontFamily: root.fontFamily
+              }
             }
           }
-        }
 
-        // ---- Browse details: the grid turned over. Cover left, listing
-        //      right, and the way back at the top; the third face of the flip.
-        CatalogDetailsPane {
-          id: browseDetailsPane
-          visible: root.browsing && root.detailsOpen && !root.settingsOpen
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: statusLine.bottom
-          anchors.topMargin: Style.space(10)
-          anchors.bottom: hintBar.top
-          anchors.bottomMargin: Style.space(10)
-          // One face of the tab-flip card; see contentFlip.
-          transform: Rotation {
-            origin.x: browseDetailsPane.width / 2
-            origin.y: browseDetailsPane.height / 2
-            axis { x: 0; y: 1; z: 0 }
-            angle: root.contentFlipAngle
+          // Which window this panel opens as. The window is chosen at open
+          // time, so the switch is a decision about the next one.
+          Item {
+            width: parent.width
+            height: Math.max(tiledPanelText.implicitHeight, tiledPanelSwitch.implicitHeight)
+
+            Column {
+              id: tiledPanelText
+              anchors.left: parent.left
+              anchors.right: tiledPanelSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Open expanded panel as a tiled window"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: the expanded panel is an overlay above everything, closed by Esc or a click outside. "
+                  + "On: it opens as a regular window that Hyprland tiles in the current workspace, so it can sit beside a terminal. Takes effect on the next open."
+                color: root.secondaryForeground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: tiledPanelSwitch
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.tiledExpandedPanel
+              interactive: true
+              busy: root.busy
+              foreground: root.foreground
+              onToggled: store.setTiledExpandedPanel(!store.tiledExpandedPanel)
+
+              PanelToolTip {
+                visible: tiledPanelSwitch.containsMouse
+                text: store.tiledExpandedPanel ? "The expanded panel opens as a tiled window" : "The expanded panel opens as an overlay"
+                fontFamily: root.fontFamily
+              }
+            }
           }
-          scale: root.contentFlipScale
-          layer.enabled: root.contentFlipping
-          entry: root.detailsEntry
-          previewsEnabled: root.previewsSupported
-          actionsEnabled: !root.busy
-          background: Color.menu.background
-          foreground: root.foreground
-          secondaryForeground: root.secondaryForeground
-          fontFamily: root.fontFamily
 
-          onBackRequested: root.closeDetails()
-          onInstallRequested: root.askInstall(root.detailsEntry)
-          onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
-          onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
-          onPreviewUndecodable: root.previewsSupported = false
-        }
-
-        // ---- Settings: the way back at the top, one switch below it; the
-        //      face the gear turns the card over to.
-        Item {
-          id: settingsPane
-          visible: root.settingsOpen
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: statusLine.bottom
-          anchors.topMargin: Style.space(10)
-          anchors.bottom: hintBar.top
-          anchors.bottomMargin: Style.space(10)
-          // One face of the tab-flip card; see contentFlip.
-          transform: Rotation {
-            origin.x: settingsPane.width / 2
-            origin.y: settingsPane.height / 2
-            axis { x: 0; y: 1; z: 0 }
-            angle: root.contentFlipAngle
-          }
-          scale: root.contentFlipScale
-          layer.enabled: root.contentFlipping
-
+          // Restarting the shell is how every plugin, this one included, is
+          // read again from disk: Quickshell keeps compiled QML in a cache
+          // that a restart alone can go on serving.
           Button {
-            id: settingsBackButton
-            anchors.left: parent.left
-            anchors.top: parent.top
-            iconText: "󰁍"
-            text: "Back"
-            tooltipText: "Back to the list"
+            id: restartShellButton
+            iconText: "󰜉"
+            text: "Restart Shell"
+            tooltipText: "Clear the QML cache and restart the shell so every plugin reloads"
             bordered: true
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
             foreground: root.foreground
             fontFamily: root.fontFamily
             fontSize: Style.font.caption
-            onClicked: root.closeSettings()
-          }
-
-          Column {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: settingsBackButton.bottom
-            anchors.topMargin: Style.space(16)
-            spacing: Style.space(14)
-
-            Text {
-              // Never rich text: AutoText would fetch what a crafted string points at.
-              textFormat: Text.PlainText
-              text: "Settings"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            // Off is the marketplace's promise; on is the user's own call, and
-            // the caption says so in the same words the confirmation will.
-            Item {
-              width: parent.width
-              height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight)
-
-              Column {
-                id: unverifiedText
-                anchors.left: parent.left
-                anchors.right: unverifiedSwitch.left
-                anchors.rightMargin: Style.space(16)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(4)
-
-                Text {
-                  // Never rich text: AutoText would fetch what a crafted string points at.
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: "Allow updating unverified plugins"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  wrapMode: Text.WordWrap
-                }
-
-                Text {
-                  // Never rich text: AutoText would fetch what a crafted string points at.
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: "Off: only marketplace-verified snapshots are offered. "
-                    + "On: upstream commits nobody has reviewed can be installed, pinned to the exact commit the check observed, after a confirmation."
-                  color: root.secondaryForeground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-              }
-
-              ToggleSwitch {
-                id: unverifiedSwitch
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                checked: store.allowUnverifiedUpdates
-                interactive: true
-                busy: root.busy
-                foreground: root.foreground
-                onToggled: store.setAllowUnverifiedUpdates(!store.allowUnverifiedUpdates)
-
-                PanelToolTip {
-                  visible: unverifiedSwitch.containsMouse
-                  text: store.allowUnverifiedUpdates ? "Unreviewed commits can be installed" : "Only verified snapshots are offered"
-                  fontFamily: root.fontFamily
-                }
-              }
-            }
-
-            // Installing something unreviewed is a separate decision from
-            // updating to it, so it is a separate switch under its own key.
-            Item {
-              width: parent.width
-              height: Math.max(unverifiedInstallText.implicitHeight, unverifiedInstallSwitch.implicitHeight)
-
-              Column {
-                id: unverifiedInstallText
-                anchors.left: parent.left
-                anchors.right: unverifiedInstallSwitch.left
-                anchors.rightMargin: Style.space(16)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(4)
-
-                Text {
-                  // Never rich text: AutoText would fetch what a crafted string points at.
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: "Allow installing unverified plugins"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  wrapMode: Text.WordWrap
-                }
-
-                Text {
-                  // Never rich text: AutoText would fetch what a crafted string points at.
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: "Off: only listings with a marketplace-verified snapshot can be installed. "
-                    + "On: unverified listings can be installed from the current tip of their validated branch, pinned to that exact commit, after a confirmation."
-                  color: root.secondaryForeground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-              }
-
-              ToggleSwitch {
-                id: unverifiedInstallSwitch
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                checked: store.allowUnverifiedInstalls
-                interactive: true
-                busy: root.busy
-                foreground: root.foreground
-                onToggled: store.setAllowUnverifiedInstalls(!store.allowUnverifiedInstalls)
-
-                PanelToolTip {
-                  visible: unverifiedInstallSwitch.containsMouse
-                  text: store.allowUnverifiedInstalls ? "Unverified listings can be installed" : "Only verified listings can be installed"
-                  fontFamily: root.fontFamily
-                }
-              }
-            }
-
-            // Restarting the shell is how every plugin, this one included, is
-            // read again from disk: Quickshell keeps compiled QML in a cache
-            // that a restart alone can go on serving.
-            Button {
-              id: restartShellButton
-              iconText: "󰜉"
-              text: "Restart Shell"
-              tooltipText: "Clear the QML cache and restart the shell so every plugin reloads"
-              bordered: true
-              enabled: !root.busy
-              opacity: enabled ? 1 : 0.4
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              onClicked: store.restartShell()
-            }
+            onClicked: store.restartShell()
           }
         }
+      }
 
-        ActionConfirmDialog {
-          id: confirm
-          anchors.fill: parent
-          z: 10
-          opened: root.confirming
-          message: root.confirmMessage
-          actionText: "View changes"
-          actionVisible: store.confirmCompareUrl !== ""
-          onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
-          confirmText: Model.actionVerb(root.pendingKind) === "Action"
-            ? "Confirm"
-            : Model.actionVerb(root.pendingKind)
-          background: Color.menu.background
-          foreground: root.foreground
-          fontFamily: root.fontFamily
+      ActionConfirmDialog {
+        id: confirm
+        anchors.fill: parent
+        z: 10
+        opened: root.confirming
+        message: root.confirmMessage
+        actionText: "View changes"
+        actionVisible: store.confirmCompareUrl !== ""
+        onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
+        confirmText: Model.actionVerb(root.pendingKind) === "Action"
+          ? "Confirm"
+          : Model.actionVerb(root.pendingKind)
+        background: Color.menu.background
+        foreground: root.foreground
+        fontFamily: root.fontFamily
 
-          onOpenedChanged: {
-            if (opened) forceActiveFocus()
-            else root.returnFocusToList()
-          }
-
-          Keys.onPressed: function(event) {
-            if (confirm.handleKey(event)) event.accepted = true
-          }
-
-          onCanceled: store.cancelPending()
-          onConfirmed: store.confirmPending()
+        onOpenedChanged: {
+          if (opened) forceActiveFocus()
+          else root.returnFocusToList()
         }
 
-        ChoiceDialog {
-          id: placement
-          anchors.fill: parent
-          z: 10
-          opened: root.placing
-          message: root.placementMessage
-          choices: root.placementChoices
-          background: Color.menu.background
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-
-          onOpenedChanged: {
-            if (opened) forceActiveFocus()
-            else root.returnFocusToList()
-          }
-
-          Keys.onPressed: function(event) {
-            if (placement.handleKey(event)) event.accepted = true
-          }
-
-          onCanceled: store.cancelPending()
-          onChosen: function(value) { store.confirmPlacement(value) }
+        Keys.onPressed: function(event) {
+          if (confirm.handleKey(event)) event.accepted = true
         }
+
+        onCanceled: store.cancelPending()
+        onConfirmed: store.confirmPending()
+      }
+
+      ChoiceDialog {
+        id: placement
+        anchors.fill: parent
+        z: 10
+        opened: root.placing
+        message: root.placementMessage
+        choices: root.placementChoices
+        background: Color.menu.background
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+
+        onOpenedChanged: {
+          if (opened) forceActiveFocus()
+          else root.returnFocusToList()
+        }
+
+        Keys.onPressed: function(event) {
+          if (placement.handleKey(event)) event.accepted = true
+        }
+
+        onCanceled: store.cancelPending()
+        onChosen: function(value) { store.confirmPlacement(value) }
       }
     }
   }

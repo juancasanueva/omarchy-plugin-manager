@@ -134,6 +134,11 @@ Item {
   readonly property bool allowUnverifiedInstalls: Model.allowUnverifiedInstalls(selfSettings)
   onAllowUnverifiedInstallsChanged: restampCatalog()
 
+  // Which window the expanded panel opens as. Held here so both settings panes
+  // can show and flip it; the expanded window does not read it from here,
+  // because it has to know before this store's first load has run.
+  readonly property bool tiledExpandedPanel: Model.tiledExpandedPanel(selfSettings)
+
   // Persist one setting through the host, merged over the entry as it was
   // loaded. The local copies move only when the host accepted the write; the
   // watcher reload then confirms it on every surface. `current` is the value
@@ -165,6 +170,10 @@ Item {
 
   function setAllowUnverifiedInstalls(value) {
     return writeSelfSetting("allowUnverifiedInstalls", value, allowUnverifiedInstalls)
+  }
+
+  function setTiledExpandedPanel(value) {
+    return writeSelfSetting("tiledExpandedPanel", value, tiledExpandedPanel)
   }
 
   property string pendingKind: ""

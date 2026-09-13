@@ -196,6 +196,73 @@ function allowUnverifiedInstalls(settings) {
     && settings.allowUnverifiedInstalls === true
 }
 
+// Which window the expanded panel opens as: the layer-shell overlay, or a
+// plain toplevel the compositor tiles. Read as strictly as the other two, so
+// a hand edit that is not the boolean true leaves the overlay in place.
+function tiledExpandedPanel(settings) {
+  return !!settings && hasOwnKey(settings, "tiledExpandedPanel")
+    && settings.tiledExpandedPanel === true
+}
+
+// This plugin's own entry, found in shell.json itself rather than in what the
+// loader printed. The expanded window has to know which kind of window to open
+// before the store's first load has run, so it reads the file and asks here.
+// The search mirrors the loader's jq: the first object whose id matches, in
+// bar.layout's sections first and in .plugins after. The text is a whole
+// config file written by hand, so it is treated as hostile throughout — the
+// same megabyte the loader reads, a guarded parse, plain objects only, and no
+// key named __proto__ is ever walked. The entry comes back as text, so it
+// feeds straight into parseSelfSettings and is bounded there too. The cap
+// counts characters where the loader counts bytes, so a file past a megabyte
+// of multibyte text can pass here after the loader's jq gave up on it: the
+// window would then open tiled while the switch shows off, until the file is
+// back under the cap. A hand-written config that size is not a case to serve.
+var MAX_SHELL_CONFIG_BYTES = 1048576
+
+function selfEntryFromShellConfig(rawJson, pluginId) {
+  var text = String(rawJson || "")
+  var wanted = String(pluginId || "")
+  if (text === "" || wanted === "" || text.length > MAX_SHELL_CONFIG_BYTES) return ""
+  var config
+  try {
+    config = JSON.parse(text)
+  } catch (error) {
+    return ""
+  }
+  if (!config || Array.isArray(config) || typeof config !== "object") return ""
+
+  var lists = []
+  var bar = hasOwnKey(config, "bar") ? config.bar : null
+  var layout = bar && typeof bar === "object" && !Array.isArray(bar) && hasOwnKey(bar, "layout")
+    ? bar.layout : null
+  if (layout && typeof layout === "object" && !Array.isArray(layout)) {
+    for (var section in layout) {
+      if (!hasOwnKey(layout, section) || section === "__proto__") continue
+      if (Array.isArray(layout[section])) lists.push(layout[section])
+    }
+  }
+  if (hasOwnKey(config, "plugins") && Array.isArray(config.plugins)) lists.push(config.plugins)
+
+  for (var i = 0; i < lists.length; i++) {
+    for (var j = 0; j < lists[i].length; j++) {
+      var entry = lists[i][j]
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+      if (!hasOwnKey(entry, "id")) continue
+      // jq compares `.id | tostring`, which for anything but a string or a
+      // number would be comparing this id against a rendering of a value.
+      var type = typeof entry.id
+      if (type !== "string" && !(type === "number" && isFinite(entry.id))) continue
+      if (String(entry.id) !== wanted) continue
+      try {
+        return JSON.stringify(entry)
+      } catch (error) {
+        return ""
+      }
+    }
+  }
+  return ""
+}
+
 // One compact JSON object per line, with path, remote, exactTag and the
 // checkout HEAD that proved that tag. The HEAD also binds later update reports
 // to the exact checkout generation they inspected.

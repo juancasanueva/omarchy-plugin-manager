@@ -35,7 +35,9 @@ The popup is built for a glance. When you want room, the icon left of the
 refresh button (`󰊓`) hands the same manager to a full-size panel, and the `󰊔`
 icon in the same corner brings the popup back. The header, the tabs, the
 summary counts, the opening animation and the card flip between tabs are the
-ones the popup has; what changes is how much each tab can show.
+ones the popup has; what changes is how much each tab can show. It opens as an
+overlay above everything; **Open expanded panel as a tiled window**, in the
+settings pane, makes it open as a window Hyprland tiles instead.
 
 **Installed** becomes a list beside a details pane. The rows are summaries:
 a mark leads the name — a green check when the checkout is up to date, a
@@ -224,7 +226,24 @@ the setting off, a checkout whose only difference is an unreviewed upstream
 commit carries neither the arrow nor the green check: the panel does not claim
 it is current, it says **No verified update available**.
 
-**Restart Shell**, the button under both switches, clears Quickshell's
+**Open expanded panel as a tiled window**, the third switch in the same pane,
+is also **off by default**. Off, the expanded panel is an overlay: it floats
+above everything, takes the keyboard while it is up, and closes on Esc or a
+click outside. On, it opens as an ordinary window, which Hyprland tiles into
+the current workspace like any app, so the manager can sit beside the terminal
+you are editing a plugin in. There is no scrim and no outside to click; Esc
+still closes it, and so does the compositor's own close. The window type is
+decided when the panel opens, from this plugin's entry read straight out of
+`shell.json` ahead of everything else it loads, so the switch applies the next
+time you open the panel rather than to the window you flipped it in. It is
+stored as `tiledExpandedPanel: true` in the same entry, written the same way.
+
+One Hyprland note: the window carries the shell's own app id rather than one of
+its own, so a per-window rule has to match its title:
+`windowrule = float, title:^(Plugin Manager)$` is what would undo the tiling
+for it.
+
+**Restart Shell**, the button under the three switches, clears Quickshell's
 compiled-QML cache and runs `omarchy restart shell`, so every plugin, this one
 included, is loaded again from what is on disk. Reach for it when a plugin
 edited in place keeps showing its old self after a rescan. What is removed is
@@ -689,7 +708,7 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `manifest.json` | Plugin contract — id, kinds, entry points |
 | `BarWidget.qml` | The bar slot and the open/close contract the bar routes through |
 | `Panel.qml` | The popup: both tabs, search, filters, and the dialogs |
-| `Expanded.qml` | The full-size panel: Installed as list plus details, Browse as a wider card grid with a full-page details face |
+| `Expanded.qml` | The full-size panel: one card hosted by either the overlay or a tiled window, Installed as list plus details, Browse as a wider card grid with a full-page details face |
 | `InstalledListRow.qml` | One summary row in the expanded list: state mark, name, verified pill, star count, one line of description |
 | `InstalledDetails.qml` | One installed plugin in full: switch and action buttons, screenshot, description, facts, and links |
 | `CatalogDetailsPane.qml` | The expanded panel's Browse details page: preview, facts, warning, repository, Release, and Install |
