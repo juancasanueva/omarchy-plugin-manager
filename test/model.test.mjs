@@ -3104,8 +3104,8 @@ test("repository and Release actions route browser ownership through Panel", () 
   assert.match(panel,
     /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{\s+root\.requestGithubNavigation\(candidates, fallbackUrl\)\s+\}/)
   assert.match(panel, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
-  assert.match(panel, /onCloseRequested: \{ root\.revokeReleaseNavigation\(\); root\.close\(\) \}/)
-  assert.match(panel, /onTabRequested: function\(direction\) \{ root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
+  assert.match(panel, /onCloseRequested: \{ root\.closeArrange\(\); root\.revokeReleaseNavigation\(\); root\.close\(\) \}/)
+  assert.match(panel, /onTabRequested: function\(direction\) \{ root\.closeArrange\(\); root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
 
   for (const name of [
     "switchTab", "reload", "loadCatalog", "askInstall",
@@ -3488,7 +3488,7 @@ test("one hint bar on both tabs: filter hints left, action hints right, keys cyc
   assert.match(panel, /readonly property var installedFilterHints: Model\.installedFilterHints\(/)
   for (const name of ["cycleCategoryFilter", "cycleCatalogKindFilter", "cycleAvailabilityFilter", "cycleCatalogSort",
                       "cycleGroupFilter", "cycleKindFilter", "cycleStatusFilter"])
-    assert.match(panel, new RegExp(`function ${name}\\(\\) \\{\\s+set\\w+\\(Model\\.nextOption\\(`), name)
+    assert.match(panel, new RegExp(`function ${name}\\(\\) \\{\\s+(?:closeArrange\\(\\)\\s+)?set\\w+\\(Model\\.nextOption\\(`), name)
 
   const keys = panel.slice(panel.indexOf("onTextKey:"), panel.indexOf("// ---- Fixed chrome"))
   assert.match(keys, /t === "f" \|\| t === "F"\) root\.browsing \? root\.cycleCatalogKindFilter\(\) : root\.cycleKindFilter\(\)/)
@@ -3732,7 +3732,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   assert.match(store, /signal rowsLoaded\(\)/)
   assert.match(store, /signal actionFinished\(string kind, string label, int exitCode\)/)
   assert.match(panel, /function onReloadStarted\(\) \{ root\.revokeReleaseNavigation\(\) \}/)
-  assert.match(panel, /function onRowsLoaded\(\) \{ root\.clampSelection\(\) \}/)
+  assert.match(panel, /function onRowsLoaded\(\) \{\s*root\.clampSelection\(\)/)
   // The store never touches the browser or the dialogs.
   assert.doesNotMatch(store, /omarchy-launch-browser|detailsEntry|releaseNavigation/)
   assert.doesNotMatch(panel, /Quickshell\.execDetached\(\["bash"/)
@@ -4773,7 +4773,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(panel, /function askRemove\(row\) \{\s*if \(!store\.askRemove\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
   assert.match(panel, /function askEnable\(row\) \{\s*if \(!store\.askEnable\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
   assert.match(panel, /function askDisable\(row\) \{\s*if \(!store\.askDisable\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
-  assert.match(panel, /function confirmPlacement\(section\) \{\s*store\.confirmPlacement\(section\)\s*\}/)
+  assert.match(panel, /function confirmPlacement\(section\) \{\s*if \(pendingKind !== "move" \|\| pendingPlacementNeeded\) \{\s*store\.confirmPlacement\(section\)/)
   assert.match(panel, /function cancelPending\(\) \{\s*store\.cancelPending\(\)\s*\}/)
   assert.match(panel, /function confirmPending\(\) \{\s*store\.confirmPending\(\)\s*\}/)
   assert.doesNotMatch(panel, /property string pendingKind: ""/)
@@ -5341,7 +5341,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(restore, /=== "list"\s*&& !root\.settingsOpen/)
   const flip = panel.slice(panel.indexOf("function switchTab(tab)"), panel.indexOf("function applyPendingTab()"))
   assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
-  assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard\.cancelDrag\(\); revokeReleaseNavigation\(\); return \}/)
+  assert.match(panel, /if \(!opened\) \{ placementRefreshStarted = false; detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard\.cancelDrag\(\); revokeReleaseNavigation\(\); return \}/)
 })
 
 test("the expanded panel opens as a tiled window when the setting says so, and as the overlay otherwise", () => {
@@ -5579,8 +5579,8 @@ test("the details pane moves with a segmented control and the popup row with one
 
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
   assert.match(readme, /- \*\*Move\*\* — for a bar widget that is on the bar, changes which section it/)
-  assert.match(readme, /`omarchy plugin enable <id> <section>`, which the shell treats as a move for/)
-  assert.match(readme, /nothing edits `shell\.json` directly/)
+  assert.match(readme, /Expanded still uses `omarchy plugin enable <id> <section>`/)
+  assert.match(readme, /Nothing edits `shell\.json` directly/)
 })
 
 test("the popup row hides its update button unless an update is installable or running", () => {

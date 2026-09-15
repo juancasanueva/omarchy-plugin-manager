@@ -78,7 +78,10 @@ Panel {
     // Any load — including one the store starts on its own after an update —
     // retires a release probe, exactly as an explicit refresh does.
     function onReloadStarted() { root.revokeReleaseNavigation() }
-    function onRowsLoaded() { root.clampSelection() }
+    function onRowsLoaded() {
+      root.clampSelection()
+      if (root.placementRefreshStarted) root.placementRowsReady = true
+    }
   }
 
   property alias rows: store.rows
@@ -226,8 +229,59 @@ Panel {
   readonly property bool arrangeBusy: !popupMoveOwner || popupMoveOwner.busy || barMovePending
     || busy || store.actionRunning || contentFlipping || !opened || !arrangeOpen
 
+  property bool placementRefreshStarted: false
+  property bool placementRowsReady: false
+  property string placementNotice: ""
+
+  // Called only by the retained, bounded continuation. Inventory arrives on
+  // this live panel; the bridge never holds a callback into the destroyed one.
+  function openPlacementView(origin, finalAttempt) {
+    if (!bar || !anchorItem || confirming || placing) return false
+    if (!opened) open()
+    if (!opened) return false
+    if (!placementRefreshStarted) {
+      placementRowsReady = false
+      // An older read may still be exiting. Only our accepted refresh can
+      // authorize restoring a selection; the final attempt falls back safely.
+      if (!store.reload() && !finalAttempt) return false
+      placementRefreshStarted = true
+    }
+    if (!placementRowsReady && !finalAttempt && (loading || loadError === "")) return false
+    contentFlip.stop()
+    pendingTab = ""
+    contentFlipAngle = 0
+    activeTab = origin.tab
+    detailsEntry = null
+    settingsOpen = false
+    arrangeOpen = false
+    groupFilter = origin.group
+    var kindAvailable = kindOptions.some(function(option) { return option.value === origin.kind })
+    kindFilter = kindAvailable ? origin.kind : "all"
+    statusFilter = origin.status
+    searchField.text = origin.query
+    flushSearch()
+    selectedIndex = -1
+    if (placementRowsReady) {
+      for (var i = 0; i < visibleRows.length; i++) {
+        if (visibleRows[i].id === origin.selectedId) { selectedIndex = i; break }
+      }
+    }
+    listColumn.forceLayout()
+    listScroll.contentY = Math.min(origin.scroll, Math.max(0, listScroll.contentHeight - listScroll.height))
+    var note = !placementRowsReady ? " Inventory could not refresh; refresh the list before choosing another plugin."
+      : selectedIndex < 0 && origin.selectedId !== "" ? " The selected plugin is no longer in the visible list." : ""
+    if (!kindAvailable) note += " The previous kind filter is no longer available."
+    placementNotice = note
+    setStatus((popupMoveOwner ? popupMoveOwner.status : "Move outcome unavailable.") + note,
+      !placementRowsReady || !popupMoveOwner || popupMoveOwner.statusIsError)
+    placementRefreshStarted = false
+    returnFocusToList()
+    return true
+  }
+
   function openArrange() {
     if (!bar || !anchorItem || confirming || placing) return false
+    placementRefreshStarted = false
     if (!opened) open()
     if (!opened) return false
     revokeReleaseNavigation()
@@ -246,6 +300,7 @@ Panel {
 
   // Explicit choices revoke reopening; automatic close/destruction must not.
   function closeArrange() {
+    placementRefreshStarted = false
     arrangeOpen = false
     barBoard.cancelDrag()
     if (hostWidget) hostWidget.cancelPopupArrange()
@@ -474,6 +529,7 @@ Panel {
   }
 
   function clearSearch() {
+    closeArrange()
     searchField.text = ""
   }
 
@@ -559,14 +615,17 @@ Panel {
   }
 
   function cycleGroupFilter() {
+    closeArrange()
     setGroupFilter(Model.nextOption(groupOptions, groupFilter))
   }
 
   function cycleKindFilter() {
+    closeArrange()
     setKindFilter(Model.nextOption(kindOptions, kindFilter))
   }
 
   function cycleStatusFilter() {
+    closeArrange()
     setStatusFilter(Model.nextOption(statusOptions, statusFilter))
   }
 
@@ -603,7 +662,32 @@ Panel {
   }
 
   function confirmPlacement(section) {
-    store.confirmPlacement(section)
+    if (pendingKind !== "move" || pendingPlacementNeeded) {
+      store.confirmPlacement(section)
+      return
+    }
+    if (!opened || contentFlipping || busy || store.actionRunning || !popupMoveOwner
+        || popupMoveOwner.busy || popupMoveOwner.pending || !hostWidget) {
+      setStatus("Placement is not ready or another action is unresolved; no move was sent.", true)
+      return
+    }
+    var row = Model.findRow(rows, pendingId)
+    var raw = bar && bar.shell && bar.shell.barConfig ? bar.shell.barConfig.layout : null
+    var plan = Model.barSectionMovePlan(row, raw, section)
+    if (!plan) {
+      setStatus("Placement changed or is unavailable; cancel and refresh before choosing again.", true)
+      return
+    }
+    var origin = { tab: "installed", selectedId: selectedRow ? selectedRow.id : pendingId,
+      query: searchField.text, group: groupFilter, kind: kindFilter, status: statusFilter,
+      scroll: Math.max(0, listScroll.contentY) }
+    if (!hostWidget.requestPopupMove(plan.snapshot, plan.fromSection, plan.fromIndex, plan.section, plan.gap, origin)) {
+      setStatus("Placement was refused; no move was sent. Cancel and refresh before choosing again.", true)
+      return
+    }
+    placementNotice = ""
+    store.cancelPending()
+    revokeReleaseNavigation()
   }
 
   function cancelPending() {
@@ -632,6 +716,7 @@ Panel {
   // vertical step is a whole row. The list has one column, so its row step is
   // one either way.
   function moveSelection(dx, dy) {
+    closeArrange()
     if (selectableCount === 0) return
     var step = browsing ? (dx !== 0 ? dx : dy * catalogGrid.columns) : dy
     if (step === 0) return
@@ -669,7 +754,7 @@ Panel {
   property bool titleIconIntroArmed: false
 
   onOpenedChanged: {
-    if (!opened) { detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard.cancelDrag(); revokeReleaseNavigation(); return }
+    if (!opened) { placementRefreshStarted = false; detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard.cancelDrag(); revokeReleaseNavigation(); return }
     titleIconIntro.stop()
     titleIcon.opacity = 0
     titleIconIntroArmed = true
@@ -704,8 +789,8 @@ Panel {
       onMoveRequested: function(dx, dy) { root.moveSelection(dx, dy) }
       onActivateRequested: root.browsing ? root.openDetails(root.selectedEntry) : root.startUpdate(root.selectedRow)
       onDeleteRequested: if (!root.browsing) root.askRemove(root.selectedRow)
-      onCloseRequested: { root.revokeReleaseNavigation(); root.close() }
-      onTabRequested: function(direction) { root.revokeReleaseNavigation(); root.switchPanel(direction) }
+      onCloseRequested: { root.closeArrange(); root.revokeReleaseNavigation(); root.close() }
+      onTabRequested: function(direction) { root.closeArrange(); root.revokeReleaseNavigation(); root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "/") root.focusSearchField()
         else if (t === "r" || t === "R") {
@@ -1075,7 +1160,7 @@ Panel {
                 value: root.groupFilter
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                onChanged: function(value) { root.setGroupFilter(value) }
+                onChanged: function(value) { root.closeArrange(); root.setGroupFilter(value) }
               }
             }
 
@@ -1108,7 +1193,7 @@ Panel {
                 value: root.kindFilter
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                onChanged: function(value) { root.setKindFilter(value) }
+                onChanged: function(value) { root.closeArrange(); root.setKindFilter(value) }
               }
             }
 
@@ -1141,7 +1226,7 @@ Panel {
                 value: root.statusFilter
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
-                onChanged: function(value) { root.setStatusFilter(value) }
+                onChanged: function(value) { root.closeArrange(); root.setStatusFilter(value) }
               }
             }
           }
@@ -1307,6 +1392,7 @@ Panel {
 
             // Enter hands the list back the keyboard with the results in
             // place, so you can type a name and arrow straight into it.
+            onTextEdited: root.closeArrange()
             onTextChanged: {
               if (text === "") root.flushSearch()
               else searchDebounce.restart()
@@ -1350,15 +1436,25 @@ Panel {
           width: parent.width
           visible: text !== ""
           text: {
+            if (root.barMovePending) return root.popupMoveOwner.status + root.placementNotice
             if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
             if (root.browsing && root.catalogError !== "") return root.catalogError
             if (!root.browsing && root.loadError !== "") return root.loadError
             return root.status
           }
-          color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
+          color: root.statusIsError || (root.barMovePending && root.popupMoveOwner.statusIsError)
+            || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
+        }
+        WidgetButton {
+          visible: root.barMovePending && !root.arrangeOpen
+          text: "Review layout"
+          tooltipText: "Inspect the current layout before explicitly accepting it; never retries the move"
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          onPressed: function(button) { if (button === Qt.LeftButton) root.openArrange() }
         }
       }
 
@@ -1457,6 +1553,7 @@ Panel {
         layer.enabled: root.contentFlipping
         contentWidth: width
         contentHeight: listColumn.implicitHeight
+        onMovementStarted: root.closeArrange()
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         interactive: contentHeight > height
@@ -1509,7 +1606,7 @@ Panel {
               fontFamily: root.contentFontFamily
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
-              onClicked: root.selectedIndex = index
+              onClicked: { root.closeArrange(); root.selectedIndex = index }
               onGithubNavigationRequested: function(candidates, fallbackUrl) {
                 root.requestGithubNavigation(candidates, fallbackUrl)
               }
@@ -1569,7 +1666,7 @@ Panel {
               fontFamily: root.contentFontFamily
 
               onSelectedChanged: if (selected) root.ensureVisible(this)
-              onClicked: root.selectedIndex = globalIndex
+              onClicked: { root.closeArrange(); root.selectedIndex = globalIndex }
               onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
               // A built-in cannot be pulled or deleted, but it can certainly
               // be sitting there switched off — same problem, same answer.

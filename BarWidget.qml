@@ -31,8 +31,14 @@ BarWidget {
     injectPanel()
   }
 
-  function requestPopupMove(snapshot, fromSection, fromIndex, section, gap) {
-    return PopupBridge.requestMove(root, snapshot, fromSection, fromIndex, section, gap)
+  function requestPopupMove(snapshot, fromSection, fromIndex, section, gap, origin) {
+    return PopupBridge.requestMove(root, snapshot, fromSection, fromIndex, section, gap, origin)
+  }
+
+  function openPlacementView(origin, finalAttempt) {
+    var target = panelLoader.item
+    return !!target && typeof target.openPlacementView === "function"
+      && target.openPlacementView(origin, finalAttempt) === true
   }
 
   function cancelPopupArrange() {

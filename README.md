@@ -347,9 +347,15 @@ an upstream SHA and no confirmation that overrides a refusal.
   segmented control, Left | Center | Right, with the current one lit; clicking
   another moves the widget there. The popup row has a single move icon that
   opens the same placement question the enable switch asks, minus the section
-  the widget is already in. Either way the panel runs
-  `omarchy plugin enable <id> <section>`, which the shell treats as a move for
-  a widget that is already placed; nothing edits `shell.json` directly. The
+  the widget is already in. Expanded still uses `omarchy plugin enable <id> <section>`.
+  The popup uses the retained positional mover and closes only the chooser on
+  acceptance. If the bar rebuilds, it returns to Installed on the original screen,
+  restoring search, filters, selection by ID and scroll after refreshing inventory.
+  A missing selection is cleared with an explanation. Failed or uncertain moves
+  keep the existing reconciliation lock: **Review layout** explicitly opens Arrange
+  to inspect the result before **Use current layout**; returning never retries a
+  move or accepts an unseen layout. Closing or navigating away cancels the return.
+  Nothing edits `shell.json` directly. The
   current section is read from `shell.json` at load time, so the control only
   changes once the shell has actually moved the widget, and a widget whose
   section could not be read gets no control rather than a guess.

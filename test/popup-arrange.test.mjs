@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 const read = name => readFileSync(new URL(`../${name}`, import.meta.url), "utf8")
 const expanded = read("Expanded.qml"), widgetSource = read("BarWidget.qml")
 const storeSource = read("PluginStore.qml"), panelSource = read("Panel.qml")
-const Model = Function(read("Model.js") + "; return { barLayoutSnapshot, barLayoutMove }")()
+const Model = Function(read("Model.js") + "; return { barLayoutSnapshot, barLayoutMove, barSectionMovePlan, findRow }")()
 function call(source, name, state, ...args) {
   const match = source.match(new RegExp(`function ${name}\\(([^)]*)\\) \\{([\\s\\S]*?)\\n  \\}`))
   assert.ok(match, `${name} exists`)
@@ -249,7 +249,7 @@ function setup() {
   }
   bridge.registerOwner(owner)
   const first = widget("DP-1"), other = widget("DP-2")
-  const request = (w = first) => bridge.requestMove(w, Model.barLayoutSnapshot(shell.barConfig.layout), "left", 0, "right", 0)
+  const request = (w = first, origin) => bridge.requestMove(w, Model.barLayoutSnapshot(shell.barConfig.layout), "left", 0, "right", 0, origin)
   function finish(code = 0, matched = true) {
     if (matched) shell.barConfig.layout = store.barMovePending.expected.layout
     proc.running = false
@@ -399,6 +399,151 @@ test("hidden snapshots refresh without reopening on unrelated host updates", () 
   assert.equal(state.barSnapshot.key, Model.barLayoutSnapshot(h.shell.barConfig.layout).key)
   h.tick()
   assert.equal(h.first.arrangements + h.other.arrangements, 0)
+})
+
+const installedOrigin = () => ({ tab: "installed", selectedId: "a", query: "A", group: "all", kind: "all", status: "all", scroll: 125 })
+function placementPopup(owner = { busy: false, pending: false, status: "Moved", statusIsError: false }) {
+  const p = popup(owner), s = p.state
+  Object.assign(s, { Model, pendingKind: "move", pendingPlacementNeeded: false, pendingId: "a",
+    rows: [{ id: "a", name: "A", enabled: true, kinds: ["bar-widget"], barSection: "left" }],
+    searchField: { text: "A" }, searchQuery: "A", groupFilter: "all", kindFilter: "all", statusFilter: "all",
+    kindOptions: [{ value: "all" }, { value: "bar" }], listColumn: { forceLayout() {} },
+    listScroll: { contentY: 125, contentHeight: 500, height: 200 }, selectedIndex: 0,
+    placementRefreshStarted: false, placementRowsReady: false, loading: false, loadError: "",
+    searchDebounce: { stop() {} }, setStatus(text, error) { s.status = text; s.statusIsError = error } })
+  s.visibleRows = s.rows; s.selectedRow = s.rows[0]
+  s.bar.shell = { barConfig: { layout: { left: ["a"], center: [], right: [] } } }
+  Object.assign(s.store, { confirmPlacement() { p.events.push("legacy chooser") },
+    cancelPending() { s.pendingKind = ""; p.events.push("chooser closed") },
+    reload() { s.loading = true; p.events.push("reload"); return true } })
+  for (const name of ["confirmPlacement", "openPlacementView", "flushSearch"])
+    s[name] = (...args) => call(panelSource, name, s, ...args)
+  s.opened = true; s.settingsOpen = false; s.detailsEntry = null
+  return p
+}
+
+test("popup chooser dispatches the shipped positional plan and closes only on acceptance", () => {
+  const { state: s, events } = placementPopup()
+  s.confirmPlacement("right")
+  const [snapshot, from, index, section, gap, origin] = events.find(Array.isArray)
+  assert.equal(snapshot.key, Model.barLayoutSnapshot(s.bar.shell.barConfig.layout).key)
+  assert.deepEqual([from, index, section, gap], ["left", 0, "right", 0])
+  assert.deepEqual(origin, installedOrigin())
+  assert.equal(s.pendingKind, ""); assert.equal(s.opened, true)
+  assert.equal(events.includes("legacy chooser"), false)
+  for (const mode of ["enable", "install"]) {
+    s.pendingKind = mode; s.pendingPlacementNeeded = mode === "install"
+    s.confirmPlacement("left")
+    assert.equal(events.at(-1), "legacy chooser")
+  }
+})
+
+test("popup refused, missing, stale and owner-busy choices never detach or consume the chooser", () => {
+  for (const change of [s => s.popupMoveOwner = null, s => s.popupMoveOwner.busy = true,
+    s => s.rows = [], s => s.rows[0].barSection = "center", s => s.contentFlipping = true,
+    s => s.hostWidget = null, s => s.hostWidget.requestPopupMove = () => false]) {
+    const { state: s, events } = placementPopup()
+    change(s); s.confirmPlacement("right")
+    assert.equal(s.pendingKind, "move")
+    assert.equal(events.some(Array.isArray), false)
+    assert.equal(events.includes("legacy chooser"), false)
+  }
+})
+
+test("Installed restoration waits for fresh rows, preserves view, and safely loses a missing selection", () => {
+  for (const missing of [false, true]) {
+    const { state: s, events } = placementPopup()
+    const origin = { ...installedOrigin(), group: "installed", kind: "bar", status: "enabled" }
+    assert.equal(s.openPlacementView(origin, false), false)
+    assert.equal(events.filter(e => e === "reload").length, 1)
+    s.rows = missing ? [] : [{ id: "a", name: "Refreshed" }]; s.visibleRows = s.rows
+    s.loading = false; s.clampSelection = () => {}
+    Function("root", panelSource.match(/function onRowsLoaded\(\) \{([\s\S]*?)\n    \}/)[1])(s)
+    s.activeTab = "browse"; s.searchField.text = "other"; s.listScroll.contentY = 0
+    assert.equal(s.openPlacementView(origin, false), true)
+    assert.equal(s.activeTab, "installed"); assert.equal(s.searchQuery, "A")
+    assert.deepEqual([s.groupFilter, s.kindFilter, s.statusFilter], ["installed", "bar", "enabled"])
+    assert.equal(s.selectedIndex, missing ? -1 : 0); assert.equal(s.listScroll.contentY, 125)
+    assert.equal(s.arrangeOpen, false); assert.equal(s.detailsEntry, null)
+    if (missing) assert.match(s.status, /no longer.*visible/i)
+  }
+  const { state: s } = placementPopup()
+  s.store.reload = () => false
+  assert.equal(s.openPlacementView(installedOrigin(), false), false)
+  assert.equal(s.placementRefreshStarted, false, "an older in-flight read cannot restore selection")
+  assert.equal(s.openPlacementView(installedOrigin(), true), true)
+  assert.match(s.status, /inventory.*refresh/i)
+})
+
+test("Installed continuation survives rebuild on its screen, copies primitives, and never forces Arrange", () => {
+  for (const failed of [false, true]) {
+    const h = setup(), origin = installedOrigin()
+    assert.equal(h.request(h.first, origin), true)
+    origin.query = "mutated"
+    h.bridge.unregister(h.first)
+    h.first.openPlacementView = () => { throw Error("dead popup") }
+    const replacement = h.widget("DP-1"), seen = []
+    replacement.openPlacementView = descriptor => { seen.push(descriptor); return true }
+    h.finish(failed ? 1 : 0, !failed); h.tick(); h.tick()
+    assert.equal(seen.length, 1); assert.equal(seen[0].query, "A")
+    assert.equal(replacement.arrangements + h.other.arrangements, 0)
+    assert.equal(h.owner.pending, failed); assert.equal(h.dispatches(), 1)
+  }
+  const h = setup()
+  assert.equal(h.request(h.first, { ...installedOrigin(), scroll: Infinity }), false)
+  assert.equal(h.dispatches(), 0)
+  h.request(h.first, installedOrigin()); h.bridge.cancelArrange(); h.finish(); h.tick()
+  assert.equal(h.first.arrangements, 0)
+  assert.match(panelSource, /text: "Review layout"[\s\S]*?onPressed: function\(button\) \{ if \(button === Qt\.LeftButton\) root\.openArrange\(\) \}/)
+  assert.match(expanded, /onMoveRequested: function\(section\) \{ store\.startMoveTo\(root\.selectedRow, section\) \}/)
+})
+
+test("shipped chooser, widget forwarding and owner reject a changed plan before dispatch", () => {
+  const h = setup(), { state: s, events } = placementPopup(h.owner)
+  s.bar.shell = h.shell
+  s.hostWidget.requestPopupMove = (...args) => {
+    h.shell.barConfig.layout.left.reverse()
+    return call(widgetSource, "requestPopupMove", { PopupBridge: h.bridge, root: h.first }, ...args)
+  }
+  s.confirmPlacement("right")
+  assert.equal(h.dispatches(), 0); assert.equal(s.pendingKind, "move")
+  assert.equal(events.includes("legacy chooser"), false)
+  assert.match(s.status, /refused/)
+})
+
+test("Installed return uses live panel readiness and user navigation cancels inventory waiting", () => {
+  const h = setup(), { state: s } = placementPopup(h.owner)
+  h.request(h.first, installedOrigin()); h.finish()
+  s.hostWidget.cancelPopupArrange = () => h.bridge.cancelArrange()
+  h.first.openPlacementView = (...args) => call(widgetSource, "openPlacementView", { panelLoader: { item: s } }, ...args)
+  h.tick()
+  assert.equal(s.placementRefreshStarted, true)
+  s.openSettings(); s.placementRowsReady = true; h.tick()
+  assert.equal(s.settingsOpen, true); assert.equal(h.owner.continuationActive, false)
+  assert.equal(s.placementRefreshStarted, false)
+  for (const action of ["close", "togglePanel", "closeForPopoutSwitch"]) {
+    let cancelled = 0
+    const state = { cancelPopupArrange() { cancelled++ }, panelLoader: { item: null } }
+    call(widgetSource, action, state)
+    assert.equal(cancelled, 1)
+  }
+})
+
+test("uncertain Installed return reports owner status and requires explicit board recovery", () => {
+  const h = setup(), { state: s } = placementPopup(h.owner)
+  Object.defineProperty(h.owner, "status", { get: () => h.store.status })
+  h.owner.snapshot = Model.barLayoutSnapshot(h.shell.barConfig.layout)
+  h.request(h.first, installedOrigin()); h.finish(1, false)
+  h.first.openPlacementView = (...args) => s.openPlacementView(...args)
+  h.tick(); s.placementRowsReady = true; s.loading = false; h.tick()
+  assert.equal(s.status, h.store.status); assert.equal(s.arrangeOpen, false)
+  assert.equal(h.owner.pending, true); assert.equal(s.useCurrentLayout(), false)
+  s.openArrange(); assert.equal(s.useCurrentLayout(), true)
+  assert.equal(h.owner.pending, false); assert.equal(h.dispatches(), 1)
+  s.openPlacementView({ ...installedOrigin(), kind: "removed-kind" }, false)
+  s.placementRowsReady = true
+  s.openPlacementView({ ...installedOrigin(), kind: "removed-kind" }, false)
+  assert.equal(s.kindFilter, "all"); assert.match(s.status, /filter.*no longer available/)
 })
 
 test("legacy collapse routing and panel readiness remain separate", () => {

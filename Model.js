@@ -979,6 +979,37 @@ function barLayoutMove(snapshot, latest, fromSection, fromIndex, section, gap) {
       "--section", section, "--index", String(target)]) })
 }
 
+// Popup section choices use the retained positional mover; Expanded keeps moveCommand.
+// Return its arguments, not a dispatch: startBarMove must recheck the latest layout.
+function barSectionMovePlan(row, raw, section) {
+  if (!canMove(row)) return null
+  var target = String(section || "")
+  if (BAR_SECTIONS.indexOf(target) < 0 || target === row.barSection) return null
+  var snapshot = barLayoutSnapshot(raw)
+  if (!snapshot) return null
+  var source = null
+  for (var i = 0; i < snapshot.rows.length; i++) {
+    if (snapshot.rows[i].id === String(row.id)) { source = snapshot.rows[i]; break }
+  }
+  // Legacy ID moves select the first occurrence across left/center/right.
+  // A stale row must not silently move a different section's duplicate.
+  if (!source || source.section !== row.barSection) return null
+  var anchors = { left: "omarchy.workspaces", center: "omarchy.weather", right: "omarchy.tray" }
+  var gap = snapshot.layout[target].length
+  for (var j = 0; j < snapshot.rows.length; j++) {
+    var candidate = snapshot.rows[j]
+    if (candidate.section === target && candidate.id === anchors[target]) {
+      gap = candidate.index + 1
+      break
+    }
+  }
+  // Current-section choices were rejected: source removal cannot shift this
+  // destination, so the host's post-removal index is also our pre-removal gap.
+  if (!barLayoutMove(snapshot, raw, source.section, source.index, target, gap)) return null
+  return Object.freeze({ snapshot: snapshot, fromSection: source.section,
+    fromIndex: source.index, section: target, gap: gap })
+}
+
 function actionVerb(kind) {
   if (kind === "install") return "Install"
   if (kind === "update") return "Update"

@@ -5,6 +5,9 @@ import assert from "node:assert/strict"
 
 const source = readFileSync(new URL("../Model.js", import.meta.url), "utf8")
 const model = () => Function(source + "; return { barLayoutSnapshot, barLayoutMove }")()
+const sectionModel = () => Function(source + "; return { barSectionMovePlan, barLayoutMove }")()
+const enabledRow = (id = "same", barSection = "left") => ({ id, barSection,
+  enabled: true, kinds: ["bar-widget"] })
 const layout = () => ({ left: ["clock", { id: "same", settings: { color: "red" } },
   { id: "same", settings: { color: "blue" } }], center: [], right: ["tray"] })
 
@@ -123,6 +126,80 @@ test("a changed source, destination or duplicate setting cancels the drag", () =
     raw => { raw.left[1].settings.color = "green" }]) {
     const latest = layout(); change(latest)
     assert.equal(barLayoutMove(snapshot, latest, "left", 1, "right", 0), null)
+  }
+})
+
+test("section choices plan exact retained-move arguments after each first destination anchor", () => {
+  const { barSectionMovePlan, barLayoutMove } = sectionModel()
+  const anchors = { left: "omarchy.workspaces", center: "omarchy.weather", right: "omarchy.tray" }
+  for (const section of Object.keys(anchors)) {
+    const fromSection = section === "left" ? "center" : "left"
+    const raw = { left: [], center: [], right: [] }
+    raw[fromSection] = ["other", { id: "same", settings: { nested: [false, 2] }, extra: "keep" }, "same"]
+    raw[section] = ["before", { id: anchors[section], settings: { first: true } }, anchors[section],
+      section === "left" ? "tail" : "same"]
+    const original = JSON.stringify(raw)
+    const plan = barSectionMovePlan(enabledRow("same", fromSection), raw, section)
+    assert.deepEqual(Object.keys(plan), ["snapshot", "fromSection", "fromIndex", "section", "gap"])
+    assert.deepEqual([plan.fromSection, plan.fromIndex, plan.section, plan.gap], [fromSection, 1, section, 2])
+    assert.equal(plan.snapshot.key, model().barLayoutSnapshot(raw).key)
+    assert.ok(Object.isFrozen(plan))
+    const move = barLayoutMove(plan.snapshot, raw, plan.fromSection, plan.fromIndex, plan.section, plan.gap)
+    assert.deepEqual(move.command, ["omarchy-bar", "move", "same", "--from-section", fromSection,
+      "--from-index", "1", "--section", section, "--index", "2"])
+    const expected = JSON.parse(original)
+    expected[section].splice(2, 0, expected[fromSection].splice(1, 1)[0])
+    assert.equal(move.expected.key, model().barLayoutSnapshot(expected).key)
+    assert.equal(JSON.stringify(raw), original)
+    raw[fromSection][1].settings.nested[0] = true
+    assert.equal(plan.snapshot.layout[fromSection][1].settings.nested[0], false)
+    assert.equal(barLayoutMove(plan.snapshot, raw, fromSection, 1, section, 2), null)
+  }
+})
+
+test("section choices append without anchors, including empty destinations and first-match order", () => {
+  const { barSectionMovePlan, barLayoutMove } = sectionModel()
+  for (const fromSection of ["left", "center", "right"]) {
+    const section = fromSection === "left" ? "right" : "left"
+    for (const destination of [[], ["clock", "tray"]]) {
+      const raw = { left: [], center: [], right: [] }
+      raw[fromSection] = ["same", { id: "same", settings: { duplicate: true } }]
+      raw[section] = destination
+      const plan = barSectionMovePlan(enabledRow("same", fromSection), raw, section)
+      assert.deepEqual([plan.fromSection, plan.fromIndex, plan.section, plan.gap],
+        [fromSection, 0, section, destination.length])
+      const move = barLayoutMove(plan.snapshot, raw, fromSection, 0, section, plan.gap)
+      assert.equal(move.expected.layout[section][destination.length], "same")
+      assert.equal(move.expected.layout[fromSection][0].settings.duplicate, true)
+    }
+  }
+})
+
+test("section choices refuse no-op, stale, missing, invalid and ineligible rows", () => {
+  const { barSectionMovePlan } = sectionModel()
+  const raw = { left: ["same"], center: ["same"], right: ["same"] }
+  assert.equal(barSectionMovePlan(enabledRow(), raw, "left"), null)
+  for (const row of [null, enabledRow("missing"), enabledRow("same", "center"), enabledRow("same", "right"),
+    enabledRow("same", ""), enabledRow(""), { ...enabledRow(), enabled: false },
+    { ...enabledRow(), enabled: 1 }, { ...enabledRow(), kinds: ["service"] },
+    { ...enabledRow(), kinds: ["bar", "bar-widget"] }])
+    assert.equal(barSectionMovePlan(row, raw, "right"), null)
+  for (const section of [null, "", "top", "RIGHT", 0])
+    assert.equal(barSectionMovePlan(enabledRow(), raw, section), null)
+  for (const invalid of [null, {}, { ...raw, center: [null] }, { ...raw, extra: [] },
+    { ...raw, left: Array(129).fill("same") }, { ...raw, right: Array(128).fill("tray") }])
+    assert.equal(barSectionMovePlan(enabledRow(), invalid, "right"), null)
+})
+
+test("section plans retain direct routing and reject unsafe argv through existing move validation", () => {
+  const { barSectionMovePlan, barLayoutMove } = sectionModel()
+  for (const id of ["--help", "-h", "contains\u0000nul", "unpaired\ud800", "界".repeat(44000)]) {
+    const raw = { left: [id], center: [], right: [] }
+    const plan = barSectionMovePlan(enabledRow(id), raw, "right")
+    if (id === "--help" || id === "-h") {
+      assert.deepEqual(barLayoutMove(plan.snapshot, raw, plan.fromSection, plan.fromIndex, plan.section, plan.gap).command,
+        ["omarchy-bar", "move", id, "--from-section", "left", "--from-index", "0", "--section", "right", "--index", "0"])
+    } else assert.equal(plan, null)
   }
 })
 

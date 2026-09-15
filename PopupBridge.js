@@ -43,12 +43,29 @@ function cancelArrange() {
   if (moveOwner) moveOwner.continuationActive = false
 }
 
-function requestMove(widget, snapshot, fromSection, fromIndex, section, gap) {
+// A single Installed placement return, not a saved session or a popup reference.
+function placementOrigin(value) {
+  if (!value || value.tab !== "installed") return null
+  var out = { tab: "installed" }
+  var limits = { selectedId: 128, query: 1024, group: 64, kind: 128, status: 64 }
+  for (var key in limits) {
+    if (typeof value[key] !== "string" || value[key].length > limits[key]) return null
+    out[key] = value[key]
+  }
+  if (typeof value.scroll !== "number" || !isFinite(value.scroll)
+      || value.scroll < 0 || value.scroll > 10000000) return null
+  out.scroll = value.scroll
+  return Object.freeze(out)
+}
+
+function requestMove(widget, snapshot, fromSection, fromIndex, section, gap, origin) {
   if (!moveOwner || widgets.indexOf(widget) < 0 || moveOwner.busy) return false
+  var view = origin === undefined ? null : placementOrigin(origin)
+  if (origin !== undefined && !view) return false
   var owner = moveOwner
   var screen = String(widget.screenName || "")
   if (!owner.start(snapshot, fromSection, fromIndex, section, gap)) return false
-  continuation = { screen: screen, generation: owner.generation, attempts: 0 }
+  continuation = { screen: screen, generation: owner.generation, attempts: 0, origin: view }
   owner.continuationActive = true
   return true
 }
@@ -74,7 +91,12 @@ function continueArrange(owner) {
   // Consume before invoking UI code: a synchronous close/cancel/new request
   // must not be overwritten by the completion of this older attempt.
   continuation = null
-  var opened = chosen && typeof chosen.openArrange === "function" && chosen.openArrange() === true
+  var opened = false
+  if (chosen) {
+    if (route.origin) opened = typeof chosen.openPlacementView === "function"
+      && chosen.openPlacementView(route.origin, route.attempts >= 30) === true
+    else opened = typeof chosen.openArrange === "function" && chosen.openArrange() === true
+  }
   if (continuation || owner !== moveOwner) return
   if (!opened && route.attempts < 30 && owner.continuationActive) continuation = route
   else owner.continuationActive = false
