@@ -410,7 +410,7 @@ function placementPopup(owner = { busy: false, pending: false, status: "Moved", 
     kindOptions: [{ value: "all" }, { value: "bar" }], listColumn: { forceLayout() {} },
     listScroll: { contentY: 125, contentHeight: 500, height: 200 }, selectedIndex: 0,
     placementRefreshStarted: false, placementRowsReady: false, loading: false, loadError: "",
-    searchDebounce: { stop() {} }, setStatus(text, error) { s.status = text; s.statusIsError = error } })
+    searchDebounce: { stop() {} }, setStatus(text, error, source) { s.status = text; s.statusIsError = error; s.statusSource = source } })
   s.visibleRows = s.rows; s.selectedRow = s.rows[0]
   s.bar.shell = { barConfig: { layout: { left: ["a"], center: [], right: [] } } }
   Object.assign(s.store, { confirmPlacement() { p.events.push("legacy chooser") },
@@ -445,6 +445,7 @@ test("popup refused, missing, stale and owner-busy choices never detach or consu
     const { state: s, events } = placementPopup()
     change(s); s.confirmPlacement("right")
     assert.equal(s.pendingKind, "move")
+    assert.equal(s.statusSource, "layout")
     assert.equal(events.some(Array.isArray), false)
     assert.equal(events.includes("legacy chooser"), false)
   }
@@ -465,6 +466,7 @@ test("Installed restoration waits for fresh rows, preserves view, and safely los
     assert.deepEqual([s.groupFilter, s.kindFilter, s.statusFilter], ["installed", "bar", "enabled"])
     assert.equal(s.selectedIndex, missing ? -1 : 0); assert.equal(s.listScroll.contentY, 125)
     assert.equal(s.arrangeOpen, false); assert.equal(s.detailsEntry, null)
+    assert.equal(s.statusSource, "layout")
     if (missing) assert.match(s.status, /no longer.*visible/i)
   }
   const { state: s } = placementPopup()
@@ -538,6 +540,9 @@ test("uncertain Installed return reports owner status and requires explicit boar
   h.tick(); s.placementRowsReady = true; s.loading = false; h.tick()
   assert.equal(s.status, h.store.status); assert.equal(s.arrangeOpen, false)
   assert.equal(h.owner.pending, true); assert.equal(s.useCurrentLayout(), false)
+  s.openSettings()
+  assert.equal(h.owner.pending, true, "Settings navigation does not release recovery ownership")
+  assert.equal(h.dispatches(), 1)
   s.openArrange(); assert.equal(s.useCurrentLayout(), true)
   assert.equal(h.owner.pending, false); assert.equal(h.dispatches(), 1)
   s.openPlacementView({ ...installedOrigin(), kind: "removed-kind" }, false)

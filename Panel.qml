@@ -273,7 +273,7 @@ Panel {
     if (!kindAvailable) note += " The previous kind filter is no longer available."
     placementNotice = note
     setStatus((popupMoveOwner ? popupMoveOwner.status : "Move outcome unavailable.") + note,
-      !placementRowsReady || !popupMoveOwner || popupMoveOwner.statusIsError)
+      !placementRowsReady || !popupMoveOwner || popupMoveOwner.statusIsError, "layout")
     placementRefreshStarted = false
     returnFocusToList()
     return true
@@ -454,6 +454,7 @@ Panel {
   readonly property alias busy: store.busy
   property alias status: store.status
   property alias statusIsError: store.statusIsError
+  property alias statusSource: store.statusSource
 
   // ---- Pending confirmation -----------------------------------------------
   //
@@ -635,8 +636,8 @@ Panel {
 
   // ---- Actions ------------------------------------------------------------
 
-  function setStatus(text, isError) {
-    store.setStatus(text, isError)
+  function setStatus(text, isError, source) {
+    store.setStatus(text, isError, source)
   }
 
   // The asks belong to the store; the popup only retires its link probe when
@@ -668,21 +669,21 @@ Panel {
     }
     if (!opened || contentFlipping || busy || store.actionRunning || !popupMoveOwner
         || popupMoveOwner.busy || popupMoveOwner.pending || !hostWidget) {
-      setStatus("Placement is not ready or another action is unresolved; no move was sent.", true)
+      setStatus("Placement is not ready or another action is unresolved; no move was sent.", true, "layout")
       return
     }
     var row = Model.findRow(rows, pendingId)
     var raw = bar && bar.shell && bar.shell.barConfig ? bar.shell.barConfig.layout : null
     var plan = Model.barSectionMovePlan(row, raw, section)
     if (!plan) {
-      setStatus("Placement changed or is unavailable; cancel and refresh before choosing again.", true)
+      setStatus("Placement changed or is unavailable; cancel and refresh before choosing again.", true, "layout")
       return
     }
     var origin = { tab: "installed", selectedId: selectedRow ? selectedRow.id : pendingId,
       query: searchField.text, group: groupFilter, kind: kindFilter, status: statusFilter,
       scroll: Math.max(0, listScroll.contentY) }
     if (!hostWidget.requestPopupMove(plan.snapshot, plan.fromSection, plan.fromIndex, plan.section, plan.gap, origin)) {
-      setStatus("Placement was refused; no move was sent. Cancel and refresh before choosing again.", true)
+      setStatus("Placement was refused; no move was sent. Cancel and refresh before choosing again.", true, "layout")
       return
     }
     placementNotice = ""
@@ -1436,6 +1437,7 @@ Panel {
           width: parent.width
           visible: text !== ""
           text: {
+            if (root.settingsOpen) return root.statusSource === "layout" ? "" : root.status
             if (root.barMovePending) return root.popupMoveOwner.status + root.placementNotice
             if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
             if (root.browsing && root.catalogError !== "") return root.catalogError

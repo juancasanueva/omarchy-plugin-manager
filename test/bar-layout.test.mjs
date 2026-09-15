@@ -209,7 +209,7 @@ function storeHarness() {
   const qml = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const root = { shell: { barConfig: { layout: layout() } }, busy: false,
     barMovePending: null, barMoveExited: true, barMoveFailed: false, barMoveBytes: 0,
-    setStatus(text, error) { this.status = text; this.statusIsError = error } }
+    setStatus(text, error, source) { this.status = text; this.statusIsError = error; this.statusSource = source } }
   const proc = { running: false, signals: [], signal(value) { this.signals.push(value) } }
   const names = ["startBarMove", "readBarMoveOutput", "finishBarMove", "reconcileBarMove"]
   for (const name of names) {
@@ -228,6 +228,7 @@ test("store dispatches once, rejects stale/no-op drops and waits for host reconc
   assert.equal(root.startBarMove(snapshot, "left", 1, "right", 1), false)
   root.shell.barConfig.layout = layout()
   assert.equal(root.startBarMove(snapshot, "left", 1, "right", 1), true)
+  assert.equal(root.statusSource, "layout")
   assert.deepEqual(proc.command.slice(0, 4), ["/usr/bin/timeout", "-k", "1", "8"])
   assert.deepEqual(proc.command.slice(4), root.barMovePending.command)
   assert.equal(root.startBarMove(snapshot, "left", 2, "center", 0), false)
@@ -237,6 +238,8 @@ test("store dispatches once, rejects stale/no-op drops and waits for host reconc
   root.shell.barConfig.layout = root.barMovePending.expected.layout
   assert.equal(root.reconcileBarMove(false), true)
   assert.equal(root.barMovePending, null)
+  assert.equal(root.status, "Bar layout updated")
+  assert.equal(root.statusSource, "layout")
 })
 
 test("untransportable IDs explain refusal without invalidating the visible snapshot", () => {
@@ -247,6 +250,7 @@ test("untransportable IDs explain refusal without invalidating the visible snaps
     assert.ok(snapshot)
     assert.equal(root.startBarMove(snapshot, "left", 0, "right", 0), false)
     assert.match(root.status, /ID cannot be transported by omarchy-bar/)
+    assert.equal(root.statusSource, "layout")
     assert.doesNotMatch(root.status, /Layout changed/)
     assert.equal(proc.running, false)
     assert.equal(root.barMovePending, null)
@@ -278,10 +282,13 @@ test("failure and output overflow remain ambiguous until explicitly reconciled",
     proc.running = false; root.finishBarMove(code)
     assert.equal(root.reconcileBarMove(false), false)
     assert.match(root.status, /unknown/i)
+    assert.equal(root.statusSource, "layout")
     root.shell.barConfig.layout = null
     assert.equal(root.reconcileBarMove(true), false)
     root.shell.barConfig.layout = layout()
     assert.equal(root.reconcileBarMove(true), true)
+    assert.equal(root.status, "Current layout accepted")
+    assert.equal(root.statusSource, "layout")
   }
   const { root, proc, snapshot } = storeHarness()
   root.startBarMove(snapshot, "left", 1, "right", 0)

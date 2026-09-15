@@ -114,6 +114,109 @@ test("Arrange status exposes pending outcomes and refused IDs instead of generic
   assert.match(text(state, {}), /layout unavailable/i)
 })
 
+test("Settings hides layout status without masking ordinary outcomes or changing move ownership", () => {
+  for (const source of [expanded, panel]) {
+    const body = source.match(/\/\/ ---- Status:[\s\S]*?text: \{([\s\S]*?)\n\s*\}/)[1]
+    const text = Function("root", "Model", body)
+    const owner = { status: "Waiting for layout", statusIsError: true, pending: true }
+    const state = { settingsOpen: true, arrangeOpen: false, browsing: false, busy: true,
+      barMovePending: true, popupMoveOwner: owner, placementNotice: "", barSnapshot: {},
+      statusSource: "layout", status: "Layout outcome", loadError: "", catalogError: "" }
+    for (const status of ["Bar layout updated", "Current layout accepted", "Waiting", "Unknown", "Refused"]) {
+      state.status = status
+      for (const pending of [false, true]) {
+        state.barMovePending = pending
+        assert.equal(text(state, {}), "")
+        assert.equal(state.barMovePending, pending)
+        assert.equal(owner.pending, true)
+      }
+    }
+    state.statusSource = ""
+    for (const status of ["Could not save the setting", "Settings outcome", "Plugin removed"]) {
+      state.status = status
+      assert.equal(text(state, {}), status, "local outcomes win over retained owner status in Settings")
+    }
+    state.settingsOpen = false
+    for (const arrangeOpen of [false, true]) {
+      state.arrangeOpen = arrangeOpen
+      assert.equal(text(state, {}), source === panel ? owner.status : state.status)
+    }
+    state.barMovePending = false; state.busy = false; state.arrangeOpen = false
+    for (const status of ["Plugin removed", "Could not save the setting"]) {
+      state.status = status
+      assert.equal(text(state, {}), status)
+    }
+    assert.match(source, /property alias statusSource: store\.statusSource/)
+  }
+})
+
+test("Expanded layout messages belong only to Arrange; ordinary list outcomes retain priority", () => {
+  const body = expanded.match(/id: statusLine[\s\S]*?text: \{([\s\S]*?)\n\s*\}/)[1]
+  const text = Function("root", "Model", body)
+  for (const browsing of [false, true]) {
+    const state = { browsing, settingsOpen: false, arrangeOpen: false, barSnapshot: {},
+      statusSource: "layout", status: "Bar layout updated", loadError: "", catalogError: "" }
+    for (const pending of [false, true]) {
+      state.barMovePending = pending
+      for (const page of ["list", "settings", "arrange"]) {
+        state.settingsOpen = page === "settings"; state.arrangeOpen = page === "arrange"
+        assert.equal(text(state, {}), page === "arrange" ? state.status : "")
+        assert.equal(state.barMovePending, pending, "display must not change ownership")
+      }
+    }
+    Object.assign(state, { arrangeOpen: false, barMovePending: false, statusSource: "" })
+    assert.equal(text(state, {}), state.status, "filter by source, not wording")
+    state.status = "Plugin removed"
+    assert.equal(text(state, {}), state.status)
+    state.loadError = "Load failed"; state.catalogError = "Catalog failed"
+    assert.equal(text(state, {}), browsing ? state.catalogError : state.loadError)
+    state.busy = true; state.busyId = "example"
+    assert.equal(text(state, { actionGerund: () => "Updating" }), "Updating example…")
+  }
+})
+
+test("Expanded Back frames place one collapsible status before recovery, board and settings", () => {
+  const header = id => expanded.slice(expanded.indexOf(`id: ${id}`)).split(/\n\s*\n/)[0]
+  const listStatus = header("statusLine")
+  assert.match(listStatus, /visible: !root\.settingsOpen && !root\.arrangeOpen && text !== ""/)
+  assert.match(listStatus, /anchors\.top: controls\.bottom/)
+  assert.match(listStatus, /anchors\.topMargin: visible \? Style\.space\(8\) : 0/)
+  assert.match(listStatus, /height: visible \? implicitHeight : 0/)
+  assert.match(header("settingsPane"), /anchors\.top: statusLine\.bottom/)
+  assert.match(header("settingsBackButton"), /anchors\.top: parent\.top/)
+  const pageStatus = header("settingsStatusLine")
+  assert.match(pageStatus, /anchors\.top: settingsBackButton\.bottom/)
+  assert.match(pageStatus, /text: statusLine\.text/)
+  assert.match(pageStatus, /visible: text !== ""/)
+  assert.match(pageStatus, /anchors\.topMargin: visible \? Style\.space\(8\) : 0/)
+  assert.match(pageStatus, /height: visible \? implicitHeight : 0/)
+  assert.match(pageStatus, /textFormat: Text\.PlainText/)
+  for (const property of ["color", "font", "wrapMode"])
+    assert.match(pageStatus, new RegExp(`${property}: statusLine\\.${property}`))
+  for (const id of ["arrangeRecovery", "settingsScroll"])
+    assert.match(header(id), /anchors\.top: settingsStatusLine\.bottom/)
+  assert.match(header("arrangeRecovery"), /height: visible \? implicitHeight : 0/)
+  assert.match(header("barBoard"), /anchors\.top: arrangeRecovery\.bottom/)
+  for (const id of ["installedPane", "catalogGrid", "browseDetailsPane"])
+    assert.match(header(id), /anchors\.top: statusLine\.bottom/)
+  assert.ok(expanded.indexOf("id: settingsStatusLine") > expanded.indexOf("id: settingsPane"))
+  assert.equal((expanded.match(/text: statusLine\.text/g) || []).length, 1)
+})
+
+test("status source resets for settings errors and ordinary inventory outcomes", () => {
+  const state = { status: "", statusIsError: false, statusSource: "" }
+  state.setStatus = (...args) => call(storeSource, "setStatus", state, ...args)
+  state.setStatus("Move outcome", true, "layout")
+  assert.equal(state.statusSource, "layout")
+  Object.assign(state, { busy: false, selfEntryLoaded: false })
+  assert.equal(call(storeSource, "writeSelfSetting", state, "tiledExpandedPanel", true, false), false)
+  assert.equal(state.statusSource, "")
+  assert.equal(state.statusIsError, true)
+  state.setStatus("Plugin removed", false)
+  assert.equal(state.statusSource, "")
+  assert.equal(state.statusIsError, false)
+})
+
 test("retained eager load stays hidden and cannot initiate inventory work or dispatch", () => {
   const { state, events } = lifecycle()
   state.loadEverything()

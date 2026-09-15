@@ -96,6 +96,8 @@ Item {
 
   property string status: ""
   property bool statusIsError: false
+  // Presentation scope only; move ownership stays in barMovePending.
+  property string statusSource: ""
 
   // ---- Pending confirmation -----------------------------------------------
   //
@@ -454,9 +456,10 @@ Item {
 
   // ---- Actions ------------------------------------------------------------
 
-  function setStatus(text, isError) {
+  function setStatus(text, isError, source) {
     status = text
     statusIsError = isError === true
+    statusSource = source || ""
   }
 
   function startDisable(row) {
@@ -471,10 +474,10 @@ Item {
   // of them. It is gone before `onExited` could fire, so a status message here
   // is written to something nobody can read, and a Process owned by a
   // destroyed surface is not a safe place for the command itself either.
-  function runDetached(summary, detail, command) {
+  function runDetached(summary, detail, command, source) {
     if (busy || command.length === 0) return
     Quickshell.execDetached(["bash", "-c", noticeScript, "notice", summary, detail].concat(command))
-    setStatus(summary, false)
+    setStatus(summary, false, source)
   }
 
   function startEnable(row, section) {
@@ -609,7 +612,7 @@ Item {
     if (busy) return false
     var command = Model.moveCommand(row, section)
     if (command.length === 0) return false
-    runDetached(Model.successMessage("move", row.name), Model.moveNote(section), command)
+    runDetached(Model.successMessage("move", row.name), Model.moveNote(section), command, "layout")
     return true
   }
 
@@ -627,7 +630,7 @@ Item {
       var movingLabel = pendingLabel
       cancelPending()
       if (!moving) {
-        setStatus("Could not move " + movingLabel + ": it is no longer in the list", true)
+        setStatus("Could not move " + movingLabel + ": it is no longer in the list", true, "layout")
         return
       }
       startMoveTo(moving, section)
@@ -896,11 +899,11 @@ Item {
             && encodeURIComponent(id).replace(/%[0-9A-F]{2}/g, "x").length < 131072
         } catch (error) { transportable = false }
         if (entry && !transportable) {
-          root.setStatus("Move refused: this entry ID cannot be transported by omarchy-bar. No move was sent.", true)
+          root.setStatus("Move refused: this entry ID cannot be transported by omarchy-bar. No move was sent.", true, "layout")
           return false
         }
       }
-      root.setStatus("Move refused: layout changed or unavailable, destination full, or invalid drop. No move was sent.", true)
+      root.setStatus("Move refused: layout changed or unavailable, destination full, or invalid drop. No move was sent.", true, "layout")
       return false
     }
     if (plan.noOp) return false
@@ -908,7 +911,7 @@ Item {
     root.barMoveExited = false
     root.barMoveFailed = false
     root.barMoveBytes = 0
-    root.setStatus("Moving bar entry; waiting for the host layout", false)
+    root.setStatus("Moving bar entry; waiting for the host layout", false, "layout")
     // GNU timeout owns the command group, including the CLI's IPC descendants.
     // TERM on overflow also starts timeout's one-second KILL escalation.
     barMoveProc.command = ["/usr/bin/timeout", "-k", "1", "8"].concat(plan.command)
@@ -944,7 +947,7 @@ Item {
     root.barMoveFailed = root.barMoveFailed || exitCode !== 0
     root.setStatus(root.barMoveFailed
       ? "Move outcome unknown; reconcile the current bar before continuing"
-      : "Move sent; waiting for the host layout", root.barMoveFailed)
+      : "Move sent; waiting for the host layout", root.barMoveFailed, "layout")
     root.reconcileBarMove(false)
   }
 
@@ -955,8 +958,9 @@ Item {
     if (!root.barMovePending || !root.barMoveExited || barMoveProc.running) return false
     var current = Model.barLayoutSnapshot(root.shell && root.shell.barConfig && root.shell.barConfig.layout)
     if (!current || (current.key !== root.barMovePending.expected.key && acceptCurrent !== true)) return false
+    var matched = current.key === root.barMovePending.expected.key
     root.barMovePending = null
-    root.setStatus("Current bar layout reconciled", false)
+    root.setStatus(matched ? "Bar layout updated" : "Current layout accepted", false, "layout")
     return true
   }
 

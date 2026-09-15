@@ -3726,7 +3726,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   assert.match(panel, /function reload\(\) \{\s*revokeReleaseNavigation\(\)\s*return store\.reload\(\)\s*\}/)
   assert.match(panel, /function checkUpdates\(\) \{\s*return store\.checkUpdates\(\)\s*\}/)
   assert.match(panel, /function loadCatalog\(force\) \{\s*revokeReleaseNavigation\(\)\s*store\.loadCatalog\(force\)\s*\}/)
-  assert.match(panel, /function setStatus\(text, isError\) \{\s*store\.setStatus\(text, isError\)\s*\}/)
+  assert.match(panel, /function setStatus\(text, isError, source\) \{\s*store\.setStatus\(text, isError, source\)\s*\}/)
   // The store announces what the panel used to do inline.
   assert.match(store, /signal reloadStarted\(\)/)
   assert.match(store, /signal rowsLoaded\(\)/)
@@ -5528,7 +5528,7 @@ test("the store moves a widget through the placement question or straight from a
   assert.match(store, /"Move " \+ pendingLabel \+ " to which section of the bar\?"/)
   assert.match(store, /function askMove\(row\) \{\s*if \(!Model\.canMove\(row\) \|\| busy\) return false[\s\S]*?pendingSection = String\(row\.barSection \|\| ""\)\s*pendingKind = "move"\s*return true/)
   // Detached like enable: the layout rewrite tears the popup down.
-  assert.match(store, /function startMoveTo\(row, section\) \{\s*if \(busy\) return false\s*var command = Model\.moveCommand\(row, section\)\s*if \(command\.length === 0\) return false\s*runDetached\(Model\.successMessage\("move", row\.name\), Model\.moveNote\(section\), command\)/)
+  assert.match(store, /function startMoveTo\(row, section\) \{\s*if \(busy\) return false\s*var command = Model\.moveCommand\(row, section\)\s*if \(command\.length === 0\) return false\s*runDetached\(Model\.successMessage\("move", row\.name\), Model\.moveNote\(section\), command, "layout"\)/)
   assert.match(store, /if \(pendingKind === "move"\) \{\s*var moving = Model\.findRow\(rows, pendingId\)[\s\S]*?cancelPending\(\)[\s\S]*?"Could not move " \+ movingLabel[\s\S]*?startMoveTo\(moving, section\)\s*return\s*\}/)
   assert.match(store, /function cancelPending\(\) \{[\s\S]*?pendingSection = ""/)
   // The layout section is read with the same bounded jq the settings use,

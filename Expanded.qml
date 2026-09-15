@@ -197,6 +197,7 @@ Item {
   readonly property alias busy: store.busy
   property alias status: store.status
   property alias statusIsError: store.statusIsError
+  property alias statusSource: store.statusSource
   readonly property alias pendingKind: store.pendingKind
   readonly property alias confirming: store.confirming
   readonly property alias placing: store.placing
@@ -1237,16 +1238,19 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: controls.bottom
-        anchors.topMargin: text !== "" ? Style.space(8) : 0
-        height: text !== "" ? implicitHeight : 0
+        // Back frames reuse the message below their button; collapse this slot.
+        visible: !root.settingsOpen && !root.arrangeOpen && text !== ""
+        anchors.topMargin: visible ? Style.space(8) : 0
+        height: visible ? implicitHeight : 0
         text: {
-          if (root.barMovePending) return root.status
+          if (root.settingsOpen) return root.statusSource === "layout" ? "" : root.status
+          if (root.barMovePending) return root.arrangeOpen || root.statusSource !== "layout" ? root.status : ""
           if (root.arrangeOpen) return root.barSnapshot ? root.status
             : "Bar layout unavailable; waiting for host configuration."
           if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
           if (root.browsing && root.catalogError !== "") return root.catalogError
           if (!root.browsing && root.loadError !== "") return root.loadError
-          return root.status
+          return root.statusSource === "layout" ? "" : root.status
         }
         color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
         font.family: root.fontFamily
@@ -1700,11 +1704,26 @@ Item {
           onClicked: root.arrangeOpen ? root.closeArrange() : root.closeSettings()
         }
 
+        Text {
+          id: settingsStatusLine
+          textFormat: Text.PlainText
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: settingsBackButton.bottom
+          anchors.topMargin: visible ? Style.space(8) : 0
+          height: visible ? implicitHeight : 0
+          visible: text !== ""
+          text: statusLine.text
+          color: statusLine.color
+          font: statusLine.font
+          wrapMode: statusLine.wrapMode
+        }
+
         Column {
           id: arrangeRecovery
           anchors.left: parent.left
           anchors.right: parent.right
-          anchors.top: settingsBackButton.bottom
+          anchors.top: settingsStatusLine.bottom
           anchors.topMargin: visible ? Style.space(8) : 0
           visible: root.arrangeOpen && root.barMovePending
           height: visible ? implicitHeight : 0
@@ -1782,7 +1801,7 @@ Item {
           visible: root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
-          anchors.top: settingsBackButton.bottom
+          anchors.top: settingsStatusLine.bottom
           anchors.topMargin: Style.space(16)
           anchors.bottom: parent.bottom
           contentHeight: settingsContent.implicitHeight
