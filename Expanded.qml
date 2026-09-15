@@ -1551,11 +1551,23 @@ Item {
           onClicked: root.closeSettings()
         }
 
-        Column {
+        Flickable {
+          id: settingsScroll
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: settingsBackButton.bottom
           anchors.topMargin: Style.space(16)
+          anchors.bottom: parent.bottom
+          contentHeight: settingsContent.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          interactive: contentHeight > height
+        }
+
+        Column {
+          id: settingsContent
+          parent: settingsScroll.contentItem
+          width: settingsScroll.width
           spacing: Style.space(14)
 
           Text {
@@ -1570,13 +1582,18 @@ Item {
 
           // Off is the marketplace's promise; on is the user's own call, and
           // the caption says so in the same words the confirmation will.
-          Item {
+          Rectangle {
             width: parent.width
-            height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight)
+            height: Math.max(unverifiedText.implicitHeight, unverifiedSwitch.implicitHeight) + Style.space(12) * 2
+            radius: Style.cornerRadius
+            color: Style.normalFill
+            border.width: 1
+            border.color: Qt.alpha(root.secondaryForeground, 0.35)
 
             Column {
               id: unverifiedText
               anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
               anchors.right: unverifiedSwitch.left
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
@@ -1609,6 +1626,7 @@ Item {
             ToggleSwitch {
               id: unverifiedSwitch
               anchors.right: parent.right
+              anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
               checked: store.allowUnverifiedUpdates
               interactive: true
@@ -1626,13 +1644,18 @@ Item {
 
           // Installing something unreviewed is a separate decision from
           // updating to it, so it is a separate switch under its own key.
-          Item {
+          Rectangle {
             width: parent.width
-            height: Math.max(unverifiedInstallText.implicitHeight, unverifiedInstallSwitch.implicitHeight)
+            height: Math.max(unverifiedInstallText.implicitHeight, unverifiedInstallSwitch.implicitHeight) + Style.space(12) * 2
+            radius: Style.cornerRadius
+            color: Style.normalFill
+            border.width: 1
+            border.color: Qt.alpha(root.secondaryForeground, 0.35)
 
             Column {
               id: unverifiedInstallText
               anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
               anchors.right: unverifiedInstallSwitch.left
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
@@ -1665,6 +1688,7 @@ Item {
             ToggleSwitch {
               id: unverifiedInstallSwitch
               anchors.right: parent.right
+              anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
               checked: store.allowUnverifiedInstalls
               interactive: true
@@ -1682,13 +1706,18 @@ Item {
 
           // Which window this panel opens as. The window is chosen at open
           // time, so the switch is a decision about the next one.
-          Item {
+          Rectangle {
             width: parent.width
-            height: Math.max(tiledPanelText.implicitHeight, tiledPanelSwitch.implicitHeight)
+            height: Math.max(tiledPanelText.implicitHeight, tiledPanelSwitch.implicitHeight) + Style.space(12) * 2
+            radius: Style.cornerRadius
+            color: Style.normalFill
+            border.width: 1
+            border.color: Qt.alpha(root.secondaryForeground, 0.35)
 
             Column {
               id: tiledPanelText
               anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
               anchors.right: tiledPanelSwitch.left
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
@@ -1721,6 +1750,7 @@ Item {
             ToggleSwitch {
               id: tiledPanelSwitch
               anchors.right: parent.right
+              anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
               checked: store.tiledExpandedPanel
               interactive: true
@@ -1739,18 +1769,30 @@ Item {
           // Restarting the shell is how every plugin, this one included, is
           // read again from disk: Quickshell keeps compiled QML in a cache
           // that a restart alone can go on serving.
-          Button {
-            id: restartShellButton
-            iconText: "󰜉"
-            text: "Restart Shell"
-            tooltipText: "Clear the QML cache and restart the shell so every plugin reloads"
-            bordered: true
-            enabled: !root.busy
-            opacity: enabled ? 1 : 0.4
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: store.restartShell()
+          Rectangle {
+            width: parent.width
+            height: restartShellButton.implicitHeight + Style.space(12) * 2
+            radius: Style.cornerRadius
+            color: Style.normalFill
+            border.width: 1
+            border.color: Qt.alpha(root.secondaryForeground, 0.35)
+
+            Button {
+              id: restartShellButton
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(12)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "󰜉"
+              text: "Restart Shell"
+              tooltipText: "Clear the QML cache and restart the shell so every plugin reloads"
+              bordered: true
+              enabled: !root.busy
+              opacity: enabled ? 1 : 0.4
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: store.restartShell()
+            }
           }
         }
       }
