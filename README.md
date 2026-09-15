@@ -85,6 +85,10 @@ clear. The hint bar names the tab keys as well as the actions — `[1] INSTALLED
 [2] BROWSE` on the right, before `[ESC] CLOSE` — so every way in and out is
 written down.
 
+**Settings**, opened from the gear in either header, groups its switches and
+**Restart Shell** action into rounded cards. Search and filters stay hidden
+while Settings is open, and the cards scroll when the available height is small.
+
 Under the hood the plugin registers a second kind, `panel`, whose entry point
 is `Expanded.qml`. Both surfaces share one data layer, `PluginStore.qml`, so
 an install, update, enable, disable or remove is the same code whichever
@@ -109,6 +113,10 @@ instance does not move every entry with the same ID. The host may pin the tray
 visually, so tray placement on screen can differ from configured order. An ID
 that cannot pass losslessly through the CLI stays visible, with a move-refusal
 message rather than a silently altered ID.
+
+Layout messages stay with Arrange and popup placement, not Settings or the
+expanded plugin lists. In the expanded Settings and Arrange views, relevant
+status messages appear below **Back**, above the controls they describe.
 
 A host layout change cancels any stale drag. A client exit alone does not prove
 that the move saved: the manager waits for the expected host layout. After an
