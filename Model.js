@@ -191,6 +191,54 @@ function allowUnverifiedUpdates(settings) {
     && settings.allowUnverifiedUpdates === true
 }
 
+function enableAiReview(settings) {
+  return !!settings && hasOwnKey(settings, "enableAiReview") && settings.enableAiReview === true
+}
+
+// Preparation is an association, never a review verdict or installation authority.
+function reviewKey(request) {
+  if (!request) return ""
+  return JSON.stringify([request.schemaVersion, request.id, request.repository,
+    request.branch || "", request.verifiedCommit || "", request.unverifiedCommit || "",
+    request.expectedLocalHead || "", request.section === undefined ? null : request.section])
+}
+
+var REVIEW_AGENTS = ["pi", "omp", "opencode", "claude", "codex", "grok", "gemini",
+  "openclaw", "hermes", "copilot", "crush", "cursor-agent", "muse"]
+
+function reviewResult(result, request) {
+  if (!result || !request || reviewKey(result.request) !== reviewKey(request)
+      || typeof result.commit !== "string" || !/^[0-9a-f]{40}$/.test(result.commit)
+      || REVIEW_AGENTS.indexOf(result.agent) < 0 || typeof result.packet !== "string"
+      || !result.packet.length || result.packet.length > 393216
+      || ["available", "unavailable"].indexOf(result.comparison) < 0) return null
+  var target = request.verifiedCommit || request.unverifiedCommit
+  if (target && target !== result.commit) return null
+  return result
+}
+
+// A display/echo binding only. The helper independently reconstructs executable argv.
+function reviewBinding(value) {
+  if (!value || value.agent !== "claude" || typeof value.executable !== "string"
+      || !value.executable.startsWith("/") || value.executable.length > 1024
+      || typeof value.version !== "string" || value.version.length > 80
+      || !Array.isArray(value.argv) || value.argv.length > 32 || value.argv[0] !== value.executable
+      || !value.argv.every(function(s) { return typeof s === "string" && s.length <= 1024 && !/[\x00-\x1f\x7f]/.test(s) })
+      || !Array.isArray(value.identity) || value.identity.length !== 5
+      || !value.identity.every(function(s) { return typeof s === "string" && /^[0-9]{1,30}$/.test(s) })
+      || typeof value.capability !== "string" || !/^[0-9a-f]{64}$/.test(value.capability)) return null
+  return value
+}
+
+function reviewReport(result, prepared, binding, generation) {
+  if (!result || !prepared || !reviewBinding(binding) || result.generation !== generation
+      || reviewKey(result.request) !== reviewKey(prepared.request) || result.commit !== prepared.commit
+      || result.agent !== prepared.agent || JSON.stringify(result.binding) !== JSON.stringify(binding)
+      || typeof result.report !== "string" || !result.report.startsWith("Summary\n")
+      || !result.report.slice(8).trim() || result.report.length > 65536) return ""
+  return result.report
+}
+
 function allowUnverifiedInstalls(settings) {
   return !!settings && hasOwnKey(settings, "allowUnverifiedInstalls")
     && settings.allowUnverifiedInstalls === true
@@ -2167,7 +2215,9 @@ function pinnedRequest(row, entries) {
 // Cached catalog data chooses the request and never authorizes publication;
 // the helper rechecks the live catalog before the fetch and again before it
 // publishes, and refuses if anything about the listing moved.
-function installRequest(entry, section, allowUnverified) {
+function installRequest(entry, section, allowUnverified, expectedBranchCommit) {
+  if (expectedBranchCommit !== undefined && (typeof expectedBranchCommit !== "string"
+      || !/^[0-9a-f]{40}$/.test(expectedBranchCommit))) return null
   if (typeof section !== "string" || (section !== "" && BAR_SECTIONS.indexOf(section) < 0)) return null
   // Re-derived from the entry, never read off its `installable` flag, and the
   // opt-in is re-read rather than trusted from the stamp: the grid may have
@@ -2175,18 +2225,20 @@ function installRequest(entry, section, allowUnverified) {
   // was on screen, exactly as canStartUpdate re-gates an update.
   var installed = entry && entry.installed
   if (catalogVerifiedInstallable(entry, installed)) {
+    if (expectedBranchCommit !== undefined) return null
     var snapshot = entry.updateSnapshot
     if (snapshot.id !== entry.id) return null
     return { schemaVersion: 1, id: snapshot.id, repository: snapshot.repository,
       verifiedCommit: snapshot.verifiedCommit, section: section }
   }
   if (!catalogUnverifiedInstallable(entry, installed, allowUnverified)) return null
-  // No commit to bind: the helper resolves the branch to one commit of its
-  // own accord and installs exactly that, so nothing here names a tip.
   var tip = entry.unverifiedSnapshot
   if (tip.id !== entry.id) return null
-  return { schemaVersion: 1, id: tip.id, repository: tip.repository,
+  var request = { schemaVersion: 1, id: tip.id, repository: tip.repository,
     branch: tip.branch, section: section }
+  // Omission preserves the legacy shape. Preparation can only constrain it.
+  if (expectedBranchCommit !== undefined) request.expectedBranchCommit = expectedBranchCommit
+  return request
 }
 
 // The question before a listing nobody reviewed is installed. Plain text

@@ -628,6 +628,96 @@ the registry reviewed it. The install dialog says in words that a review is not
 a guarantee. Plugin code runs unsandboxed with your user's privileges whether
 or not it carries a badge.
 
+## Optional advisory AI review
+
+**Settings → Enable AI review** is off by default, independently of the two
+unverified-install/update permissions. When enabled, **Review with AI** appears
+on eligible Installed rows/details and in the Install confirmation in both windows.
+
+1. Choose **Review with AI**. The manager reads your Omarchy default from
+   `~/.config/omarchy/defaults/agent` (256-byte cap). Only selected Claude is probed,
+   using bounded `--version`/`--help` calls, never inference. For a Mise-backed
+   `shims/claude`, a bounded, read-only [`mise which claude`](https://mise.jdx.dev/cli/which.html)
+   lookup from a neutral directory selects the already-installed executable; the shim
+   itself is never probed. `MISE_AUTO_INSTALL`, `MISE_EXEC_AUTO_INSTALL` and
+   `MISE_AUTO_UPDATE` are disabled for that lookup only. Invalid/unavailable lookup
+   results retain Copy packet; no install, `mise exec`, login or fallback is attempted.
+   Direct executables and symlinks retain their invocation path. Probe refusals name
+   the failed lookup/version/help/controls stage without exposing child diagnostics.
+2. Read the disclosure, then explicitly **Prepare** the full-SHA source packet.
+   Preparation never starts a model request.
+3. **Copy packet** remains available for every recognized default. Paste it into
+   a tool-free session yourself: source is untrusted and must not be executed.
+   For supported Claude, inspect the resolved executable, version and complete
+   final argv, then choose **Run review** to consent to this one source transmission
+   and its possible charges. No provider or model is substituted.
+4. Read the scrollable plain-text **model-reported advisory**, Summary first.
+   **Copy report** is explicit. Findings are not confirmed defects, certification
+   or marketplace verification. Completion never installs or updates anything.
+
+Pi, Oh My Pi, OpenCode, Codex, Grok, Gemini, OpenClaw, Hermes, Copilot, Crush,
+Cursor Agent and Muse retain manual handoff without executable probes. Unset or
+unknown defaults refuse; missing/incompatible Claude retains Copy packet. There
+is no automatic installation, login, retry, or default-setting modification.
+
+Automatic Claude requires major version 2, at least 2.1.270, and every required
+help capability: `--print --safe-mode --tools "" --disallowedTools 'mcp__*'
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources user
+--permission-prompts none --no-session-persistence --output-format text`.
+The empty tools argument is real, not omitted. The helper reconstructs this argv
+and rechecks selection, executable identity, version and capabilities after consent.
+It does not execute caller-supplied argv. `--restricted` is intentionally not used:
+your trusted authentication/provider configuration and session environment remain
+in scope. No credential values pass through QML, argv or diagnostics.
+
+Uses your selected agent with built-in and MCP model tools disabled. Plugin source
+is supplied over stdin from a neutral working directory, not executed or loaded as
+project context. Trusted user authentication/provider configuration and
+administrator-managed configuration remain in scope; administrator-managed commands
+may execute. This is not an operating-system sandbox. Source may reach your
+configured provider and incur charges. Capability checks are not a certification
+of administrator policy, and the manager does not inspect credential or managed-policy files.
+
+The dedicated agent runner uses the account HOME and inherited provider environment,
+not the installer's environment or Node-incompatible address-space limit. One
+newline-framed JSON request (1 MiB maximum, 5-second input deadline) carries the
+packet to the helper; only stdin carries source to the agent. Model execution is
+limited to 180 seconds, 64 KiB stdout and 16 KiB stderr; probes have separate
+5-second deadlines. Empty, incomplete (missing final marker), malformed, overflowing,
+nonzero, timed-out or cancelled output is not a completed report. One model call
+produces the Summary and full report. There is no persistent report cache.
+
+Packets include the exact request, full candidate SHA and full candidate text
+within strict limits: 128 files, 128 KiB per file, 128 KiB total input, 384 KiB
+packet and 768 KiB helper output; preparation has a 90-second deadline. Image/font
+assets are omitted by extension without decoding; other binary/non-UTF-8 files
+are also listed as omissions. The packet asks the reviewer to assess these gaps,
+not claim those files were inspected. Oversize source/trees are refused, not
+silently truncated. Source byte-budget refusals report the size, limit and a
+bounded, escaped offending path. The per-file allowance shares the total budget;
+it does not permit 128 KiB for each of multiple files. Symlinks and submodules are
+refused. Git objects are read without checkout, QML loading, hooks, filters or
+plugin execution. For updates,
+changed paths/blob identities are included when the base is present in the
+bounded fetch, alongside the surrounding candidate source. This is not a textual
+diff; an unavailable base comparison is explicitly disclosed.
+
+Preparation uses a private temporary Git repository, removed on completion,
+cancellation or failure, with no persistent review cache. Disabling is available
+inside the review dialog as well as Settings; it cancels owned work, clears
+the report and packet/association and rejects late results. Cancellation terminates,
+escalates and reaps the owned process group even if the immediate observer is killed. Settings reloads propagate the
+same revocation to other manager instances. Selection/candidate changes discard
+the association. An explicitly copied clipboard value remains under your control
+and is not cleared automatically.
+
+For an unverified first install after preparation, the separate Install action
+also carries the prepared branch SHA. A moved branch refuses **before candidate
+fetch or publication**: prepare the current candidate again, never silently retry.
+The legacy unprepared install shape and marketplace authority remain unchanged.
+The persisted `enableAiReview` preference lives in the manager's inline shell
+entry; removing the plugin does not clear an explicitly copied clipboard packet.
+
 ## Why it confirms
 
 Adding a plugin fetches a repository and loads its QML into the long-running
@@ -704,7 +794,9 @@ No dependencies are installed automatically. Enable/disable/install/remove use
 the host commands; pinned updates additionally require system Python 3 (stdlib
 only), Linux `/proc`, `flock`, and libc/filesystem `renameat2` exchange support.
 A fixed `/usr/bin/env -i` argv supplies only PATH and WAYLAND_DISPLAY, then
-executes `/usr/bin/python3 -I -S`; helper subprocesses use their own clean environment.
+executes `/usr/bin/python3 -I -S`; installer subprocesses use their own clean environment.
+The optional review helper also uses `/usr/bin/python3 -I -S`, but inherits trusted
+session/provider configuration for agent operations; source-fetch Git remains isolated.
 This uses Quickshell's supported command list instead of a map-to-hash environment binding.
 
 | Command | Used for |

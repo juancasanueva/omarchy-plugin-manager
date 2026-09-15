@@ -145,12 +145,210 @@ Item {
   // because it has to know before this store's first load has run.
   readonly property bool tiledExpandedPanel: Model.tiledExpandedPanel(selfSettings)
 
+  readonly property bool enableAiReview: Model.enableAiReview(selfSettings)
+  onEnableAiReviewChanged: if (!enableAiReview) cancelAiReview()
+  property int reviewGeneration: 0
+  property int reviewProcessGeneration: -1
+  property string reviewPhase: ""
+  property bool reviewOpened: false
+  property var reviewRequest: null
+  property var reviewPrepared: null
+  property string reviewAgent: ""
+  property var reviewBinding: null
+  property string reviewManualReason: ""
+  property string reviewReport: ""
+  property string reviewInput: ""
+  property string reviewSettings: ""
+  property string reviewError: ""
+  property string reviewOutput: ""
+  property bool reviewSettled: true
+  readonly property string reviewHelperPath:
+    decodeURIComponent(Qt.resolvedUrl("helpers/ai_review.py").toString().replace(/^file:\/\//, ""))
+
+  function setEnableAiReview(value) {
+    return writeSelfSetting("enableAiReview", value, enableAiReview)
+  }
+
+  function cancelAiReview() {
+    reviewGeneration++
+    reviewOpened = false
+    reviewPhase = ""
+    reviewRequest = null
+    reviewPrepared = null
+    reviewAgent = ""
+    reviewBinding = null
+    reviewManualReason = ""
+    reviewReport = ""
+    reviewInput = ""
+    reviewSettings = ""
+    reviewError = ""
+    reviewOutput = ""
+    if (reviewProc.running) reviewProc.signal(15)
+  }
+
+  function closeAiReview() {
+    if (reviewPrepared && reviewSettled) reviewOpened = false
+    else cancelAiReview()
+  }
+
+  function currentReviewRequest(request) {
+    if (!request) return null
+    return request.section !== undefined
+      ? Model.installRequest(Model.findRow(catalog, request.id), "", allowUnverifiedInstalls)
+      : updateRequest(Model.findRow(rows, request.id))
+  }
+
+  function reviewStillCurrent() {
+    return enableAiReview && reviewRequest !== null
+      && reviewSettings === JSON.stringify(selfSettings)
+      && Model.reviewKey(reviewRequest) === Model.reviewKey(currentReviewRequest(reviewRequest))
+  }
+
+  function pendingReviewRequest() {
+    return pendingKind === "install"
+      ? Model.installRequest(Model.findRow(catalog, pendingId), "", allowUnverifiedInstalls)
+      : pendingKind === "update" ? updateRequest(Model.findRow(rows, pendingId)) : null
+  }
+
+  function askAiReview(request) {
+    if (!enableAiReview || busy || !reviewSettled || !request
+        || Model.reviewKey(request) !== Model.reviewKey(currentReviewRequest(request))) return false
+    cancelAiReview()
+    reviewRequest = JSON.parse(JSON.stringify(request))
+    reviewSettings = JSON.stringify(selfSettings)
+    reviewOpened = true
+    reviewPhase = "selecting"
+    startReviewProcess({selection: true})
+    return true
+  }
+
+  function startReviewProcess(value) {
+    if (!reviewStillCurrent() || !reviewSettled) return false
+    reviewProcessGeneration = reviewGeneration
+    reviewSettled = false
+    reviewOutput = ""
+    // Inherit trusted session/provider configuration, never serialize it through QML.
+    // Git preparation still uses the helper's separate clean Updater environment.
+    reviewProc.command = ["/usr/bin/python3", "-I", "-S", reviewHelperPath,
+      value === null ? "--run" : JSON.stringify(value)]
+    reviewProc.running = true
+    return true
+  }
+
+  function prepareAiReview() {
+    if (!reviewStillCurrent() || reviewPhase !== "disclosure" || !reviewSettled) return false
+    reviewPhase = "preparing"
+    return startReviewProcess({request: reviewRequest, agent: reviewAgent})
+  }
+
+  function runAiReview() {
+    if (!reviewStillCurrent() || busy || !reviewSettled || reviewPhase !== "prepared"
+        || !reviewPrepared || !Model.reviewBinding(reviewBinding) || reviewAgent !== "claude") return false
+    reviewReport = ""
+    reviewError = ""
+    reviewInput = JSON.stringify({prepared: reviewPrepared, binding: reviewBinding, generation: reviewGeneration}) + "\n"
+    if (reviewInput.length > 1048576) { reviewInput = ""; return false }
+    reviewPhase = "reviewing"
+    return startReviewProcess(null)
+  }
+
+  function sendReviewInput() {
+    if (!reviewStillCurrent() || reviewProcessGeneration !== reviewGeneration) {
+      reviewInput = ""
+      reviewProc.signal(15)
+      return
+    }
+    if (reviewPhase === "reviewing" && reviewInput !== "") {
+      reviewProc.write(reviewInput)
+      reviewInput = ""
+    }
+  }
+
+  function finishAiReview(code, generation) {
+    if (generation !== undefined && generation !== reviewProcessGeneration) return
+    reviewSettled = true
+    reviewInput = ""
+    var raw = reviewOutput
+    reviewOutput = ""
+    if (reviewProcessGeneration !== reviewGeneration) return
+    if (!reviewStillCurrent()) { cancelAiReview(); return }
+    var result = null
+    try { result = JSON.parse(raw) } catch (error) {}
+    if (code !== 0 || !result || result.error) {
+      reviewPhase = "error"
+      reviewError = result && result.error ? Model.plainText(result.error).slice(0, 200) : "Review operation failed; no completed report"
+      reviewReport = ""
+    } else if (reviewPhase === "selecting" && Model.REVIEW_AGENTS.indexOf(result.agent) >= 0) {
+      reviewAgent = result.agent
+      reviewBinding = Model.reviewBinding(result.binding)
+      reviewManualReason = Model.plainText(result.manualReason || "Automatic mode unavailable; use Copy packet").slice(0, 200)
+      reviewPhase = "disclosure"
+    } else if (reviewPhase === "reviewing") {
+      reviewReport = Model.reviewReport(result, reviewPrepared, reviewBinding, reviewGeneration)
+      reviewPhase = reviewReport ? "completed" : "error"
+      reviewError = reviewReport ? "" : "Incomplete or stale report; no completed review"
+    } else if (reviewPhase === "preparing") {
+      reviewPrepared = result.agent === reviewAgent ? Model.reviewResult(result, reviewRequest) : null
+      reviewPhase = reviewPrepared ? "prepared" : "error"
+      reviewError = reviewPrepared ? "" : "Candidate changed or invalid packet; prepare again"
+    }
+  }
+
+  function copyAiReview() {
+    if (!reviewStillCurrent() || !reviewSettled || !reviewPrepared) return false
+    // Host clipboard API, explicit click only: no source in shell strings/argv.
+    Quickshell.clipboardText = reviewPrepared.packet
+    return true
+  }
+
+  function copyAiReport() {
+    if (!reviewStillCurrent() || reviewPhase !== "completed" || !reviewReport) return false
+    Quickshell.clipboardText = reviewReport
+    return true
+  }
+
+  Timer {
+    interval: 200
+    repeat: true
+    running: root.reviewRequest !== null
+    onTriggered: if (!root.reviewStillCurrent()) root.cancelAiReview()
+  }
+
+  Process {
+    id: reviewProc
+    stdinEnabled: true
+    onStarted: root.sendReviewInput()
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.reviewProcessGeneration !== root.reviewGeneration) return
+        // Producer bounds bytes before output; this is defense in depth.
+        if (root.reviewOutput.length + chunk.length > 786432) root.cancelAiReview()
+        else root.reviewOutput += chunk
+      }
+    }
+    // No stderr collector: the helper returns bounded static errors over stdout.
+    stderr: SplitParser { splitMarker: ""; onRead: function(chunk) {} }
+    onExited: function(code, status) {
+      var generation = root.reviewProcessGeneration
+      Qt.callLater(function() { root.finishAiReview(code, generation) })
+    }
+    onRunningChanged: if (!running && !root.reviewSettled) {
+      var generation = root.reviewProcessGeneration
+      // Failed starts have no exit callback. Defer past normal onExited handling.
+      Qt.callLater(function() { Qt.callLater(function() {
+        if (!reviewProc.running && !root.reviewSettled) root.finishAiReview(-1, generation)
+      }) })
+    }
+  }
+  Component.onDestruction: cancelAiReview()
+
   // Persist one setting through the host, merged over the entry as it was
   // loaded. The local copies move only when the host accepted the write; the
   // watcher reload then confirms it on every surface. `current` is the value
   // in force, so asking for what is already set is a no-op rather than a write.
   function writeSelfSetting(key, value, current) {
-    if (busy) return false
+    if (busy && !(key === "enableAiReview" && value !== true)) return false
     var want = value === true
     if (want === current) return true
     if (!selfEntryLoaded || !selfEntry) {
@@ -715,7 +913,18 @@ Item {
     var branch = pendingBranch
     cancelPending()
     var entry = Model.findRow(catalog, id)
-    var request = Model.installRequest(entry, section, allowUnverifiedInstalls)
+    var expectedBranchCommit
+    if (enableAiReview && reviewPrepared && reviewRequest && reviewRequest.id === id) {
+      if (!reviewStillCurrent()) {
+        setStatus("Candidate changed; prepare the current candidate again", true)
+        cancelAiReview()
+        return
+      }
+      if (branch !== "") expectedBranchCommit = reviewPrepared.commit
+    }
+    var request = expectedBranchCommit === undefined
+      ? Model.installRequest(entry, section, allowUnverifiedInstalls)
+      : Model.installRequest(entry, section, allowUnverifiedInstalls, expectedBranchCommit)
     if (!request || String(request.verifiedCommit || "") !== commit
         || String(request.branch || "") !== branch) {
       setStatus("Could not install " + label + ": the listing changed", true)
