@@ -21,6 +21,29 @@ BarWidget {
     if ("settings" in target) target.settings = root.settings
     if ("anchorItem" in target) target.anchorItem = button
     if ("hostWidget" in target) target.hostWidget = root
+    if ("popupMoveOwner" in target) target.popupMoveOwner = root.popupMoveOwner
+  }
+
+  property var popupMoveOwner: null
+
+  function setMoveOwner(owner) {
+    popupMoveOwner = owner
+    injectPanel()
+  }
+
+  function requestPopupMove(snapshot, fromSection, fromIndex, section, gap) {
+    return PopupBridge.requestMove(root, snapshot, fromSection, fromIndex, section, gap)
+  }
+
+  function cancelPopupArrange() {
+    PopupBridge.cancelArrange()
+  }
+
+  // Restore only when the local overlay is ready. Never recurse through the
+  // host widget or open Expanded as a substitute.
+  function openArrange() {
+    var target = panelLoader.item
+    return !!target && typeof target.openArrange === "function" && target.openArrange() === true
   }
 
   // ---- Shape contract for shell.summon/hide/toggle routing:
@@ -40,14 +63,17 @@ BarWidget {
   Component.onDestruction: PopupBridge.unregister(root)
 
   function open() {
+    cancelPopupArrange()
     if (panelLoader.item) panelLoader.item.open()
   }
 
   function close() {
+    cancelPopupArrange()
     if (panelLoader.item) panelLoader.item.close()
   }
 
   function togglePanel() {
+    cancelPopupArrange()
     if (panelLoader.item) panelLoader.item.toggle()
   }
 
@@ -61,6 +87,7 @@ BarWidget {
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
 
   function closeForPopoutSwitch() {
+    cancelPopupArrange()
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 

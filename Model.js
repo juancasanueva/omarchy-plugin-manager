@@ -896,6 +896,89 @@ function moveNote(section) {
   return "It is in the " + section + " section of the bar now."
 }
 
+// Arranger snapshots use the raw host layout, never the ID-collapsed plugin list.
+// Reject rather than compact: every index must still identify the host entry.
+function barLayoutSnapshot(raw) {
+  var nodes = 8192, units = 65536
+  function copy(value, depth) {
+    if (--nodes < 0 || depth > 12) throw new Error("Layout exceeds limits")
+    if (typeof value === "string") {
+      units -= value.length
+      if (units < 0) throw new Error("Layout exceeds limits")
+      return value
+    }
+    if (value === null || typeof value === "boolean") return value
+    if (typeof value === "number" && isFinite(value)) return value
+    if (!value || typeof value !== "object") throw new Error("Invalid layout value")
+    var array = Array.isArray(value)
+    if (!array && Object.getPrototypeOf(value) !== Object.prototype
+        && Object.getPrototypeOf(value) !== null) throw new Error("Invalid layout object")
+    var keys = Object.keys(value)
+    if (keys.length > nodes || (array && keys.length !== value.length))
+      throw new Error("Invalid layout size")
+    if (!array) keys.sort()
+    var result = array ? [] : Object.create(null)
+    for (var i = 0; i < keys.length; i++) {
+      var key = array ? String(i) : keys[i]
+      if (!Object.prototype.hasOwnProperty.call(value, key)) throw new Error("Sparse layout")
+      units -= key.length
+      if (units < 0) throw new Error("Layout exceeds limits")
+      result[key] = copy(value[key], depth + 1)
+    }
+    return Object.freeze(result)
+  }
+  try {
+    if (!raw || Array.isArray(raw) || Object.keys(raw).length !== 3) return null
+    for (var s = 0; s < BAR_SECTIONS.length; s++) {
+      if (!Array.isArray(raw[BAR_SECTIONS[s]]) || raw[BAR_SECTIONS[s]].length > 128) return null
+    }
+    var layout = copy(raw, 0), rows = []
+    for (var sectionIndex = 0; sectionIndex < BAR_SECTIONS.length; sectionIndex++) {
+      var section = BAR_SECTIONS[sectionIndex]
+      for (var index = 0; index < layout[section].length; index++) {
+        var entry = layout[section][index]
+        var id = typeof entry === "string" ? entry : entry && !Array.isArray(entry) ? entry.id : null
+        // Match PluginRegistry's ID rules; size is bounded across the snapshot.
+        if (typeof id !== "string" || id.length === 0 || id.indexOf("/") >= 0 || id.indexOf("..") >= 0) return null
+        rows.push(Object.freeze({ id: id, section: section, index: index, entry: entry }))
+      }
+    }
+    return Object.freeze({ layout: layout, rows: Object.freeze(rows), key: JSON.stringify(layout) })
+  } catch (error) { return null }
+}
+
+// gap is an insertion slot in the displayed, PRE-removal destination (0..length).
+// Check the entire latest layout immediately before dispatch; this is not host CAS.
+function barLayoutMove(snapshot, latest, fromSection, fromIndex, section, gap) {
+  var before = barLayoutSnapshot(snapshot && snapshot.layout)
+  var current = barLayoutSnapshot(latest)
+  if (!before || !current || before.key !== current.key
+      || BAR_SECTIONS.indexOf(fromSection) < 0 || BAR_SECTIONS.indexOf(section) < 0
+      || typeof fromIndex !== "number" || !isFinite(fromIndex) || Math.floor(fromIndex) !== fromIndex
+      || typeof gap !== "number" || !isFinite(gap) || Math.floor(gap) !== gap
+      || fromIndex < 0 || fromIndex >= before.layout[fromSection].length
+      || gap < 0 || gap > before.layout[section].length) return null
+  var target = gap - (fromSection === section && gap > fromIndex ? 1 : 0)
+  var noOp = fromSection === section && target === fromIndex
+  var next = JSON.parse(before.key)
+  var entry = next[fromSection].splice(fromIndex, 1)[0]
+  next[section].splice(target, 0, entry)
+  var id = typeof entry === "string" ? entry : entry.id
+  // Host-valid does not always mean argv-representable: NUL, unpaired UTF-16,
+  // and >=128 KiB UTF-8 arguments cannot safely traverse this Linux CLI path.
+  // Keep those entries in the snapshot, but never dispatch a lossy/truncated ID.
+  try {
+    if (id.indexOf("\u0000") >= 0 || encodeURIComponent(id).replace(/%[0-9A-F]{2}/g, "x").length >= 131072) return null
+  } catch (error) { return null }
+  var expected = barLayoutSnapshot(next)
+  if (!expected) return null
+  return Object.freeze({ noOp: noOp, expected: expected,
+    // Bypass the generic dispatcher, which intercepts --help/-h even as IDs.
+    command: Object.freeze(noOp ? [] : ["omarchy-bar", "move", id,
+      "--from-section", fromSection, "--from-index", String(fromIndex),
+      "--section", section, "--index", String(target)]) })
+}
+
 function actionVerb(kind) {
   if (kind === "install") return "Install"
   if (kind === "update") return "Update"
@@ -1628,6 +1711,14 @@ function expandedTabFromPayload(json) {
   try { parsed = JSON.parse(String(json || "")) } catch (e) { return "installed" }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "installed"
   return parsed.tab === "browse" ? "browse" : "installed"
+}
+
+// Only the read-only arrangement preview is addressable through IPC.
+function expandedPageFromPayload(json) {
+  var parsed = null
+  try { parsed = JSON.parse(String(json || "")) } catch (e) { return "" }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
+  return parsed.page === "arrange" ? "arrange" : ""
 }
 
 // The output the expanded window should appear on, read from the same payload.

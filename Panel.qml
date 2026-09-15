@@ -41,6 +41,7 @@ Panel {
   // nested panel, so everything the bar identifies a panel by has to be that
   // widget.
   property var hostWidget: null
+  property var popupMoveOwner: null
   readonly property var barIdentity: hostWidget || root
 
   // Guarded so the panel renders before the bar is injected (the bar-widget
@@ -61,6 +62,7 @@ Panel {
 
   PluginStore {
     id: store
+    externalBusy: !!root.popupMoveOwner && root.popupMoveOwner.busy
     selfId: root.moduleName
     // The sanctioned way to write this plugin's shell.json entry (settings).
     // The trusted built-in bar hands each third-party widget a PluginBarApi
@@ -218,10 +220,61 @@ Panel {
   // The settings pane is an overlay like the details page, not a third face
   // of the tab flip: the popup's turn is bound to the two tabs.
   property bool settingsOpen: false
+  property bool arrangeOpen: false
+  readonly property var barSnapshot: popupMoveOwner ? popupMoveOwner.snapshot : null
+  readonly property bool barMovePending: !!popupMoveOwner && popupMoveOwner.pending
+  readonly property bool arrangeBusy: !popupMoveOwner || popupMoveOwner.busy || barMovePending
+    || busy || store.actionRunning || contentFlipping || !opened || !arrangeOpen
+
+  function openArrange() {
+    if (!bar || !anchorItem || confirming || placing) return false
+    if (!opened) open()
+    if (!opened) return false
+    revokeReleaseNavigation()
+    contentFlip.stop()
+    pendingTab = ""
+    contentFlipAngle = 0
+    detailsEntry = null
+    settingsOpen = false
+    arrangeOpen = true
+    barBoard.cancelDrag()
+    settingsPane.forceActiveFocus()
+    if (!settingsPane.visible) return false
+    if (hostWidget) hostWidget.cancelPopupArrange()
+    return true
+  }
+
+  // Explicit choices revoke reopening; automatic close/destruction must not.
+  function closeArrange() {
+    arrangeOpen = false
+    barBoard.cancelDrag()
+    if (hostWidget) hostWidget.cancelPopupArrange()
+  }
+
+  function requestBarMove(snapshot, fromSection, fromIndex, section, gap) {
+    if (!opened || !arrangeOpen || contentFlipping || busy || store.actionRunning || !popupMoveOwner
+        || popupMoveOwner.busy || popupMoveOwner.pending || !hostWidget) return false
+    return hostWidget.requestPopupMove(snapshot, fromSection, fromIndex, section, gap)
+  }
+
+  function useCurrentLayout() {
+    if (!opened || !arrangeOpen || !popupMoveOwner || !popupMoveOwner.pending
+        || !popupMoveOwner.exited || !popupMoveOwner.snapshot) return false
+    return popupMoveOwner.recover()
+  }
+
+  function handleArrangeKey(event) {
+    if (!arrangeOpen || (event.key !== Qt.Key_Escape && event.key !== Qt.Key_Backspace)) return false
+    if (event.key === Qt.Key_Escape && barBoard.heldSnapshot !== null) barBoard.cancelDrag()
+    else closeArrange()
+    return true
+  }
 
   function openSettings() {
+    closeArrange()
     if (settingsOpen) return
     revokeReleaseNavigation()
+    detailsEntry = null
     settingsOpen = true
   }
 
@@ -275,18 +328,20 @@ Panel {
   // Hand over to the expanded window on the tab you were looking at. Close
   // first: the popup and the panel are never up together. A bar without a
   // shell reference (tests, odd hosts) makes this a no-op rather than a throw.
-  function expand() {
+  function expand(page) {
     if (!bar || !bar.shell || typeof bar.shell.summon !== "function") return
     var tab = activeTab
     // Name the output this popup sits on so the expanded window opens on the
     // same monitor instead of wherever the shell's default screen happens to be.
     var screenName = panel.screen ? String(panel.screen.name || "") : ""
     revokeReleaseNavigation()
+    closeArrange()
     close()
-    bar.shell.summon(pluginId, JSON.stringify({ tab: tab, screen: screenName }))
+    bar.shell.summon(pluginId, JSON.stringify({ tab: tab, screen: screenName, page: page === "arrange" ? "arrange" : "" }))
   }
 
   function switchTab(tab) {
+    closeArrange()
     // A click mid-turn lands the turn in progress first rather than being
     // swallowed, so no tap is ever lost to the animation.
     if (contentFlip.running) {
@@ -475,7 +530,9 @@ Panel {
 
   function openDetails(entry) {
     if (!entry) return
+    closeArrange()
     revokeReleaseNavigation()
+    settingsOpen = false
     detailsEntry = entry
   }
 
@@ -604,7 +661,7 @@ Panel {
     Qt.callLater(function() {
       if (root.opened
           && Model.browseModalFocusOwner(root.detailsOpen, root.confirming, root.placing) === "list"
-          && !root.settingsOpen
+          && !root.settingsOpen && !root.arrangeOpen
           && keyCatcher) keyCatcher.forceActiveFocus()
     })
   }
@@ -612,7 +669,7 @@ Panel {
   property bool titleIconIntroArmed: false
 
   onOpenedChanged: {
-    if (!opened) { detailsEntry = null; settingsOpen = false; revokeReleaseNavigation(); return }
+    if (!opened) { detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard.cancelDrag(); revokeReleaseNavigation(); return }
     titleIconIntro.stop()
     titleIcon.opacity = 0
     titleIconIntroArmed = true
@@ -630,7 +687,7 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: root.arrangeOpen ? settingsPane : keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(620))
 
     // Fill the available height while preserving the host's bar gap and screen margins.
@@ -639,7 +696,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || root.placing || root.detailsOpen || root.settingsOpen
+      blocked: root.confirming || root.placing || root.detailsOpen || root.settingsOpen || root.arrangeOpen
         || searchField.activeFocus
         || groupDropdown.popupOpen || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
         || catalogKindDropdown.popupOpen || availabilityDropdown.popupOpen || sortDropdown.popupOpen
@@ -785,7 +842,7 @@ Panel {
           // Browse's extra button goes on the far side of them.
           ButtonGroup {
             id: tabs
-            anchors.right: settingsButton.left
+            anchors.right: arrangeButton.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             options: root.tabOptions
@@ -828,6 +885,21 @@ Panel {
               text: "Open the official Marketplace"
               fontFamily: root.contentFontFamily
             }
+          }
+
+          PanelActionButton {
+            id: arrangeButton
+            anchors.right: settingsButton.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰕮"
+            fontSize: Style.font.display
+            tooltipText: "Arrange"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.arrangeOpen ? root.closeArrange() : root.openArrange()
           }
 
           // The gear turns the card over to the settings pane and back; the
@@ -1668,7 +1740,7 @@ Panel {
         id: settingsPane
         anchors.fill: parent
         z: 10
-        visible: root.settingsOpen
+        visible: root.settingsOpen || root.arrangeOpen
         color: Color.popups.background
 
         // Nothing underneath reacts to a click while the pane is up.
@@ -1682,6 +1754,7 @@ Panel {
         // Escape and Backspace both leave the pane; the key catcher is
         // blocked while it is up, so neither closes the popup instead.
         Keys.onPressed: function(event) {
+          if (root.handleArrangeKey(event)) { event.accepted = true; return }
           if (event.key !== Qt.Key_Escape && event.key !== Qt.Key_Backspace) return
           root.closeSettings()
           event.accepted = true
@@ -1698,11 +1771,101 @@ Panel {
           foreground: root.contentForeground
           fontFamily: root.contentFontFamily
           fontSize: Style.font.caption
-          onClicked: root.closeSettings()
+          onClicked: root.arrangeOpen ? root.closeArrange() : root.closeSettings()
+        }
+
+        Column {
+          id: arrangeStatus
+          visible: root.arrangeOpen
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: settingsBackButton.bottom
+          anchors.topMargin: Style.space(12)
+          spacing: Style.space(8)
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: !root.popupMoveOwner ? "Arrange is not ready; waiting for the retained host."
+              : root.barMovePending ? root.popupMoveOwner.status
+              : !root.barSnapshot ? "Bar layout unavailable; waiting for host configuration."
+              : root.popupMoveOwner.status
+            color: root.popupMoveOwner && root.popupMoveOwner.statusIsError ? Color.urgent : root.secondaryForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            width: parent.width
+            visible: root.barMovePending
+            height: visible ? implicitHeight : 0
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: root.popupMoveOwner && !root.popupMoveOwner.exited
+              ? "Saving. Arrange returns here after the bar rebuilds."
+              : "Review the layout below. Accept it without retrying, or hide the popup; moves stay locked."
+            color: root.secondaryForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Row {
+            visible: root.barMovePending
+            height: visible ? implicitHeight : 0
+            spacing: Style.space(8)
+            Button {
+              text: "Use current layout"
+              enabled: root.popupMoveOwner && root.popupMoveOwner.exited && root.barSnapshot !== null
+              bordered: true
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              fontSize: Style.font.caption
+              onClicked: root.useCurrentLayout()
+            }
+            Button {
+              text: "Hide popup"
+              bordered: true
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              fontSize: Style.font.caption
+              onClicked: { root.closeArrange(); root.close() }
+            }
+          }
+        }
+
+        BarLayoutPane {
+          id: barBoard
+          visible: root.arrangeOpen
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: arrangeStatus.bottom
+          anchors.topMargin: Style.space(12)
+          anchors.bottom: parent.bottom
+          snapshot: root.barSnapshot
+          busy: root.arrangeBusy
+          labels: {
+            var labels = Object.create(null)
+            for (var row of root.rows) labels[row.id] = row.name
+            return labels
+          }
+          onMoveRequested: function(snapshot, fromSection, rawIndex, targetSection, preRemovalGap) {
+            root.requestBarMove(snapshot, fromSection, rawIndex, targetSection, preRemovalGap)
+          }
+          fill: Color.menu.background
+          rowFill: Style.normalFill
+          foreground: root.contentForeground
+          mutedForeground: root.secondaryForeground
+          borderColor: Color.menu.border
+          accent: Color.accent
+          fontFamily: root.contentFontFamily
+          fontPixelSize: Style.font.caption
+          spacing: Style.space(8)
+          radius: Style.cornerRadius
+          rowHeight: Style.space(40)
         }
 
         Flickable {
           id: settingsScroll
+          visible: root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: settingsBackButton.bottom

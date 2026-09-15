@@ -82,7 +82,11 @@ Item {
   // messages, and labels are not unique.
   property string busyRowId: ""
   property string busyId: ""
-  readonly property bool busy: busyKind !== ""
+  // Only popup stores opt into the retained owner's lock. Never feed this
+  // projection back into that owner or copy it into local action state.
+  property bool externalBusy: false
+  readonly property bool busy: busyKind !== "" || barMovePending !== null || externalBusy
+  readonly property bool actionRunning: actionProc.running || pinnedProc.running
 
   // Kept past the exit so a late stderr can still upgrade the message it
   // belongs to (see actionProc below).
@@ -144,6 +148,7 @@ Item {
   // watcher reload then confirms it on every surface. `current` is the value
   // in force, so asking for what is already set is a no-op rather than a write.
   function writeSelfSetting(key, value, current) {
+    if (busy) return false
     var want = value === true
     if (want === current) return true
     if (!selfEntryLoaded || !selfEntry) {
@@ -467,7 +472,7 @@ Item {
   // is written to something nobody can read, and a Process owned by a
   // destroyed surface is not a safe place for the command itself either.
   function runDetached(summary, detail, command) {
-    if (command.length === 0) return
+    if (busy || command.length === 0) return
     Quickshell.execDetached(["bash", "-c", noticeScript, "notice", summary, detail].concat(command))
     setStatus(summary, false)
   }
@@ -609,6 +614,7 @@ Item {
   }
 
   function confirmPlacement(section) {
+    if (busy) return
     // Three questions share this dialog: where to put a plugin being
     // installed, where to put one already sitting in the list switched off,
     // and where to move one that is already in the bar.
@@ -658,6 +664,7 @@ Item {
   // plugin widget, the surfaces included, so there is no "after the install"
   // in which to ask anything.
   function confirmPending() {
+    if (busy) return
     if (pendingKind === "disable") {
       var row = Model.findRow(rows, pendingId)
       cancelPending()
@@ -698,6 +705,7 @@ Item {
   // question was on screen. Only what the dialog named is ever installed; a
   // snapshot or a branch that moved is a no-op, never a substitute.
   function startAdd(section) {
+    if (busy) return
     var id = pendingId
     var label = pendingLabel
     var commit = pendingVerifiedCommit
@@ -861,6 +869,116 @@ Item {
     actionProc.running = true
   }
 
+  // ---- Positional layout moves (Expanded only) -----------------------------
+  // Expanded is keepLoaded: hiding its window retains this owner and lock.
+  // Stopping an IPC client cannot undo a request the host already received.
+  property var barMovePending: null
+  property bool barMoveExited: true
+  property bool barMoveFailed: false
+  property int barMoveBytes: 0
+
+  function startBarMove(snapshot, fromSection, fromIndex, section, gap) {
+    if (root.busy || root.actionRunning || root.barMovePending || barMoveProc.running || !root.shell) return false
+    var plan = Model.barLayoutMove(snapshot, root.shell.barConfig && root.shell.barConfig.layout,
+                                   fromSection, fromIndex, section, gap)
+    if (!plan) {
+      var before = Model.barLayoutSnapshot(snapshot && snapshot.layout)
+      var latest = Model.barLayoutSnapshot(root.shell.barConfig && root.shell.barConfig.layout)
+      // A host-valid ID may still be impossible to pass losslessly through
+      // Linux argv. Explain that refusal without removing its board entry.
+      if (before && latest && before.key === latest.key) {
+        var entries = before.layout[fromSection]
+        var entry = entries && entries[fromIndex]
+        var id = typeof entry === "string" ? entry : entry && entry.id
+        var transportable = typeof id === "string"
+        try {
+          transportable = transportable && id.indexOf("\u0000") < 0
+            && encodeURIComponent(id).replace(/%[0-9A-F]{2}/g, "x").length < 131072
+        } catch (error) { transportable = false }
+        if (entry && !transportable) {
+          root.setStatus("Move refused: this entry ID cannot be transported by omarchy-bar. No move was sent.", true)
+          return false
+        }
+      }
+      root.setStatus("Move refused: layout changed or unavailable, destination full, or invalid drop. No move was sent.", true)
+      return false
+    }
+    if (plan.noOp) return false
+    root.barMovePending = plan
+    root.barMoveExited = false
+    root.barMoveFailed = false
+    root.barMoveBytes = 0
+    root.setStatus("Moving bar entry; waiting for the host layout", false)
+    // GNU timeout owns the command group, including the CLI's IPC descendants.
+    // TERM on overflow also starts timeout's one-second KILL escalation.
+    barMoveProc.command = ["/usr/bin/timeout", "-k", "1", "8"].concat(plan.command)
+    barMoveProc.running = true
+    return true
+  }
+
+  function readBarMoveOutput(chunk) {
+    if (!root.barMovePending || root.barMoveFailed) return
+    // No collection, newline buffering or error text rendering. Count UTF-8
+    // bytes; a surrogate pair split across chunks is conservatively overcounted.
+    var bytes = 0
+    for (var i = 0; i < chunk.length && bytes <= 4096; i++) {
+      var code = chunk.charCodeAt(i)
+      if (code < 128) bytes += 1
+      else if (code < 2048) bytes += 2
+      else if (code >= 0xd800 && code <= 0xdbff && i + 1 < chunk.length
+               && chunk.charCodeAt(i + 1) >= 0xdc00 && chunk.charCodeAt(i + 1) <= 0xdfff) {
+        bytes += 4
+        i += 1
+      } else bytes += 3
+    }
+    root.barMoveBytes += bytes
+    if (root.barMoveBytes > 4096) {
+      root.barMoveFailed = true
+      barMoveProc.signal(15)
+    }
+  }
+
+  function finishBarMove(exitCode) {
+    if (!root.barMovePending) return
+    root.barMoveExited = true
+    root.barMoveFailed = root.barMoveFailed || exitCode !== 0
+    root.setStatus(root.barMoveFailed
+      ? "Move outcome unknown; reconcile the current bar before continuing"
+      : "Move sent; waiting for the host layout", root.barMoveFailed)
+    root.reconcileBarMove(false)
+  }
+
+  // Call on host barConfig changes AND after exit. true is an explicit user
+  // acknowledgement of the CURRENT board after an ambiguous/mismatched result;
+  // never pass it automatically or retry the original drag after a failure.
+  function reconcileBarMove(acceptCurrent) {
+    if (!root.barMovePending || !root.barMoveExited || barMoveProc.running) return false
+    var current = Model.barLayoutSnapshot(root.shell && root.shell.barConfig && root.shell.barConfig.layout)
+    if (!current || (current.key !== root.barMovePending.expected.key && acceptCurrent !== true)) return false
+    root.barMovePending = null
+    root.setStatus("Current bar layout reconciled", false)
+    return true
+  }
+
+  Process {
+    id: barMoveProc
+    stdout: SplitParser { splitMarker: ""; onRead: function(chunk) { root.readBarMoveOutput(chunk) } }
+    stderr: SplitParser { splitMarker: ""; onRead: function(chunk) { root.readBarMoveOutput(chunk) } }
+    onExited: function(exitCode) { Qt.callLater(function() { root.finishBarMove(exitCode) }) }
+  }
+
+  // Covers failure to start as well as an unexpectedly stalled client. The
+  // process group deadline above stays responsible for descendant cleanup.
+  Timer {
+    interval: 10000
+    running: root.barMovePending !== null && !root.barMoveExited
+    onTriggered: {
+      root.barMoveFailed = true
+      if (barMoveProc.running) barMoveProc.signal(15)
+      else root.finishBarMove(-1)
+    }
+  }
+
   // ---- Processes ----------------------------------------------------------
 
   // One round trip for the whole picture: enabled state from `plugin list`,
@@ -881,10 +999,13 @@ Item {
   // Opt-in, because the popup exists once per monitor and three copies
   // reloading at once for a change the bar already handles is pure waste.
   property bool watchConfig: false
+  onWatchConfigChanged: if (!watchConfig) configReload.stop()
 
   FileView {
     id: shellConfig
-    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    path: root.watchConfig ? Quickshell.env("HOME") + "/.config/omarchy/shell.json" : ""
+    preload: false
+    blockAllReads: true
     watchChanges: root.watchConfig
     printErrors: false
     onFileChanged: if (root.watchConfig) configReload.restart()
@@ -894,7 +1015,7 @@ Item {
     id: configReload
     interval: 1000
     repeat: false
-    onTriggered: root.reload()
+    onTriggered: if (root.watchConfig) root.reload()
   }
 
   Timer {

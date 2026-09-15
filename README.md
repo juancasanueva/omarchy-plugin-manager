@@ -95,6 +95,37 @@ One consequence of the extra kind: the shell now routes
 expanded panel, which makes it the thing to bind a hotkey to, while the bar
 button still opens the popup.
 
+### Arrange the bar
+
+Choose **Arrange** (`󰕮`) in either header. The popup opens its own overlay, like
+Settings; it never opens Expanded. After a save rebuilds the bar, Arrange returns
+to the popup on the same screen. Drag entries within or between **Left**, **Center**, and **Right**.
+**Dropping saves immediately** through `omarchy-bar move`; there is no Apply
+step. Press `Esc` during a drag or release outside the board to cancel it.
+
+The board shows **configured order**, not a pixel-perfect bar
+preview. Each duplicate keeps its own raw position and settings: moving one
+instance does not move every entry with the same ID. The host may pin the tray
+visually, so tray placement on screen can differ from configured order. An ID
+that cannot pass losslessly through the CLI stays visible, with a move-refusal
+message rather than a silently altered ID.
+
+A host layout change cancels any stale drag. A client exit alone does not prove
+that the move saved: the manager waits for the expected host layout. After an
+uncertain or mismatched result, inspect the current board and click **Use current
+layout** to accept it after the client exits; the manager never retries a move
+automatically. In the popup, **Back**, `Esc`/`Backspace` outside a drag, **Hide popup**,
+or choosing another page cancels automatic return, not the pending move lock.
+Automatic popup destruction does not cancel return. In Expanded, navigation,
+collapse and restart stay locked; **Hide window** remains safe and reopening
+returns to the pending board. Both boards share the retained owner's move lock.
+
+The panel is retained with `keepLoaded`, but starts hidden without config reads
+or inventory work. Hiding retains pending reconciliation; explicit plugin
+reload, disable/removal, or shell shutdown does not. This is not a global lock
+against other tools or popup instances, nor an atomic compare-and-swap with the
+host: avoid concurrent bar edits while a move is pending.
+
 ## The Installed tab
 
 What the shell actually found, in two sections:

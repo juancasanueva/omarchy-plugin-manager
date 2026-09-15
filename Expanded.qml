@@ -12,9 +12,9 @@ import "PopupBridge.js" as PopupBridge
 //
 // This is the plugin's `panel` entry point. The shell loads it when asked to
 // summon this plugin id, hands it `shell` and `manifest`, then calls
-// `open(payload)`; hiding calls `close()` and unloads it again. Nothing here
-// keeps state between summons on purpose — every open re-reads the shell,
-// exactly as opening the popup does.
+// `open(payload)`; hiding calls `close()`. keepLoaded retains the store and
+// unresolved positional moves across hide/toggle and ordinary layout changes.
+// Explicit plugin reload, disable/removal or shell shutdown ends that ownership.
 //
 // The data and every action live in PluginStore, shared with the popup. What
 // is different here is only layout: Installed is a list beside a details
@@ -56,11 +56,12 @@ Item {
   // owns the value the settings pane shows and writes. The whole file is read
   // before Model can bound it, which is the shell's own bargain: shell.json is
   // the shell's configuration, read whole on this same thread before any
-  // plugin loads. No watch: this panel is built afresh on every summon (it is
-  // not keepLoaded), so open() reads once and the instance never reads again.
+  // plugin loads. No preload or watch: eager keepLoaded construction reads
+  // nothing. A normal open explicitly refreshes this one setting.
   FileView {
     id: configView
     path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    preload: false
     blockLoading: true
     printErrors: false
   }
@@ -71,7 +72,7 @@ Item {
 
   PluginStore {
     id: store
-    watchConfig: true
+    watchConfig: root.opened
     selfId: root.pluginId
     // The sanctioned way to write this plugin's shell.json entry (settings).
     shell: root.shell
@@ -85,14 +86,26 @@ Item {
   // ---- Lifecycle (called by the shell) --------------------------------------
 
   function open(payloadJson) {
+    // Summon must not reset a request whose client or host outcome is pending.
+    // Return to its board even if this summon asked for a different tab.
+    if (barMovePending) {
+      arrangeOpen = true
+      showRetainedWindow()
+      refreshBarLayout()
+      return
+    }
     // Before the window shows, because it decides which window shows.
+    configView.reload()
     tiled = Model.tiledExpandedPanel(Model.parseSelfSettings(
       Model.selfEntryFromShellConfig(configView.text(), pluginId)))
     activeTab = Model.expandedTabFromPayload(payloadJson)
     targetScreenName = Model.expandedScreenFromPayload(payloadJson)
     selectedIndex = -1
     detailsEntry = null
-    opened = true
+    settingsOpen = false
+    arrangeOpen = Model.expandedPageFromPayload(payloadJson) === "arrange"
+    showRetainedWindow()
+    refreshBarLayout()
     // The piece is hidden until the window's first frame, then snaps in.
     titleIconIntro.stop()
     titleIcon.opacity = 0
@@ -101,10 +114,18 @@ Item {
     // thread, and that stalls the intro playing right now. Once the piece
     // has landed, the read runs with nothing to interrupt.
     initialLoad.restart()
+  }
+
+  function showRetainedWindow() {
+    // Native toplevel closure can change visible. Restore its binding on every
+    // summon instead of relying on a new Loader/window instance.
+    tiledWindow.visible = Qt.binding(function() { return root.opened && root.tiled })
+    opened = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function loadEverything() {
+    if (!opened || barMovePending) return
     store.loadOnOpen()
   }
 
@@ -118,7 +139,17 @@ Item {
   function close() {
     initialLoad.stop()
     releaseNavigator.revoke()
+    barBoard.cancelDrag()
+    contentFlip.stop()
+    pendingFlip = null
+    pendingTab = ""
+    contentFlipAngle = 0
     opened = false
+    // Hiding is safe because manifest.keepLoaded retains both this owner and
+    // its Process. Keep the reconciliation lock; hiding is never cancellation.
+    if (barMovePending) return
+    settingsOpen = false
+    arrangeOpen = false
     detailsEntry = null
     selectedIndex = -1
     store.cancelPending()
@@ -127,6 +158,7 @@ Item {
   // Closing from inside goes through the shell so its own open-set agrees
   // with what is on screen; without a shell (a bare test host) just close.
   function dismiss() {
+    if (!opened) return
     if (shell && typeof shell.hide === "function") shell.hide(pluginId)
     else close()
   }
@@ -137,6 +169,7 @@ Item {
   // loader, so the request crosses to the bar widget through PopupBridge.
   // Same order as the popup's expand(): the two are never up together.
   function collapse() {
+    if (barMovePending) return
     var screenName = targetScreenName
     dismiss()
     PopupBridge.openPopup(screenName)
@@ -224,6 +257,7 @@ Item {
   // nothing is visible. A call mid-turn lands the turn in progress first
   // rather than being swallowed, so no tap is ever lost to the animation.
   function flipTo(direction, apply) {
+    if (barMovePending) return
     if (contentFlip.running) {
       contentFlip.stop()
       applyPendingFlip()
@@ -237,10 +271,11 @@ Item {
   function applyPendingFlip() {
     var apply = pendingFlip
     pendingFlip = null
-    if (apply) apply()
+    if (apply && !barMovePending) apply()
   }
 
   function switchTab(tab) {
+    if (barMovePending) return
     if (activeTab === tab) return
     // The tab bar lights the destination at once; the content follows at
     // the midpoint, remembering where Installed's cursor was on the way out.
@@ -268,6 +303,7 @@ Item {
   onActiveTabChanged: {
     detailsEntry = null
     settingsOpen = false
+    arrangeOpen = false
     // Decided from the tab's own new value: `browsing` is a binding on it and
     // may not have re-evaluated by the time this handler runs, which is how
     // coming back to Installed once landed on nothing at all. Browse starts
@@ -437,17 +473,109 @@ Item {
   // into it, Back or Esc turns it back.
   function openDetails(entry) {
     if (!entry || detailsEntry === entry) return
-    flipTo(1, function() { detailsEntry = entry })
+    flipTo(1, function() {
+      settingsOpen = false
+      arrangeOpen = false
+      detailsEntry = entry
+    })
   }
 
   // ---- Settings: one more face of the flip, reached from the header's gear.
   //      Backspace and the Back button return; Escape still closes the window,
   //      as everywhere else on this surface.
   property bool settingsOpen: false
+  property bool arrangeOpen: false
+  readonly property bool barMovePending: store.barMovePending !== null
+  property var barSnapshot: null
+
+  // This narrow live object is injected into popup panels, not the window or
+  // store. Both surfaces dispatch through the same store lock and raw indices.
+  QtObject {
+    id: popupMoves
+    property bool continuationActive: false
+    property int generation: 0
+    readonly property bool pending: root.barMovePending
+    readonly property bool exited: store.barMoveExited
+    readonly property bool busy: store.busy
+    readonly property var snapshot: root.barSnapshot
+    readonly property string status: store.status
+    readonly property bool statusIsError: store.statusIsError
+    function start(snapshot, fromSection, fromIndex, section, gap) {
+      return root.startPopupMove(snapshot, fromSection, fromIndex, section, gap)
+    }
+    function recover() { return root.recoverPopupMove() }
+  }
+
+  // Register after construction without summoning or reading configuration.
+  Timer {
+    interval: 0
+    running: true
+    onTriggered: PopupBridge.registerOwner(popupMoves)
+  }
+  Component.onDestruction: PopupBridge.unregisterOwner(popupMoves)
+  Timer {
+    interval: 100
+    repeat: true
+    running: popupMoves.continuationActive
+    onTriggered: PopupBridge.continueArrange(popupMoves)
+  }
+  Connections {
+    target: store
+    function onBarMovePendingChanged() { if (root.barMovePending) popupMoves.generation++ }
+  }
+
+  function startPopupMove(snapshot, fromSection, fromIndex, section, gap) {
+    return store.startBarMove(snapshot, fromSection, fromIndex, section, gap)
+  }
+
+  function recoverPopupMove() {
+    return store.reconcileBarMove(true)
+  }
+
+  function refreshBarLayout() {
+    barBoard.cancelDrag()
+    barSnapshot = Model.barLayoutSnapshot(root.shell && root.shell.barConfig ? root.shell.barConfig.layout : null)
+    store.reconcileBarMove(false)
+  }
+
+  function requestBarMove(snapshot, fromSection, fromIndex, section, gap) {
+    if (!opened || !arrangeOpen || contentFlipping || busy) return false
+    return store.startBarMove(snapshot, fromSection, fromIndex, section, gap)
+  }
+
+  function useCurrentLayout() {
+    if (!opened || !arrangeOpen || !store.barMoveExited) return false
+    refreshBarLayout()
+    return !barMovePending || store.reconcileBarMove(true)
+  }
+
+  onShellChanged: refreshBarLayout()
+  Connections {
+    target: root.shell
+    function onBarConfigChanged() { root.refreshBarLayout() }
+  }
+
+  function openArrange() {
+    if (arrangeOpen) return
+    flipTo(1, function() {
+      detailsEntry = null
+      settingsOpen = false
+      arrangeOpen = true
+    })
+  }
+
+  function closeArrange() {
+    if (!arrangeOpen) return
+    flipTo(-1, function() { arrangeOpen = false })
+  }
 
   function openSettings() {
     if (settingsOpen) return
-    flipTo(1, function() { settingsOpen = true })
+    flipTo(1, function() {
+      detailsEntry = null
+      arrangeOpen = false
+      settingsOpen = true
+    })
   }
 
   function closeSettings() {
@@ -563,14 +691,10 @@ Item {
     implicitWidth: Style.space(1180)
     implicitHeight: Style.space(820)
 
-    // Hyprland can close this window itself (a kill-active bind, say). The
-    // shell's open-set has to agree with what is on screen, so a close from
-    // outside goes back through dismiss(). That also breaks the binding above,
-    // which is not put back here: this plugin is not keepLoaded, so the next
-    // summon builds the window again from scratch.
-    onVisibleChanged: {
-      if (!visible && root.opened && root.tiled) root.dismiss()
-    }
+    // Quickshell WindowInterface exposes closed(), not a vetoable closing
+    // event. Treat compositor close exactly like hiding; keepLoaded owns the
+    // process independently of this native window's visibility.
+    onClosed: root.dismiss()
   }
 
   BorderSurface {
@@ -607,6 +731,10 @@ Item {
           root.dismiss()
           event.accepted = true
         }
+        else if (event.key === Qt.Key_Backspace && root.arrangeOpen && !searchField.activeFocus) {
+          root.closeArrange()
+          event.accepted = true
+        }
         else if (event.key === Qt.Key_Backspace && root.settingsOpen && !searchField.activeFocus) {
           root.closeSettings()
           event.accepted = true
@@ -617,7 +745,7 @@ Item {
         }
         else if (text === "1") { root.switchTab("installed"); event.accepted = true }
         else if (text === "2") { root.switchTab("browse"); event.accepted = true }
-        else if (root.detailsOpen || root.settingsOpen) return
+        else if (root.detailsOpen || root.settingsOpen || root.arrangeOpen) return
         else if (event.key === Qt.Key_Down || text === "j") { root.moveSelection(0, 1); event.accepted = true }
         else if (event.key === Qt.Key_Up || text === "k") { root.moveSelection(0, -1); event.accepted = true }
         else if (event.key === Qt.Key_Right || text === "l") { root.moveSelection(1, 0); event.accepted = true }
@@ -807,7 +935,8 @@ Item {
 
         ButtonGroup {
           id: tabs
-          anchors.right: settingsButton.left
+          enabled: !root.barMovePending
+          anchors.right: arrangeButton.left
           anchors.rightMargin: Style.space(10)
           anchors.verticalCenter: parent.verticalCenter
           options: root.tabOptions
@@ -819,10 +948,25 @@ Item {
           onChanged: function(value) { root.switchTab(value) }
         }
 
+        PanelActionButton {
+          id: arrangeButton
+          enabled: !root.barMovePending
+          anchors.right: settingsButton.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: "󰕮"
+          fontSize: Style.font.display
+          tooltipText: "Arrange"
+          foreground: root.arrangeOpen ? Color.accent : root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.arrangeOpen ? root.closeArrange() : root.openArrange()
+        }
+
         // The one switch this panel has lives behind the gear; the face it
         // opens is another turn of the same card.
         PanelActionButton {
           id: settingsButton
+          enabled: !root.barMovePending
           anchors.right: collapseButton.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
@@ -838,6 +982,7 @@ Item {
         // eye finds the pair of them in the same corner on both surfaces.
         PanelActionButton {
           id: collapseButton
+          enabled: !root.barMovePending
           anchors.right: refreshButton.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
@@ -906,7 +1051,7 @@ Item {
         anchors.topMargin: shown ? Style.space(10) : 0
         // These filter the grid. On the details page there is no grid to
         // filter, and the page is better off with the height.
-        readonly property bool shown: !(root.browsing && root.detailsOpen)
+        readonly property bool shown: !root.arrangeOpen && !(root.browsing && root.detailsOpen)
         visible: shown
         // Every control carries its caption above it; the row is as tall
         // as a captioned dropdown and everything sits on its bottom edge.
@@ -1095,6 +1240,9 @@ Item {
         anchors.topMargin: text !== "" ? Style.space(8) : 0
         height: text !== "" ? implicitHeight : 0
         text: {
+          if (root.barMovePending) return root.status
+          if (root.arrangeOpen) return root.barSnapshot ? root.status
+            : "Bar layout unavailable; waiting for host configuration."
           if (root.busy) return Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
           if (root.browsing && root.catalogError !== "") return root.catalogError
           if (!root.browsing && root.loadError !== "") return root.loadError
@@ -1187,7 +1335,7 @@ Item {
       // ---- Installed: the list on the left, one plugin in full on the right.
       Item {
         id: installedPane
-        visible: !root.browsing && !root.settingsOpen
+        visible: !root.browsing && !root.settingsOpen && !root.arrangeOpen
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: statusLine.bottom
@@ -1345,7 +1493,7 @@ Item {
       // ---- Browse: the popup's card grid, one column wider.
       GridView {
         id: catalogGrid
-        visible: root.browsing && !root.detailsOpen && !root.settingsOpen
+        visible: root.browsing && !root.detailsOpen && !root.settingsOpen && !root.arrangeOpen
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: statusLine.bottom
@@ -1485,7 +1633,7 @@ Item {
       //      right, and the way back at the top; the third face of the flip.
       CatalogDetailsPane {
         id: browseDetailsPane
-        visible: root.browsing && root.detailsOpen && !root.settingsOpen
+        visible: root.browsing && root.detailsOpen && !root.settingsOpen && !root.arrangeOpen
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: statusLine.bottom
@@ -1520,7 +1668,7 @@ Item {
       //      face the gear turns the card over to.
       Item {
         id: settingsPane
-        visible: root.settingsOpen
+        visible: root.settingsOpen || root.arrangeOpen
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: statusLine.bottom
@@ -1539,6 +1687,7 @@ Item {
 
         Button {
           id: settingsBackButton
+          enabled: !root.barMovePending
           anchors.left: parent.left
           anchors.top: parent.top
           iconText: "󰁍"
@@ -1548,11 +1697,89 @@ Item {
           foreground: root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          onClicked: root.closeSettings()
+          onClicked: root.arrangeOpen ? root.closeArrange() : root.closeSettings()
+        }
+
+        Column {
+          id: arrangeRecovery
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: settingsBackButton.bottom
+          anchors.topMargin: visible ? Style.space(8) : 0
+          visible: root.arrangeOpen && root.barMovePending
+          height: visible ? implicitHeight : 0
+          spacing: Style.space(6)
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: !store.barMoveExited
+              ? "Move in progress. You may hide this window; reopening returns here."
+              : !root.barSnapshot
+                ? "Layout unavailable. You may hide this window; moves stay locked until a valid layout can be reconciled."
+                : "Review the current layout below. Use current layout accepts it without retrying the move."
+            color: root.secondaryForeground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Row {
+            spacing: Style.space(8)
+            Button {
+              text: "Use current layout"
+              enabled: store.barMoveExited && root.barSnapshot !== null
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.useCurrentLayout()
+            }
+            Button {
+              text: "Hide window"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.dismiss()
+            }
+          }
+        }
+
+        BarLayoutPane {
+          id: barBoard
+          visible: root.arrangeOpen
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: arrangeRecovery.bottom
+          anchors.topMargin: Style.space(16)
+          anchors.bottom: parent.bottom
+          snapshot: root.barSnapshot
+          labels: {
+            var labels = Object.create(null)
+            for (var row of root.rows) labels[row.id] = row.name
+            return labels
+          }
+          busy: root.busy || root.contentFlipping || !root.opened
+          onMoveRequested: function(snapshot, fromSection, fromIndex, section, gap) {
+            root.requestBarMove(snapshot, fromSection, fromIndex, section, gap)
+          }
+          fill: Color.menu.background
+          rowFill: Style.normalFill
+          foreground: root.foreground
+          mutedForeground: root.secondaryForeground
+          borderColor: Color.menu.border
+          accent: Color.accent
+          fontFamily: root.fontFamily
+          fontPixelSize: Style.font.caption
+          spacing: Style.space(8)
+          radius: Style.cornerRadius
+          rowHeight: Style.space(40)
         }
 
         Flickable {
           id: settingsScroll
+          visible: root.settingsOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: settingsBackButton.bottom

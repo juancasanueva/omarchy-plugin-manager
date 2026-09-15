@@ -1182,7 +1182,7 @@ test("the unreviewed-update confirmation installs exactly the commit it named, o
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const tip = "c".repeat(40)
   const run = (row, sha, gate = true) => {
-    const state = { pendingKind: "update", pendingId: "thing", pendingLabel: "Thing", pendingUrl: "",
+    const state = { busy: false, pendingKind: "update", pendingId: "thing", pendingLabel: "Thing", pendingUrl: "",
       pendingUnverifiedSha: sha, pendingPlacementNeeded: false, rows: row ? [row] : [], calls: [],
       runUpdate(target) { this.calls.push(target.id) }, runAction() { this.calls.push("action") },
       canStartUpdate: () => gate, startDisable() {}, startAdd() {} }
@@ -3184,7 +3184,7 @@ test("the tab buttons sit in the same place on both tabs; Marketplace goes to th
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 
   const tabs = panel.slice(panel.indexOf("id: tabs"), panel.indexOf("id: marketplaceLink"))
-  assert.match(tabs, /anchors\.right: settingsButton\.left/)
+  assert.match(tabs, /anchors\.right: arrangeButton\.left/)
   assert.doesNotMatch(tabs, /root\.browsing/)
 
   const marketplace = panel.slice(panel.indexOf("id: marketplaceLink"), panel.indexOf("id: refreshButton"))
@@ -3694,7 +3694,7 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 
-  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
+  assert.match(panel, /PluginStore \{\s*id: store\s*externalBusy: !!root\.popupMoveOwner && root\.popupMoveOwner\.busy\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
   // Every process and script lives in the store; the panel keeps only the
   // release probe, which is about navigation rather than data.
   for (const id of ["loadProc", "updateProc", "catalogProc", "actionProc"]) {
@@ -4007,6 +4007,14 @@ test("bar update dot projects the panel's confirmed count without changing butto
 
 // ---- Expanded panel --------------------------------------------------------
 
+test("expanded page admits only Arrange and otherwise defaults to the list", () => {
+  const page = new Function(source + "\nreturn expandedPageFromPayload")()
+  assert.equal(page('{"page":"arrange"}'), "arrange")
+  for (const value of [undefined, "", "broken", "null", "[]", '"arrange"', '{}',
+    '{"page":"settings"}', '{"page":"<img>"}', '{"page":true}'])
+    assert.equal(page(value), "")
+})
+
 test("expandedTabFromPayload never trusts the summon payload", () => {
   assert.equal(Model.expandedTabFromPayload('{"tab":"browse"}'), "browse")
   assert.equal(Model.expandedTabFromPayload('{"tab":"installed"}'), "installed")
@@ -4034,7 +4042,7 @@ test("the expanded panel opens on the monitor the popup was on", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   // The popup names its own output in the payload; the overlay resolves that
   // name against the live screens and falls back to the shell's default.
-  assert.match(panel, /bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName \}\)\)/)
+  assert.match(panel, /bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}\)\)/)
   assert.match(panel, /var screenName = panel\.screen \? String\(panel\.screen\.name \|\| ""\) : ""/)
   assert.match(expanded, /property string targetScreenName: ""/)
   assert.match(expanded, /targetScreenName = Model\.expandedScreenFromPayload\(payloadJson\)/)
@@ -4127,7 +4135,7 @@ test("the expanded panel starts its loads a beat after it opens", () => {
   // serve an IPC call on its main thread, and that stalls whatever is
   // animating at the time.
   assert.match(expanded, /Timer \{\s*id: initialLoad\s*interval: 1300[\s\S]*?onTriggered: root\.loadEverything\(\)/)
-  assert.match(expanded, /function loadEverything\(\) \{\s*store\.loadOnOpen\(\)\s*\}/)
+  assert.match(expanded, /function loadEverything\(\) \{\s*if \(!opened \|\| barMovePending\) return\s*store\.loadOnOpen\(\)\s*\}/)
   const open = expanded.slice(expanded.indexOf("function open(payloadJson) {"), expanded.indexOf("function loadEverything() {"))
   assert.match(open, /initialLoad\.restart\(\)/)
   assert.doesNotMatch(open, /store\.reload\(\)/)
@@ -4227,7 +4235,7 @@ test("the expanded panel flips its content like a card when switching tabs", () 
   assert.match(flipTo, /if \(contentFlip\.running\) \{\s*contentFlip\.stop\(\)\s*applyPendingFlip\(\)\s*contentFlipAngle = 0\s*\}/)
   assert.match(flipTo, /pendingFlip = apply\s*contentFlip\.direction = direction\s*contentFlip\.restart\(\)/)
   const applyFlip = expanded.slice(expanded.indexOf("function applyPendingFlip() {"), expanded.indexOf("function applyPendingFlip() {") + 200)
-  assert.match(applyFlip, /var apply = pendingFlip\s*pendingFlip = null\s*if \(apply\) apply\(\)/)
+  assert.match(applyFlip, /var apply = pendingFlip\s*pendingFlip = null\s*if \(apply && !barMovePending\) apply\(\)/)
   const switchTab = expanded.slice(expanded.indexOf("function switchTab(tab) {"), expanded.indexOf("readonly property var tabOptions"))
   assert.match(switchTab, /if \(activeTab === tab\) return/)
   assert.match(switchTab, /pendingTab = tab\s*flipTo\(tab === "browse" \? 1 : -1, function\(\) \{[\s\S]*?pendingTab = ""[\s\S]*?activeTab = tab\s*\}\)/)
@@ -4421,12 +4429,12 @@ test("the store reloads when shell.json changes under it", () => {
   // Opt-in: the popup is rebuilt by the bar on a real layout change, and
   // three per-monitor popups reloading at once would be pure waste.
   assert.match(store, /property bool watchConfig: false/)
-  assert.match(store, /FileView \{\s*id: shellConfig\s*path: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json"\s*watchChanges: root\.watchConfig\s*printErrors: false\s*onFileChanged: if \(root\.watchConfig\) configReload\.restart\(\)/)
+  assert.match(store, /FileView \{\s*id: shellConfig\s*path: root\.watchConfig \? Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json" : ""\s*preload: false\s*blockAllReads: true\s*watchChanges: root\.watchConfig\s*printErrors: false\s*onFileChanged: if \(root\.watchConfig\) configReload\.restart\(\)/)
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
-  assert.match(expanded, /PluginStore \{[\s\S]{0,120}?watchConfig: true/)
+  assert.match(expanded, /PluginStore \{[\s\S]{0,120}?watchConfig: root\.opened/)
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   assert.doesNotMatch(panel, /watchConfig: true/)
-  assert.match(store, /Timer \{\s*id: configReload\s*interval: 1000\s*repeat: false\s*onTriggered: root\.reload\(\)/)
+  assert.match(store, /Timer \{\s*id: configReload\s*interval: 1000\s*repeat: false\s*onTriggered: if \(root\.watchConfig\) root\.reload\(\)/)
 })
 
 function expandedKeyHarness(state = {}) {
@@ -4489,7 +4497,7 @@ test("Browse details are a third face of the flip, not a dialog", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   // Opening turns toward the page, closing turns back; the grid and the page
   // are the two faces, and nothing else moves.
-  assert.match(expanded, /function openDetails\(entry\) \{\s*if \(!entry \|\| detailsEntry === entry\) return\s*flipTo\(1, function\(\) \{ detailsEntry = entry \}\)\s*\}/)
+  assert.match(expanded, /function openDetails\(entry\) \{\s*if \(!entry \|\| detailsEntry === entry\) return\s*flipTo\(1, function\(\) \{\s*settingsOpen = false\s*arrangeOpen = false\s*detailsEntry = entry\s*\}\)\s*\}/)
   assert.match(expanded, /function closeDetails\(\) \{\s*if \(!detailsOpen\) return\s*flipTo\(-1, function\(\) \{ detailsEntry = null \}\)\s*\}/)
   const grid = expanded.slice(expanded.indexOf("id: catalogGrid"), expanded.indexOf("id: catalogGrid") + 200)
   assert.match(grid, /visible: root\.browsing && !root\.detailsOpen/)
@@ -4505,7 +4513,7 @@ test("Browse details are a third face of the flip, not a dialog", () => {
   assert.match(pane, /onPreviewUndecodable: root\.previewsSupported = false/)
   // Tabs still answer while the page is up; the grid's cursor keys do not.
   const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
-  assert.ok(keys.indexOf('text === "1"') < keys.indexOf("else if (root.detailsOpen || root.settingsOpen) return"), "tab keys before the details guard")
+  assert.ok(keys.indexOf('text === "1"') < keys.indexOf("else if (root.detailsOpen || root.settingsOpen || root.arrangeOpen) return"), "tab keys before the details guard")
   // The hint bar says the one way out.
   const hints = expanded.slice(expanded.indexOf("id: hintBar"), expanded.indexOf("id: installedPane"))
   assert.match(hints, /id: filterHints[\s\S]*?model: root\.browsing && root\.detailsOpen \? \[\] : \(root\.browsing \? root\.browseFilterHints : root\.installedFilterHints\)/)
@@ -4645,7 +4653,7 @@ test("the search and filter row collapses while the Browse details page is up", 
   const controls = expanded.slice(expanded.indexOf("id: controls\n"), expanded.indexOf("id: controls\n") + 900)
   // They filter the grid; on the page there is no grid to filter, and the
   // page is better off with the height.
-  assert.match(controls, /readonly property bool shown: !\(root\.browsing && root\.detailsOpen\)/)
+  assert.match(controls, /readonly property bool shown: !root\.arrangeOpen && !\(root\.browsing && root\.detailsOpen\)/)
   assert.match(controls, /visible: shown/)
   assert.match(controls, /anchors\.topMargin: shown \? Style\.space\(10\) : 0/)
   assert.match(controls, /height: !shown \? 0 : \(root\.browsing \? browseFilters\.implicitHeight : installedFilters\.implicitHeight\)/)
@@ -4731,7 +4739,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /runAction\("remove", pendingLabel, \["omarchy", "plugin", "remove", pendingId, "--yes"\]\)/)
 
   // The popup keeps its bindings through aliases and thin wrappers.
-  assert.match(panel, /PluginStore \{\s*id: store\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
+  assert.match(panel, /PluginStore \{\s*id: store\s*externalBusy: !!root\.popupMoveOwner && root\.popupMoveOwner\.busy\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
   for (const name of ["pendingKind", "pendingId", "pendingLabel", "pendingUrl", "pendingVerifiedCommit", "pendingPlacementNeeded", "pendingPlacement"])
     assert.match(panel, new RegExp(`property alias ${name}: store\\.${name}\\b`), name)
   for (const name of ["confirming", "placing", "placementChoices", "placementMessage", "confirmMessage"])
@@ -4756,14 +4764,14 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.match(button, /fontSize: Style\.font\.display/)
   assert.match(button, /tooltipText: "Expand into a full panel"/)
   assert.match(button, /onClicked: root\.expand\(\)/)
-  // The tabs now sit left of two icons.
-  assert.match(panel, /id: tabs\s*anchors\.right: settingsButton\.left/)
+  // Arrange sits beside Settings without moving the tabs between pages.
+  assert.match(panel, /id: tabs\s*anchors\.right: arrangeButton\.left/)
   assert.match(panel, /id: settingsButton\s*anchors\.right: expandButton\.left/)
   // The count line lives on its own row now, so nothing yields to the tabs.
   assert.doesNotMatch(panel, /id: subtitle[\s\S]{0,400}anchors\.right: marketplaceLink/)
   // Close first, then summon: the popup and the panel are never up together,
   // and a bar without a shell reference (tests, odd hosts) is a no-op.
-  assert.match(panel, /function expand\(\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName \}\)\)\s*\}/)
+  assert.match(panel, /function expand\(page\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}\)\)\s*\}/)
 })
 
 test("the expanded window is a layer-shell overlay that the shell summons and hides", () => {
@@ -4773,7 +4781,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.match(expanded, /property var shell: null/)
   assert.match(expanded, /property var manifest: null/)
   assert.match(expanded, /property bool opened: false/)
-  assert.match(expanded, /PluginStore \{\s*id: store\s*watchConfig: true\s*selfId: root\.pluginId\s*(\/\/[^\n]*\n\s*)*shell: root\.shell\s*\}/)
+  assert.match(expanded, /PluginStore \{\s*id: store\s*watchConfig: root\.opened\s*selfId: root\.pluginId\s*(\/\/[^\n]*\n\s*)*shell: root\.shell\s*\}/)
 
   const window = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("PanelWindow {") + 700)
   assert.match(window, /visible: root\.opened/)
@@ -4789,13 +4797,13 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
 
   // Lifecycle: the shell calls open(payload)/close(); we never flip our own
   // open state behind its back, so dismissing goes through shell.hide.
-  assert.match(expanded, /function open\(payloadJson\) \{[\s\S]*?activeTab = Model\.expandedTabFromPayload\(payloadJson\)[\s\S]*?opened = true[\s\S]*?initialLoad\.restart\(\)/)
+  assert.match(expanded, /function open\(payloadJson\) \{[\s\S]*?activeTab = Model\.expandedTabFromPayload\(payloadJson\)[\s\S]*?showRetainedWindow\(\)[\s\S]*?initialLoad\.restart\(\)/)
   assert.match(expanded, /function close\(\) \{[\s\S]*?opened = false/)
-  assert.match(expanded, /function dismiss\(\) \{\s*if \(shell && typeof shell\.hide === "function"\) shell\.hide\(pluginId\)\s*else close\(\)\s*\}/)
+  assert.match(expanded, /function dismiss\(\) \{\s*if \(!opened\) return\s*if \(shell && typeof shell\.hide === "function"\) shell\.hide\(pluginId\)\s*else close\(\)\s*\}/)
   // A panel plugin's scoped shell has no bar and summon() routes here, so the
   // way back crosses to the bar widget through the shared PopupBridge library.
   assert.match(expanded, /import "PopupBridge\.js" as PopupBridge/)
-  assert.match(expanded, /function collapse\(\) \{\s*var screenName = targetScreenName\s*dismiss\(\)\s*PopupBridge\.openPopup\(screenName\)\s*\}/)
+  assert.match(expanded, /function collapse\(\) \{\s*if \(barMovePending\) return\s*var screenName = targetScreenName\s*dismiss\(\)\s*PopupBridge\.openPopup\(screenName\)\s*\}/)
   assert.doesNotMatch(expanded, /summonBarWidget/)
 
   // Chrome: title, tabs, refresh, and the way back to the popup.
@@ -5141,8 +5149,8 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(button, /iconText: "󰒓"/)
   assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
   assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
-  assert.match(expanded, /id: tabs\s*anchors\.right: settingsButton\.left/)
-  assert.match(expanded, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*flipTo\(1, function\(\) \{ settingsOpen = true \}\)\s*\}/)
+  assert.match(expanded, /id: tabs\s*enabled: !root\.barMovePending\s*anchors\.right: arrangeButton\.left/)
+  assert.match(expanded, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*flipTo\(1, function\(\) \{\s*detailsEntry = null\s*arrangeOpen = false\s*settingsOpen = true\s*\}\)\s*\}/)
   assert.match(expanded, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*flipTo\(-1, function\(\) \{ settingsOpen = false \}\)\s*\}/)
   const handler = expanded.slice(expanded.indexOf("onActiveTabChanged: {"), expanded.indexOf("onActiveTabChanged: {") + 200)
   assert.match(handler, /settingsOpen = false/)
@@ -5154,7 +5162,7 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(pane, /visible: root\.settingsOpen/)
   assert.match(pane, /anchors\.top: statusLine\.bottom[\s\S]*?anchors\.bottom: hintBar\.top/)
   assert.match(pane, /angle: root\.contentFlipAngle/)
-  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.closeSettings\(\)/)
+  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.arrangeOpen \? root\.closeArrange\(\) : root\.closeSettings\(\)/)
   assert.match(pane, /text: "Settings"/)
   assert.match(pane, /text: "Allow updating unverified plugins"/)
   assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
@@ -5178,7 +5186,7 @@ test("the expanded window's settings face owns the one switch and reads back thr
   press({ key: "Escape", text: "", accepted: false })
   assert.deepEqual(calls, ["settings-back", "dismiss"])
   const keys = expanded.slice(expanded.indexOf("Keys.onPressed: function(event) {"), expanded.indexOf("// ---- Header"))
-  assert.match(keys, /else if \(root\.detailsOpen \|\| root\.settingsOpen\) return/)
+  assert.match(keys, /else if \(root\.detailsOpen \|\| root\.settingsOpen \|\| root\.arrangeOpen\) return/)
 
   // The store owns the value and the write goes through the host.
   assert.match(store, /property var shell: null/)
@@ -5201,7 +5209,7 @@ test("the expanded window's settings face owns the one switch and reads back thr
   // carry all survive, since the host replaces the entry outright.
   const saves = [], statuses = []
   const loaded = { position: "right", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), allowUnverifiedUpdates: true }
-  const state = { selfEntry: loaded, selfEntryLoaded: true,
+  const state = { busy: false, selfEntry: loaded, selfEntryLoaded: true,
     selfSettings: { position: "right", allowUnverifiedUpdates: true }, selfId: "acme.plugin",
     shell: { updateEntryInline: (id, settings) => { saves.push([id, settings]); return true } },
     allowUnverifiedUpdates: true, setStatus(text, error) { statuses.push([text, error]) } }
@@ -5270,11 +5278,11 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
   assert.match(button, /foreground: root\.settingsOpen \? Color\.accent : root\.contentForeground/)
   assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
-  assert.match(panel, /id: tabs\s*anchors\.right: settingsButton\.left/)
+  assert.match(panel, /id: tabs\s*anchors\.right: arrangeButton\.left/)
 
   // An overlay like the details page, not a third face of the two-tab flip.
   assert.match(panel, /property bool settingsOpen: false/)
-  assert.match(panel, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = true\s*\}/)
+  assert.match(panel, /function openSettings\(\) \{\s*closeArrange\(\)\s*if \(settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*detailsEntry = null\s*settingsOpen = true\s*\}/)
   assert.match(panel, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = false\s*\}/)
   const pane = panel.slice(panel.indexOf("id: settingsPane"), panel.indexOf("PluginDetails {"))
   assert.match(pane, /anchors\.fill: parent\s*z: 10\s*visible: root\.settingsOpen/)
@@ -5282,7 +5290,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(pane, /MouseArea \{ anchors\.fill: parent \}/)
   assert.match(pane, /onVisibleChanged: \{\s*if \(visible\) forceActiveFocus\(\)\s*else root\.returnFocusToList\(\)\s*\}/)
   assert.match(pane, /if \(event\.key !== Qt\.Key_Escape && event\.key !== Qt\.Key_Backspace\) return\s*root\.closeSettings\(\)\s*event\.accepted = true/)
-  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.closeSettings\(\)/)
+  assert.match(pane, /id: settingsBackButton[\s\S]*?text: "Back"[\s\S]*?onClicked: root\.arrangeOpen \? root\.closeArrange\(\) : root\.closeSettings\(\)/)
   assert.match(pane, /text: "Settings"/)
   assert.match(pane, /text: "Allow updating unverified plugins"/)
   assert.match(pane, /Off: only marketplace-verified snapshots are offered\. /)
@@ -5308,7 +5316,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(restore, /=== "list"\s*&& !root\.settingsOpen/)
   const flip = panel.slice(panel.indexOf("function switchTab(tab)"), panel.indexOf("function applyPendingTab()"))
   assert.match(flip, /closeDetails\(\)\s*closeSettings\(\)/)
-  assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; revokeReleaseNavigation\(\); return \}/)
+  assert.match(panel, /if \(!opened\) \{ detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard\.cancelDrag\(\); revokeReleaseNavigation\(\); return \}/)
 })
 
 test("the expanded panel opens as a tiled window when the setting says so, and as the overlay otherwise", () => {
@@ -5346,7 +5354,8 @@ test("the expanded panel opens as a tiled window when the setting says so, and a
   assert.match(tiled, /color: Color\.menu\.background/)
   assert.match(tiled, /minimumSize: Qt\.size\(640, 480\)/)
   assert.doesNotMatch(tiled, /scrim/)
-  assert.match(tiled, /onVisibleChanged: \{\s*if \(!visible && root\.opened && root\.tiled\) root\.dismiss\(\)\s*\}/)
+  assert.match(tiled, /onClosed: root\.dismiss\(\)/)
+  assert.match(expanded, /tiledWindow\.visible = Qt\.binding\(function\(\) \{ return root\.opened && root\.tiled \}\)/)
 
   // One card, hosted by whichever window is up: reparented, never duplicated,
   // so every root.* to keyCatcher, searchField and listScroll still resolves.

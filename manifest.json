@@ -7,6 +7,7 @@
   "license": "MIT",
   "description": "Browse, install, place, enable, update, and remove Omarchy shell plugins from the bar",
   "kinds": ["bar-widget", "panel"],
+  "keepLoaded": true,
   "entryPoints": { "barWidget": "BarWidget.qml", "panel": "Expanded.qml" },
   "barWidget": {
     "displayName": "Plugin Manager",
