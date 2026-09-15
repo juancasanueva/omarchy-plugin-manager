@@ -1051,7 +1051,7 @@ Item {
         anchors.topMargin: shown ? Style.space(10) : 0
         // These filter the grid. On the details page there is no grid to
         // filter, and the page is better off with the height.
-        readonly property bool shown: !root.arrangeOpen && !(root.browsing && root.detailsOpen)
+        readonly property bool shown: !root.settingsOpen && !root.arrangeOpen && !(root.browsing && root.detailsOpen)
         visible: shown
         // Every control carries its caption above it; the row is as tall
         // as a captioned dropdown and everything sits on its bottom edge.

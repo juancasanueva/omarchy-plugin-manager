@@ -4648,15 +4648,40 @@ test("card previews fit inside the frame instead of cropping", () => {
   assert.doesNotMatch(preview, /PreserveAspectCrop/)
 })
 
-test("the search and filter row collapses while the Browse details page is up", () => {
+test("the search and filter row collapses in Settings, Arrange, and Browse details", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   const controls = expanded.slice(expanded.indexOf("id: controls\n"), expanded.indexOf("id: controls\n") + 900)
   // They filter the grid; on the page there is no grid to filter, and the
   // page is better off with the height.
-  assert.match(controls, /readonly property bool shown: !root\.arrangeOpen && !\(root\.browsing && root\.detailsOpen\)/)
+  assert.match(controls, /readonly property bool shown: !root\.settingsOpen && !root\.arrangeOpen && !\(root\.browsing && root\.detailsOpen\)/)
   assert.match(controls, /visible: shown/)
   assert.match(controls, /anchors\.topMargin: shown \? Style\.space\(10\) : 0/)
   assert.match(controls, /height: !shown \? 0 : \(root\.browsing \? browseFilters\.implicitHeight : installedFilters\.implicitHeight\)/)
+})
+
+test("the shipped controls shown binding covers every view and tab combination", () => {
+  const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
+  const controls = expanded.slice(expanded.indexOf("id: controls\n"), expanded.indexOf("id: controls\n") + 900)
+  const binding = controls.match(/readonly property bool shown: ([^\n]+)/)
+  assert.ok(binding, "controls must declare the shown binding")
+  const shown = new Function("root", `return (${binding[1]})`)
+  // Settings, Arrange, details, expected Installed, expected Browse.
+  const cases = [
+    [false, false, false, true, true],
+    [false, false, true, true, false],
+    [false, true, false, false, false],
+    [false, true, true, false, false],
+    [true, false, false, false, false],
+    [true, false, true, false, false],
+    [true, true, false, false, false],
+    [true, true, true, false, false]
+  ]
+  for (const [settingsOpen, arrangeOpen, detailsOpen, installed, browse] of cases) {
+    for (const browsing of [false, true]) {
+      const root = { settingsOpen, arrangeOpen, detailsOpen, browsing }
+      assert.equal(shown(root), browsing ? browse : installed, JSON.stringify(root))
+    }
+  }
 })
 
 test("installing from the details page keeps the page open", () => {
