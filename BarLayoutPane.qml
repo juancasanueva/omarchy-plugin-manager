@@ -111,7 +111,7 @@ Item {
     Caption {
         id: hint
         width: parent.width
-        text: "Drag a widget to reorder — within its section or across sections."
+        text: "Drag widgets to change their order or move them to another section."
         color: root.mutedForeground
     }
     Row {
