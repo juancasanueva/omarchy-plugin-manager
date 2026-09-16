@@ -88,11 +88,6 @@ Panel {
   property alias loading: store.loading
   property alias loadError: store.loadError
   property int selectedIndex: -1
-  onSelectedIndexChanged: store.cancelAiReview()
-  readonly property string reviewSelectionKey: Model.reviewKey(browsing
-    ? Model.installRequest(detailsEntry || selectedEntry, "", store.allowUnverifiedInstalls)
-    : store.updateRequest(selectedRow))
-  onReviewSelectionKeyChanged: store.cancelAiReview()
 
   property string groupFilter: "all"
   readonly property var groupOptions: Model.groupOptions()
@@ -787,7 +782,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirming || root.placing || root.detailsOpen || root.settingsOpen || root.arrangeOpen || store.reviewOpened
+      blocked: root.confirming || root.placing || root.detailsOpen || root.settingsOpen || root.arrangeOpen
         || searchField.activeFocus
         || groupDropdown.popupOpen || kindDropdown.popupOpen || statusDropdown.popupOpen || categoryDropdown.popupOpen
         || catalogKindDropdown.popupOpen || availabilityDropdown.popupOpen || sortDropdown.popupOpen
@@ -1604,11 +1599,6 @@ Panel {
               row: modelData
               verified: Model.isVerified(modelData, root.verifiedIds)
               selected: root.selectedIndex === index
-              aiReviewEnabled: store.enableAiReview
-              onReviewRequested: {
-                root.selectedIndex = index
-                store.askAiReview(store.updateRequest(modelData))
-              }
               actionsEnabled: !root.busy
               updateEnabled: root.updateActionsEnabled
               updating: root.busyKind === "update" && root.busyRowId === modelData.id
@@ -2002,39 +1992,6 @@ Panel {
             font.bold: true
           }
 
-          Rectangle {
-            width: parent.width
-            height: Math.max(aiReviewText.implicitHeight, aiReviewSwitch.implicitHeight) + Style.space(24)
-            radius: Style.cornerRadius
-            color: Style.normalFill
-            border.width: 1
-            border.color: Qt.alpha(root.secondaryForeground, 0.35)
-            Text {
-              id: aiReviewText
-              textFormat: Text.PlainText
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(12)
-              anchors.right: aiReviewSwitch.left
-              anchors.rightMargin: Style.space(16)
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Enable AI review\nOff by default. Manual packets or supported agents, only with explicit run consent."
-              wrapMode: Text.WordWrap
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            ToggleSwitch {
-              id: aiReviewSwitch
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(12)
-              anchors.verticalCenter: parent.verticalCenter
-              checked: store.enableAiReview
-              interactive: true
-              foreground: root.contentForeground
-              onToggled: store.setEnableAiReview(!store.enableAiReview)
-            }
-          }
-
           // Off is the marketplace's promise; on is the user's own call, and
           // the caption says so in the same words the confirmation will.
           Rectangle {
@@ -2291,8 +2248,6 @@ Panel {
         message: root.confirmMessage
         actionText: "View changes"
         actionVisible: store.confirmCompareUrl !== ""
-        reviewVisible: store.enableAiReview && store.pendingReviewRequest() !== null
-        onReviewRequested: store.askAiReview(store.pendingReviewRequest())
         onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
         confirmText: Model.actionVerb(root.pendingKind) === "Action"
           ? "Confirm"
@@ -2312,19 +2267,6 @@ Panel {
 
         onCanceled: root.cancelPending()
         onConfirmed: root.confirmPending()
-      }
-
-      AiReviewDialog {
-        anchors.fill: parent
-        z: 20
-        manager: store
-        onOpenedChanged: if (!opened) {
-          if (root.confirming) confirm.forceActiveFocus()
-          else root.returnFocusToList()
-        }
-        background: Color.popups.background
-        foreground: root.contentForeground
-        fontFamily: root.contentFontFamily
       }
 
       ChoiceDialog {

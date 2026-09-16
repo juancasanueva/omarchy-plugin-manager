@@ -24,7 +24,6 @@ Rectangle {
   property bool selected: false
   property bool actionsEnabled: true
   property bool updateEnabled: true
-  property bool aiReviewEnabled: false
   // This row's own update is running: its button spins instead of dimming
   // with the rest of the list.
   property bool updating: false
@@ -38,7 +37,6 @@ Rectangle {
 
   signal clicked()
   signal updateRequested()
-  signal reviewRequested()
   signal removeRequested()
   signal enableRequested()
   signal disableRequested()
@@ -489,17 +487,6 @@ Rectangle {
         }
         fontFamily: root.fontFamily
       }
-    }
-
-    Button {
-      text: "Review with AI"
-      visible: root.aiReviewEnabled && !!root.row && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true)
-      enabled: root.actionsEnabled && root.updateEnabled
-      anchors.verticalCenter: parent.verticalCenter
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      fontSize: Style.font.caption
-      onClicked: root.reviewRequested()
     }
 
     PanelActionButton {

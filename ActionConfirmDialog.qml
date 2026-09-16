@@ -13,8 +13,6 @@ Item {
   property string confirmText: "Confirm"
   property string actionText: ""
   property bool actionVisible: false
-  property bool reviewVisible: false
-  property string reviewText: "Review with AI"
   property int selectedIndex: 1
 
   property color background: Color.background
@@ -28,14 +26,12 @@ Item {
   signal canceled()
   signal confirmed()
   signal actionRequested()
-  signal reviewRequested()
 
   function pick(index) {
     if (!root.opened) return
     if (index === 0) root.canceled()
     else if (index === 1) root.confirmed()
     else if (index === 2 && root.actionVisible) root.actionRequested()
-    else if (index === 3 && root.reviewVisible) root.reviewRequested()
   }
 
   function resetSelection() {
@@ -47,19 +43,15 @@ Item {
 
   function handleKey(event) {
     if (!root.opened) return false
-    var choices = [0, 1]
-    if (root.actionVisible) choices.push(2)
-    if (root.reviewVisible) choices.push(3)
-    var count = choices.length
-    var position = Math.max(0, choices.indexOf(root.selectedIndex))
+    var count = root.actionVisible ? 3 : 2
     if (event.key === Qt.Key_Escape) {
       root.canceled()
       return true
     } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Backtab) {
-      root.selectedIndex = choices[(position + count - 1) % count]
+      root.selectedIndex = (root.selectedIndex + count - 1) % count
       return true
     } else if (event.key === Qt.Key_Right || event.key === Qt.Key_Tab) {
-      root.selectedIndex = choices[(position + 1) % count]
+      root.selectedIndex = (root.selectedIndex + 1) % count
       return true
     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
       root.pick(root.selectedIndex)
@@ -123,11 +115,11 @@ Item {
         Item {
           id: buttons
           width: parent.width
-          height: Style.space((root.actionVisible ? 44 : 0) + (root.reviewVisible ? 44 : 0) + 34)
+          height: Style.space(root.actionVisible ? 78 : 34)
           readonly property real answerWidth: Math.min(Style.space(88), (width - Style.space(10)) / 2)
 
           Repeater {
-            model: [root.cancelText, root.confirmText, root.actionText, root.reviewText]
+            model: [root.cancelText, root.confirmText, root.actionText]
 
             BorderSurface {
               required property int index
@@ -137,11 +129,11 @@ Item {
               readonly property color highlight: urgent ? Color.urgent : root.selectedText
 
               // The action occupies its own bounded row above the two answers.
-              visible: index === 3 ? root.reviewVisible : index !== 2 || root.actionVisible
-              width: index >= 2 ? Math.min(buttons.width, Style.space(160)) : buttons.answerWidth
+              visible: index !== 2 || root.actionVisible
+              width: index === 2 ? Math.min(buttons.width, Style.space(140)) : buttons.answerWidth
               height: Style.space(34)
               x: buttons.width - width - (index === 0 ? width + Style.space(10) : 0)
-              y: index === 2 ? 0 : index === 3 ? Style.space(root.actionVisible ? 44 : 0) : buttons.height - height
+              y: index === 2 ? 0 : buttons.height - height
               color: !selected ? "transparent"
                 : urgent ? Util.alpha(Color.urgent, 0.22) : root.selectedBackground
               borderSpec: Border.flat(selected ? highlight

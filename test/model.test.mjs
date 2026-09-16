@@ -1335,10 +1335,7 @@ test("action confirmation scrolls long messages while keeping both button layout
   assert.doesNotMatch(viewport[1], /elide:|maximumLineCount:|\.slice\(|\.substring\(/)
   assert.match(dialog, /height: content\.implicitHeight \+ contentTopInset \+ contentBottomInset/)
   assert.match(dialog, /spacing: Style\.space\(20\)/)
-  const buttonHeight = Function('root', 'Style', 'return ' + dialog.match(/id: buttons[\s\S]*?height: ([^\n]+)/)[1])
-  for (const actionVisible of [false, true]) for (const reviewVisible of [false, true])
-    assert.equal(buttonHeight({actionVisible, reviewVisible}, {space: x => x}),
-      34 + (actionVisible ? 44 : 0) + (reviewVisible ? 44 : 0))
+  assert.match(dialog, /height: Style\.space\(root\.actionVisible \? 78 : 34\)/)
   const expression = viewport[1].match(/height: (Math\.min[\s\S]*?)\n\s*clip:/)[1]
   const height = Function("root", "Style", "card", "buttons", "content", "contentHeight", `return (${expression})`)
   for (const scale of [1, 1.5]) for (const paneHeight of [300, 480, 900]) {
@@ -3793,7 +3790,7 @@ test("an unreviewed install is confirmed and re-gated on the branch the dialog n
   const base = () => ({ busy: false, pendingKind: "", pendingId: "", pendingLabel: "", pendingUrl: "",
     pendingBranch: "", pendingVerifiedCommit: "", pendingSection: "", pendingPlacement: "",
     pendingPlacementNeeded: false, pendingUnverifiedSha: "", allowUnverifiedInstalls: true,
-    catalog: catalog, launched: [], statuses: [], enableAiReview: false,
+    catalog: catalog, launched: [], statuses: [],
     launchInstall(request, label) { this.launched.push([request, label]) },
     setStatus(text, error) { this.statuses.push([text, error]) } })
   const call = (state, name, args) => Function("Model", "state", "args", `with (state) {

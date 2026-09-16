@@ -169,8 +169,7 @@ def request_value(value):
     value = {k: v for k, v in value.items() if k not in DERIVED}
     keys = set(value)
     install = keys == {"schemaVersion", "id", "repository", "verifiedCommit", "section"}
-    prepared_install = keys == {"schemaVersion", "id", "repository", "branch", "section", "expectedBranchCommit"}
-    tip_install = keys == {"schemaVersion", "id", "repository", "branch", "section"} or prepared_install
+    tip_install = keys == {"schemaVersion", "id", "repository", "branch", "section"}
     verified = keys == {"schemaVersion", "id", "repository", "verifiedCommit", "expectedLocalHead"}
     unverified = keys == {"schemaVersion", "id", "repository", "unverifiedCommit", "expectedLocalHead"}
     require(install or tip_install or verified or unverified, "Invalid request fields")
@@ -183,10 +182,6 @@ def request_value(value):
         # The one shape that arrives without a commit: it is resolved from the
         # branch inside the staged repository, before anything is fetched.
         require(branch_name(value["branch"]) == value["branch"] != "", "Invalid branch")
-        if prepared_install:
-            require(isinstance(value["expectedBranchCommit"], str)
-                    and SHA.fullmatch(value["expectedBranchCommit"]), "Full SHA-1 required")
-            value["expectedBranchCommit"] = value["expectedBranchCommit"].lower()
     else:
         for key in (commit_key,) if install else (commit_key, "expectedLocalHead"):
             require(isinstance(value[key], str) and SHA.fullmatch(value[key]), "Full SHA-1 required")
@@ -912,9 +907,6 @@ class Updater:
             # commit here, before any fetch, and only that commit is ever
             # fetched, checked out or published.
             request["target"] = self.resolve_tip(stage, request["branch"])
-            require("expectedBranchCommit" not in request
-                    or request["target"] == request["expectedBranchCommit"],
-                    "Branch moved; prepare the current candidate again")
         fetched = self.fetch_stage(stage, request)
         target_tree = self.tree(stage, fetched)
         self.vet_stage(stage, fetched, request, target_tree)
@@ -1077,7 +1069,6 @@ if __name__ == "__main__":
         os.umask(0o077)
         require(len(sys.argv) == 2 and len(sys.argv[1]) <= 2048, "One bounded request required")
         raw_request = document(sys.argv[1].encode(), 2048)
-        require(type(raw_request) is dict and not (set(raw_request) & set(DERIVED)), "Caller-derived fields refused")
         kind = request_kind(raw_request)
         if kind == "catalog":
             # In-process and streamed: the projection is far larger than the

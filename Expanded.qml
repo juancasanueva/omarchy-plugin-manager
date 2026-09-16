@@ -323,11 +323,6 @@ Item {
   // ---- Installed --------------------------------------------------------------
 
   property int selectedIndex: -1
-  onSelectedIndexChanged: store.cancelAiReview()
-  readonly property string reviewSelectionKey: Model.reviewKey(browsing
-    ? Model.installRequest(detailsEntry || selectedEntry, "", store.allowUnverifiedInstalls)
-    : store.updateRequest(selectedRow))
-  onReviewSelectionKeyChanged: store.cancelAiReview()
   // What the lists filter on. It follows the search box after a short pause
   // rather than on every keystroke: each change rebuilds every visible row or
   // card, and a word typed at speed would rebuild them once per letter.
@@ -1488,8 +1483,6 @@ Item {
           secondaryForeground: root.secondaryForeground
           fontFamily: root.fontFamily
 
-          aiReviewEnabled: store.enableAiReview
-          onReviewRequested: store.askAiReview(store.updateRequest(root.selectedRow))
           onUpdateRequested: root.startUpdate(root.selectedRow)
           onRemoveRequested: store.askRemove(root.selectedRow)
           onEnableRequested: store.askEnable(root.selectedRow)
@@ -1833,39 +1826,6 @@ Item {
             font.bold: true
           }
 
-          Rectangle {
-            width: parent.width
-            height: Math.max(aiReviewText.implicitHeight, aiReviewSwitch.implicitHeight) + Style.space(24)
-            radius: Style.cornerRadius
-            color: Style.normalFill
-            border.width: 1
-            border.color: Qt.alpha(root.secondaryForeground, 0.35)
-            Text {
-              id: aiReviewText
-              textFormat: Text.PlainText
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(12)
-              anchors.right: aiReviewSwitch.left
-              anchors.rightMargin: Style.space(16)
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Enable AI review\nOff by default. Manual packets or supported agents, only with explicit run consent."
-              wrapMode: Text.WordWrap
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-            ToggleSwitch {
-              id: aiReviewSwitch
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(12)
-              anchors.verticalCenter: parent.verticalCenter
-              checked: store.enableAiReview
-              interactive: true
-              foreground: root.foreground
-              onToggled: store.setEnableAiReview(!store.enableAiReview)
-            }
-          }
-
           // Off is the marketplace's promise; on is the user's own call, and
           // the caption says so in the same words the confirmation will.
           Rectangle {
@@ -2091,8 +2051,6 @@ Item {
         message: root.confirmMessage
         actionText: "View changes"
         actionVisible: store.confirmCompareUrl !== ""
-        reviewVisible: store.enableAiReview && store.pendingReviewRequest() !== null
-        onReviewRequested: store.askAiReview(store.pendingReviewRequest())
         onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
         confirmText: Model.actionVerb(root.pendingKind) === "Action"
           ? "Confirm"
@@ -2112,19 +2070,6 @@ Item {
 
         onCanceled: store.cancelPending()
         onConfirmed: store.confirmPending()
-      }
-
-      AiReviewDialog {
-        anchors.fill: parent
-        z: 20
-        manager: store
-        onOpenedChanged: if (!opened) {
-          if (root.confirming) confirm.forceActiveFocus()
-          else root.returnFocusToList()
-        }
-        background: Color.menu.background
-        foreground: root.foreground
-        fontFamily: root.fontFamily
       }
 
       ChoiceDialog {

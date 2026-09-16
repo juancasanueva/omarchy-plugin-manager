@@ -21,8 +21,6 @@ Item {
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
-  property bool aiReviewEnabled: false
-  signal reviewRequested()
   signal updateRequested()
   signal removeRequested()
   signal enableRequested()
@@ -228,16 +226,6 @@ Item {
               if (root.row && value !== String(root.row.barSection || "")) root.moveRequested(value)
             }
           }
-        }
-
-        Button {
-          text: "Review with AI"
-          visible: root.aiReviewEnabled && !!root.row && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true)
-          enabled: root.actionsEnabled && root.updateEnabled
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: root.reviewRequested()
         }
 
         Button {

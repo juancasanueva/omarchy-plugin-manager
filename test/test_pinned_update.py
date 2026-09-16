@@ -128,39 +128,6 @@ class TransactionTests(unittest.TestCase):
         self.new_commits = (*self.new_commits, sha)
         return sha
 
-    def test_prepared_branch_expectation_matches_or_refuses_before_fetch(self):
-        request = {**self.tip_install, "expectedBranchCommit": self.new_tip}
-        updater = self.updater()
-        self.assertEqual(updater.execute(request)["status"], "installed")
-        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "HEAD"), self.new_tip)
-
-    def test_moved_prepared_branch_never_fetches_or_installs(self):
-        updater = self.updater()
-        with patch.object(updater, "fetch", side_effect=AssertionError("must not fetch")) as fetch:
-            with self.assertRaisesRegex(u.Refused, "Branch moved"):
-                updater.execute({**self.tip_install, "expectedBranchCommit": self.new_base})
-            fetch.assert_not_called()
-        self.assertFalse(self.new_plugin.exists())
-        self.assertEqual(self.enabled, [])
-
-    def test_cli_refuses_caller_derived_target_before_any_transaction(self):
-        request = {**self.tip_install, "target": self.new_tip}
-        result = subprocess.run(['/usr/bin/python3', '-B', '-I', '-S', SPEC.origin, json.dumps(request)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
-                                env={'PATH': '/usr/bin:/bin'})
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('Caller-derived fields refused', json.loads(result.stdout)['reason'])
-
-    def test_prepared_branch_request_rejects_malformed_mixed_extra_shapes(self):
-        for fields in ({"expectedBranchCommit": "abc"}, {"expectedBranchCommit": True},
-                       {"expectedBranchCommit": self.new_tip, "extra": 1},
-                       {"expectedBranchCommit": self.new_tip, "verifiedCommit": self.new_tip},
-                       {"expectedBranchCommit": self.new_tip, "expectedLocalHead": self.base}):
-            with self.subTest(fields=fields), self.assertRaises(u.Refused):
-                u.request_value({**self.tip_install, **fields})
-        with self.assertRaises(u.Refused):
-            u.request_value({**self.install, "expectedBranchCommit": self.new_tip})
-
     def test_scan_sees_entries_another_process_added_after_the_dirfd_opened(self):
         # Regression for the "Staged contents changed" refusal on btrfs: the
         # staging dirfd is opened while the directory is still empty, then git
