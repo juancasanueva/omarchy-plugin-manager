@@ -353,16 +353,9 @@ an upstream SHA and no confirmation that overrides a refusal.
 - **Move** — for a bar widget that is on the bar, changes which section it
   sits in. The expanded panel's details pane shows the three sections as one
   segmented control, Left | Center | Right, with the current one lit; clicking
-  another moves the widget there. The popup row has a single move icon that
-  opens the same placement question the enable switch asks, minus the section
-  the widget is already in. Expanded still uses `omarchy plugin enable <id> <section>`.
-  The popup uses the retained positional mover and closes only the chooser on
-  acceptance. If the bar rebuilds, it returns to Installed on the original screen,
-  restoring search, filters, selection by ID and scroll after refreshing inventory.
-  A missing selection is cleared with an explanation. Failed or uncertain moves
-  keep the existing reconciliation lock: **Review layout** explicitly opens Arrange
-  to inspect the result before **Use current layout**; returning never retries a
-  move or accepts an unseen layout. Closing or navigating away cancels the return.
+  another moves the widget there. Expanded still uses `omarchy plugin enable <id> <section>`.
+  In the popup, choose **Arrange** in the header to reposition widgets; Installed
+  rows have no move button. Enabling a widget still asks which section to use.
   Nothing edits `shell.json` directly. The
   current section is read from `shell.json` at load time, so the control only
   changes once the shell has actually moved the widget, and a widget whose

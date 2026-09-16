@@ -657,11 +657,6 @@ Panel {
     revokeReleaseNavigation()
   }
 
-  function askMove(row) {
-    if (!store.askMove(row)) return
-    revokeReleaseNavigation()
-  }
-
   function confirmPlacement(section) {
     if (pendingKind !== "move" || pendingPlacementNeeded) {
       store.confirmPlacement(section)
@@ -1629,10 +1624,6 @@ Panel {
                 root.selectedIndex = index
                 root.askDisable(modelData)
               }
-              onMoveRequested: {
-                root.selectedIndex = index
-                root.askMove(modelData)
-              }
             }
           }
 
@@ -1679,10 +1670,6 @@ Panel {
               onDisableRequested: {
                 root.selectedIndex = globalIndex
                 root.askDisable(modelData)
-              }
-              onMoveRequested: {
-                root.selectedIndex = globalIndex
-                root.askMove(modelData)
               }
             }
           }

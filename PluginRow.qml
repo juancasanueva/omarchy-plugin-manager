@@ -40,7 +40,6 @@ Rectangle {
   signal removeRequested()
   signal enableRequested()
   signal disableRequested()
-  signal moveRequested()
   signal githubNavigationRequested(var candidates, string fallbackUrl)
   signal repositoryNavigationRequested(string url)
 
@@ -57,10 +56,6 @@ Rectangle {
   // Installed but switched off. For a bar widget that means it has no place
   // in the bar yet, which is the state the grey dot is reporting.
   readonly property bool canEnable: Model.canEnable(row)
-
-  // In the bar, and able to change section. One icon: the row has no room
-  // for three chips, and the "where" question already exists as a dialog.
-  readonly property bool canMove: Model.canMove(row)
 
   // Off the bar, still on disk. The inverse of enable, and the only way back
   // from one that turned out to be the wrong idea.
@@ -137,10 +132,8 @@ Rectangle {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(2)
 
-    // The name gets the line to itself, so a long one elides against the row's
-    // full width rather than against whatever the metadata beside it left over.
-    // The state mark and verified pill share the line, and the name yields
-    // to both rather than pushing them off the row.
+    // The name shares its line with the state mark, verified pill and comparison
+    // link, yielding to their widths and gaps rather than pushing them into actions.
     Row {
       id: nameLine
       width: parent.width
@@ -167,7 +160,10 @@ Rectangle {
         // Never rich text: AutoText would fetch what a crafted string points at.
         textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
-        width: Math.min(implicitWidth, nameLine.width - (stateMark.visible ? stateMark.width + nameLine.spacing : 0) - (verifiedPill.visible ? verifiedPill.width + nameLine.spacing : 0))
+        width: Math.max(0, Math.min(implicitWidth, nameLine.width
+          - (stateMark.visible ? stateMark.width + nameLine.spacing : 0)
+          - (verifiedPill.visible ? verifiedPill.width + nameLine.spacing : 0)
+          - (updatePill.visible ? updatePill.width + nameLine.spacing : 0)))
         text: root.row ? root.row.name : ""
         color: root.foreground
         font.family: root.fontFamily
@@ -199,6 +195,46 @@ Rectangle {
           color: Color.accent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
+        }
+      }
+
+      Rectangle {
+        id: updatePill
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.hasUpdate
+        width: updateBadge.implicitWidth + Style.space(12)
+        height: updateBadge.implicitHeight + Style.space(4)
+        radius: height / 2
+        color: root.installable
+          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+          : Qt.rgba(Color.muted.r, Color.muted.g, Color.muted.b, 0.16)
+
+        Text {
+          id: updateBadge
+          // Never rich text: AutoText would fetch what a crafted string points at.
+          textFormat: Text.PlainText
+          anchors.centerIn: parent
+          text: "󰚰 " + Model.updateBadge(root.row)
+          color: root.installable ? Color.accent : root.secondaryForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.underline: updateBadgeMouse.containsMouse
+        }
+
+        MouseArea {
+          id: updateBadgeMouse
+          anchors.fill: parent
+          enabled: root.compareUrl !== ""
+          hoverEnabled: enabled
+          cursorShape: Qt.PointingHandCursor
+          // The comparison is navigation, not the update action or row selection.
+          onClicked: root.openComparison()
+        }
+
+        PanelToolTip {
+          visible: updateBadgeMouse.containsMouse
+          text: Model.updateCompareLabel(root.row)
+          fontFamily: root.fontFamily
         }
       }
     }
@@ -370,8 +406,7 @@ Rectangle {
     // dropped in by hand both lose the link and the update button, and without
     // this they would render identically despite being different things.
     //
-    // It also yields to an update chip, because that is the thing worth acting
-    // on and the space is the same.
+    // It also stays silent when the title's update chip already identifies a checkout.
     Text {
       // Never rich text: AutoText would fetch what a crafted string points at.
       textFormat: Text.PlainText
@@ -384,51 +419,6 @@ Rectangle {
       rightPadding: Style.space(6)
     }
 
-    Rectangle {
-      anchors.verticalCenter: parent.verticalCenter
-      visible: root.hasUpdate
-      width: updateBadge.implicitWidth + Style.space(12)
-      height: updateBadge.implicitHeight + Style.space(4)
-      radius: height / 2
-      color: root.installable
-        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
-        : Qt.rgba(Color.muted.r, Color.muted.g, Color.muted.b, 0.16)
-
-      Text {
-        id: updateBadge
-        // Never rich text: AutoText would fetch what a crafted string points at.
-        textFormat: Text.PlainText
-        anchors.centerIn: parent
-        text: "󰚰 " + Model.updateBadge(root.row)
-        color: root.installable ? Color.accent : root.secondaryForeground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.underline: updateBadgeMouse.containsMouse
-      }
-
-      MouseArea {
-        id: updateBadgeMouse
-        anchors.fill: parent
-        enabled: root.compareUrl !== ""
-        hoverEnabled: enabled
-        cursorShape: Qt.PointingHandCursor
-        // The comparison is navigation, not the update action or row selection.
-        onClicked: root.openComparison()
-      }
-
-      PanelToolTip {
-        visible: updateBadgeMouse.containsMouse
-        text: Model.updateCompareLabel(root.row)
-        fontFamily: root.fontFamily
-      }
-    }
-
-    Item {
-      visible: root.hasUpdate
-      width: Style.space(6)
-      height: 1
-    }
-
     // On or off, in one control. Two icon buttons that swapped places with each
     // other made the reader decode a glyph to learn the current state and then
     // decode it again to work out what clicking would do; a switch shows the
@@ -439,20 +429,6 @@ Rectangle {
     // and remove keep their positions, and the destructive one keeps the corner
     // it has always had.
     //
-    PanelActionButton {
-      id: moveButton
-      anchors.verticalCenter: parent.verticalCenter
-      visible: root.canMove
-      iconText: "󰓡"
-      fontSize: Style.font.iconLarge
-      tooltipText: "Move in the bar"
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      enabled: root.actionsEnabled
-      opacity: enabled ? 1 : 0.4
-      onClicked: root.moveRequested()
-    }
-
     // `checked` is bound straight to the row, never flipped locally. Enabling a
     // bar widget asks where it goes first, and a knob that threw itself across
     // before that question was answered would be reporting a state the shell

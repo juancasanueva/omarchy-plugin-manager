@@ -3306,7 +3306,7 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   assert.match(pill, /color: Color\.accent/)
   assert.match(pill, /textFormat: Text\.PlainText/)
   // The name yields to the pill instead of eliding it off the row.
-  assert.match(row, /id: name[\s\S]*?width: Math\.min\(implicitWidth, nameLine\.width - \(stateMark\.visible \? stateMark\.width \+ nameLine\.spacing : 0\) - \(verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0\)\)/)
+  assert.match(row, /id: name[\s\S]*?width: Math\.max\(0, Math\.min\(implicitWidth,[\s\S]*?verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0/)
 })
 
 test("the header refresh button is display-sized and spins instead of greying while refreshing", () => {
@@ -4288,20 +4288,57 @@ test("the small panel row marks updatable plugins and leaves unknown states unma
     assert.equal(visible({ hasUpdate: data ? data.behind === true : false, upToDate: Model.upToDate(data) }), expected)
   }
 
-  // Both visible adornments reserve their own spacing; neither displaces the name vertically.
+  // Every visible adornment reserves its spacing; the title never gets negative width.
   const name = row.slice(nameStart, row.indexOf("id: verifiedPill"))
   assert.match(mark, /anchors\.verticalCenter: parent\.verticalCenter/)
   assert.match(name, /anchors\.verticalCenter: parent\.verticalCenter/)
   assert.match(name, /elide: Text\.ElideRight/)
-  const width = new Function("implicitWidth", "nameLine", "stateMark", "verifiedPill", `return ${name.match(/width: ([^\n]+)/)[1]}`)
+  const width = new Function("implicitWidth", "nameLine", "stateMark", "verifiedPill", "updatePill",
+    `return ${name.match(/width: ([\s\S]*?)\n\s*text:/)[1]}`)
   for (const markVisible of [false, true]) {
     for (const pillVisible of [false, true]) {
-      const available = 200 - (markVisible ? 28 : 0) - (pillVisible ? 68 : 0)
-      for (const naturalWidth of [40, 300]) {
-        assert.equal(width(naturalWidth, { width: 200, spacing: 8 }, { visible: markVisible, width: 20 }, { visible: pillVisible, width: 60 }), Math.min(naturalWidth, available))
+      for (const updateVisible of [false, true]) {
+        for (const lineWidth of [40, 200, 400]) {
+          const available = lineWidth - (markVisible ? 28 : 0) - (pillVisible ? 68 : 0) - (updateVisible ? 108 : 0)
+          for (const naturalWidth of [40, 1000]) {
+            assert.equal(width(naturalWidth, { width: lineWidth, spacing: 8 },
+              { visible: markVisible, width: 20 }, { visible: pillVisible, width: 60 },
+              { visible: updateVisible, width: 100 }), Math.max(0, Math.min(naturalWidth, available)))
+          }
+        }
       }
     }
   }
+})
+
+test("the popup comparison chip follows verification on the title line, not the actions", () => {
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  const title = row.slice(row.indexOf("id: nameLine"), row.indexOf("// As many lines"))
+  const actions = row.slice(row.indexOf("id: actions"))
+  assert.match(title, /id: name\s[\s\S]*id: verifiedPill[\s\S]*id: updatePill/)
+  const chip = title.slice(title.indexOf("id: updatePill"))
+  assert.match(chip, /anchors\.verticalCenter: parent\.verticalCenter/)
+  assert.match(chip, /text: "󰚰 " \+ Model\.updateBadge\(root\.row\)/)
+  assert.match(chip, /textFormat: Text\.PlainText/)
+  assert.match(chip, /color: root\.installable\s*\? Qt\.rgba\(Color\.accent\.r, Color\.accent\.g, Color\.accent\.b, 0\.16\)\s*: Qt\.rgba\(Color\.muted\.r, Color\.muted\.g, Color\.muted\.b, 0\.16\)/)
+  assert.match(chip, /color: root\.installable \? Color\.accent : root\.secondaryForeground/)
+  assert.match(chip, /font\.underline: updateBadgeMouse\.containsMouse/)
+  assert.match(chip, /enabled: root\.compareUrl !== ""/)
+  assert.match(chip, /onClicked: root\.openComparison\(\)/)
+  assert.match(chip, /visible: updateBadgeMouse\.containsMouse\s*text: Model\.updateCompareLabel\(root\.row\)/)
+  assert.match(row, /function openComparison\(\) \{\s*if \(compareUrl === ""\) return\s*githubNavigationRequested\(\[\], compareUrl\)/)
+  const visible = new Function("root", `return ${chip.match(/visible: ([^\n]+)/)[1]}`)
+  for (const verified of [false, true]) {
+    for (const hasUpdate of [false, true]) {
+      assert.equal(visible({ verified, hasUpdate }), hasUpdate)
+    }
+  }
+  assert.equal(row.split("id: updateBadge\n").length - 1, 1)
+  assert.doesNotMatch(actions, /id: updatePill|id: updateBadge|openComparison\(\)/)
+  assert.doesNotMatch(actions, /Item\s*\{\s*visible: root\.hasUpdate/)
+  // The title's available width ends before the action controls, not at the row edge.
+  assert.match(row, /id: details[\s\S]*?anchors\.right: actions\.left\s*anchors\.rightMargin: Style\.space\(10\)/)
+  assert.match(title, /id: nameLine\s*width: parent\.width/)
 })
 
 test("the expanded list row marks updatable plugins and shows their stars", () => {
@@ -5538,7 +5575,7 @@ test("the store moves a widget through the placement question or straight from a
   assert.doesNotMatch(store, /runAction\("move"/)
 })
 
-test("the details pane moves with a segmented control and the popup row with one icon", () => {
+test("the details pane retains its segmented movement control", () => {
   const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
   assert.match(details, /signal moveRequested\(string section\)/)
   assert.match(details, /readonly property bool canMove: Model\.canMove\(row\)/)
@@ -5554,26 +5591,11 @@ test("the details pane moves with a segmented control and the popup row with one
   assert.ok(details.indexOf("id: enabledSwitch") < details.indexOf("id: sectionGroup"), "after the switch")
   assert.ok(details.indexOf("id: sectionGroup") < details.indexOf("id: updateButton"), "before update")
 
-  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
-  assert.match(row, /signal moveRequested\(\)/)
-  assert.match(row, /readonly property bool canMove: Model\.canMove\(row\)/)
-  const move = row.slice(row.indexOf("id: moveButton") - 40, row.indexOf("id: updateButton"))
-  assert.match(move, /PanelActionButton \{\s*id: moveButton/)
-  assert.match(move, /visible: root\.canMove/)
-  assert.match(move, /iconText: "󰓡"/)
-  assert.match(move, /tooltipText: "Move in the bar"/)
-  assert.match(move, /enabled: root\.actionsEnabled/)
-  assert.match(move, /onClicked: root\.moveRequested\(\)/)
   // The compact row has no action cluster, so it gets no icon.
   const compact = readFileSync(new URL("../InstalledListRow.qml", import.meta.url), "utf8")
   assert.doesNotMatch(compact, /moveRequested/)
 
-  // Both windows wire it: the popup asks, the details pane names the section.
-  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
-  assert.match(panel, /function askMove\(row\) \{\s*if \(!store\.askMove\(row\)\) return\s*revokeReleaseNavigation\(\)\s*\}/)
-  assert.equal(panel.split("onMoveRequested: {").length - 1, 2, "installed and built-in rows")
-  assert.match(panel, /onMoveRequested: \{\s*root\.selectedIndex = index\s*root\.askMove\(modelData\)/)
-  assert.match(panel, /onMoveRequested: \{\s*root\.selectedIndex = globalIndex\s*root\.askMove\(modelData\)/)
+  // The expanded details pane still names the section directly.
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   assert.match(expanded, /onMoveRequested: function\(section\) \{ store\.startMoveTo\(root\.selectedRow, section\) \}/)
 
@@ -5581,6 +5603,34 @@ test("the details pane moves with a segmented control and the popup row with one
   assert.match(readme, /- \*\*Move\*\* — for a bar widget that is on the bar, changes which section it/)
   assert.match(readme, /Expanded still uses `omarchy plugin enable <id> <section>`/)
   assert.match(readme, /Nothing edits `shell\.json` directly/)
+})
+
+test("popup Installed rows omit the move control and keep their other actions", () => {
+  const row = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
+  assert.doesNotMatch(row, /\b(?:moveButton|moveRequested|canMove)\b|Move in the bar|󰓡/)
+  assert.match(row, /id: enabledSwitch/)
+  assert.match(row, /onToggled: root\.canDisable \? root\.disableRequested\(\) : root\.enableRequested\(\)/)
+  assert.match(row, /onClicked: root\.updateRequested\(\)/)
+  assert.match(row, /onClicked: root\.removeRequested\(\)/)
+  for (const action of ["openRepo", "openVersion", "openComparison"])
+    assert.ok(row.includes(`onClicked: root.${action}()`), `${action} link remains`)
+  assert.match(row, /visible: root\.hasUpdate \|\| root\.upToDate/)
+  assert.match(row, /text: Model\.updateStatus\(root\.row\)/)
+  assert.match(row, /id: updateBadge/)
+})
+
+test("popup positioning stays in Arrange without dead Installed row wiring", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
+  assert.doesNotMatch(panel, /askMove|onMoveRequested: \{/)
+  assert.match(panel, /tooltipText: "Arrange"/)
+  assert.match(panel, /onClicked: root\.arrangeOpen \? root\.closeArrange\(\) : root\.openArrange\(\)/)
+  assert.match(panel, /root\.requestBarMove\(snapshot, fromSection, rawIndex, targetSection, preRemovalGap\)/)
+  for (const index of ["index", "globalIndex"]) {
+    for (const action of ["Enable", "Disable"])
+      assert.ok(panel.includes(`on${action}Requested: {\n                root.selectedIndex = ${index}\n                root.ask${action}(modelData)`), `${action} remains for ${index}`)
+  }
+  assert.match(panel, /function askEnable\(row\) \{\s*if \(!store\.askEnable\(row\)\) return/)
+  assert.match(panel, /opened: root\.placing\s*message: root\.placementMessage\s*choices: root\.placementChoices/)
 })
 
 test("the popup row hides its update button unless an update is installable or running", () => {
