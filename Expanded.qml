@@ -2040,6 +2040,18 @@ Item {
               onClicked: store.restartShell()
             }
           }
+
+          SettingsInfo {
+            width: parent.width
+            pluginsBasePath: Quickshell.env("HOME") + "/.config/omarchy/plugins"
+            readonly property var selfRow: Model.findRow(store.rows, store.selfId)
+            installedVersion: selfRow ? selfRow.localVersion : ""
+            foreground: root.foreground
+            secondaryForeground: root.secondaryForeground
+            fontFamily: root.fontFamily
+            onRepositoryNavigationRequested: function(url) { root.navigateExternalUrl(url) }
+            onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
+          }
         }
       }
 

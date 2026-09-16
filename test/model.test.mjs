@@ -3078,6 +3078,23 @@ test("release probe start failure clears busy state and uses the active fallback
   assert.equal(failed.openUrl, request.fallbackUrl)
 })
 
+test("Settings About links use the existing navigation owners and release helpers", () => {
+  const info = readFileSync(new URL("../SettingsInfo.qml", import.meta.url), "utf8")
+  assert.match(info, /readonly property string repositoryUrl: "https:\/\/github\.com\/juancasanueva\/omarchy-plugin-manager"/)
+  assert.match(info, /Model\.releaseVersionLabel\(installedVersion\)/)
+  assert.match(info, /Model\.githubReleaseCandidates\(root\.repositoryUrl, root\.installedVersion\)/)
+  assert.match(info, /root\.repositoryNavigationRequested\(root\.repositoryUrl\)/)
+  assert.match(info, /root\.githubNavigationRequested\([\s\S]*?root\.repositoryUrl\)/)
+  for (const file of ["Panel.qml", "Expanded.qml"]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+    const start = source.indexOf("SettingsInfo {")
+    assert.ok(start >= 0)
+    const wiring = source.slice(start, start + 1100)
+    assert.match(wiring, /onRepositoryNavigationRequested: function\(url\) \{ root\.navigateExternalUrl\(url\) \}/)
+    assert.match(wiring, /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{ root\.requestGithubNavigation\(candidates, fallbackUrl\) \}/)
+  }
+})
+
 test("repository and Release actions route browser ownership through Panel", () => {
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
   const pluginRow = readFileSync(new URL("../PluginRow.qml", import.meta.url), "utf8")
@@ -3097,8 +3114,8 @@ test("repository and Release actions route browser ownership through Panel", () 
   assert.equal(navigator.split('Quickshell.execDetached(["omarchy-launch-browser", trusted])').length - 1, 1)
   assert.doesNotMatch(panel, /omarchy-launch-browser/)
   assert.doesNotMatch(expanded, /omarchy-launch-browser/)
-  assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 3)
-  assert.equal(panel.split("onGithubNavigationRequested:").length - 1, 2)
+  assert.equal(panel.split("onRepositoryNavigationRequested:").length - 1, 4)
+  assert.equal(panel.split("onGithubNavigationRequested:").length - 1, 3)
   assert.match(pluginDetails, /signal githubNavigationRequested\(var candidates, string fallbackUrl\)/)
   assert.match(pluginDetails, /githubNavigationRequested\(versionReleaseCandidates, versionFallbackUrl\)/)
   assert.match(panel,
@@ -3901,7 +3918,7 @@ test("secondary text uses one panel-derived foreground without brightening disab
   assert.match(panel,
     /readonly property color secondaryForeground: Util\.alpha\(contentForeground, 0\.54\)/)
   assert.equal(panel.split("placeholderTextColor: root.secondaryForeground").length - 1, 1)
-  assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 4)
+  assert.equal(panel.split("secondaryForeground: root.secondaryForeground").length - 1, 5)
   assert.ok(panel.split("color: root.secondaryForeground").length - 1 >= 8)
 
   assert.match(pluginRow, /required property color secondaryForeground/)
@@ -4407,7 +4424,7 @@ test("release navigation is one shared component and the details version is a re
   assert.match(expanded, /function requestGithubNavigation\(candidates, fallbackUrl\) \{\s*releaseNavigator\.request\(candidates, fallbackUrl\)\s*\}/)
   assert.match(expanded, /function navigateExternalUrl\(url\) \{\s*releaseNavigator\.navigate\(url\)\s*\}/)
   assert.doesNotMatch(expanded, /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{ root\.navigateExternalUrl\(fallbackUrl\) \}/)
-  assert.equal(expanded.split("onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }").length - 1, 2)
+  assert.equal(expanded.split("onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }").length - 1, 3)
   assert.match(expanded, /function close\(\) \{[\s\S]*?releaseNavigator\.revoke\(\)/)
 
   // The Version field is a link that resolves the Release for that tag.

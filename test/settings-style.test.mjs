@@ -31,6 +31,29 @@ function byId(all, id) {
   return match
 }
 
+test("SettingsInfo shares safe, content-sized Info and About cards", () => {
+  const source = readFileSync(new URL("../SettingsInfo.qml", import.meta.url), "utf8")
+  const all = objects(source)
+  for (const heading of ["Info", "About"])
+    assert.match(source, new RegExp(`text: "${heading}"`))
+  for (const id of ["infoCard", "aboutCard"]) {
+    const card = byId(all, id)
+    assert.match(card.body, /color: Style\.normalFill/)
+    assert.match(card.body, /radius: Style\.cornerRadius/)
+    assert.match(card.body, /border\.width: 1/)
+    assert.match(card.body, /border\.color: Qt\.alpha\(root\.secondaryForeground, 0\.35\)/)
+    assert.match(card.body, /height: \w+\.implicitHeight \+ Style\.space\(12\) \* 2/)
+  }
+  for (const text of all.filter(object => object.type === "Text")) {
+    assert.match(text.body, /textFormat: Text\.PlainText/)
+    assert.match(text.body, /wrapMode: Text\.WrapAnywhere/)
+  }
+  assert.match(source, /text: "Installed in " \+ root\.pluginsBasePath/)
+  assert.match(source, /text: "Plugin Manager"/)
+  assert.match(source, /text: "Juan Casanueva"/)
+  assert.doesNotMatch(source, /Process\s*\{|FileView|XMLHttpRequest|execDetached|openUrlExternally|1\.10\.0/)
+})
+
 const switches = [
   ["unverifiedSwitch", "unverifiedText"],
   ["unverifiedInstallSwitch", "unverifiedInstallText"],
@@ -40,6 +63,18 @@ const switches = [
 for (const file of ["Panel.qml", "Expanded.qml"]) {
   const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
   const all = objects(source)
+
+  test(`${file}: shared metadata follows Restart Shell in the scroll content`, () => {
+    const info = all.find(object => object.type === "SettingsInfo")
+    assert.ok(info, "shared SettingsInfo exists")
+    assert.equal(info.parent, byId(all, "settingsContent"))
+    assert.ok(info.start > byId(all, "restartShellButton").start)
+    assert.match(info.body, /width: parent\.width/)
+    assert.match(info.body, /pluginsBasePath: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/plugins"/)
+    assert.match(info.body, /Model\.findRow\(store\.rows, store\.selfId\)/)
+    assert.match(info.body, /selfRow \? selfRow\.localVersion : ""/)
+    assert.doesNotMatch(info.body, /XDG|manifest/)
+  })
 
   test(`${file}: every setting has a filled, bordered, padded card`, () => {
     for (const id of [...switches.map(([id]) => id), "restartShellButton"]) {
