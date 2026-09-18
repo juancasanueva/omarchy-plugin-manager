@@ -69,7 +69,8 @@ ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-MAX_CATALOG = 8 * 1024 * 1024
+MAX_RAW_CATALOG = 16 * 1024 * 1024
+MAX_CATALOG = 8 * 1024 * 1024  # Projected output and cache only.
 MAX_STATS = 1024 * 1024
 MAX_PLUGINS = 4 * 1024 * 1024
 # The Browse cache: the catalog projected down to the fields the panel reads,
@@ -244,7 +245,7 @@ def project_catalog(raw, stats_raw):
     id, or a projection over the cache bound fails the refresh, and the
     caller falls back to whatever compatible cache it already has.
     """
-    doc = document(raw, MAX_CATALOG)
+    doc = document(raw, MAX_RAW_CATALOG)
     require(type(doc) is dict and type(doc.get("plugins")) is list, "Invalid catalog")
     stats = {}
     if stats_raw is not None:
@@ -275,7 +276,7 @@ def project_catalog(raw, stats_raw):
 
 
 def authorize(raw, request):
-    doc = document(raw, MAX_CATALOG)
+    doc = document(raw, MAX_RAW_CATALOG)
     require(type(doc) is dict and type(doc.get("plugins")) is list
             and len(doc["plugins"]) <= 5000, "Invalid catalog")
     matches = []
@@ -428,7 +429,7 @@ class Updater:
         return body
 
     def catalog_bytes(self):
-        return self.https_bytes(CATALOG_URL, MAX_CATALOG, 20)
+        return self.https_bytes(CATALOG_URL, MAX_RAW_CATALOG, 20)
 
     def stats_bytes(self):
         return self.https_bytes(MARKETPLACE_STATS_URL, MAX_STATS, 15)
@@ -545,9 +546,9 @@ class Updater:
     def serve_catalog(self, request):
         """The projection to hand the panel: cache when fresh, else refreshed.
 
-        A refresh that fails for any reason serves the compatible cache it
-        would have replaced — a stale storefront beats an empty one — and is
-        a refusal only when there is no such cache.
+        Automatic refresh failures serve a compatible cache when available.
+        Forced refresh failures are refusals, so the UI can keep its displayed
+        entries without claiming the user's refresh succeeded.
         """
         request = catalog_request(request)
         try:
@@ -559,7 +560,8 @@ class Updater:
                 return self.refresh_projection(cache)
             except Exception as error:
                 self.reason = reason_text(error)
-                require(cached is not None, "Could not fetch the catalog: " + self.reason)
+                require(cached is not None and not request["catalog"]["force"],
+                        "Could not fetch the catalog: " + self.reason)
                 return cached
         finally:
             for fd in reversed(self.fds):

@@ -2,6 +2,7 @@
 import sys
 sys.dont_write_bytecode = True
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -248,7 +249,7 @@ class TransactionTests(unittest.TestCase):
             curl, options = calls[-1]
             self.assertEqual(curl, ["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
                 "--proto", "=https", "--noproxy", "*", "--connect-timeout", "5", "--max-time", "20",
-                "--max-filesize", str(u.MAX_CATALOG), "--header", "Cache-Control: no-cache",
+                "--max-filesize", str(16 * 1024 * 1024), "--header", "Cache-Control: no-cache",
                 "--write-out", "\n%{http_code}", "--", "https://plugins.omarchy.org/catalog.json"])
             self.assertTrue(options["start_new_session"])
             self.assertEqual(options["env"]["GIT_ALLOW_PROTOCOL"], "https")
@@ -574,7 +575,7 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(u.Refused):
             u.authorize(b'{"plugins":[],"plugins":[]}', self.request)
         with self.assertRaises(u.Refused):
-            u.authorize(b" " * (u.MAX_CATALOG + 1), self.request)
+            u.authorize(b" " * (u.MAX_RAW_CATALOG + 1), self.request)
 
     def test_refusal_reports_reason_and_journals_it(self):
         (self.plugin / "untracked.txt").write_text("local edit")
@@ -1033,13 +1034,15 @@ class CatalogCacheTests(unittest.TestCase):
         self.assertEqual(self.serve(), data)
         self.assertEqual(self.fetches, [])
 
-    def test_force_refetches_and_replaces_the_cache_atomically(self):
-        self.cached(self.compatible())
+    def test_force_discovers_new_listings_and_replaces_the_cache_atomically(self):
+        self.cached(self.compatible([{"id": "acme.clock"}]))
+        self.remote["plugins"].append({"id": "acme.new", "name": "New listing"})
         before = os.stat(self.cache_dir / "catalog.json")
         served = self.serve(force=True)
         projected = json.loads(served)
         self.assertEqual(projected["projectionSchemaVersion"], 2)
         self.assertEqual(projected["generatedAt"], "remote")
+        self.assertEqual([entry["id"] for entry in projected["plugins"]], ["acme.clock", "acme.new"])
         self.assertEqual(projected["plugins"][0]["marketplaceHearts"], 42)
         self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), served)
         after = os.stat(self.cache_dir / "catalog.json")
@@ -1061,7 +1064,47 @@ class CatalogCacheTests(unittest.TestCase):
         self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
         self.assertEqual(self.temps(), [])
         self.remote = OSError("no curl")
-        self.assertEqual(self.serve(force=True), data)
+        self.assertEqual(self.serve(), data)
+
+    def test_forced_refresh_failures_refuse_without_replacing_cached_bytes(self):
+        for age in (0, u.CACHE_TTL + 1):
+            for phase in ("fetch", "project", "publish"):
+                with self.subTest(age=age, phase=phase):
+                    data = self.cached(self.compatible(), age=age)
+                    before = (self.cache_dir / "catalog.json").stat()
+                    target = {"fetch": "catalog_bytes", "project": "project_catalog",
+                              "publish": "create_file"}[phase]
+                    updater = self.updater()
+                    owner = updater if phase == "fetch" else u
+                    with patch.object(owner, target, side_effect=u.Refused(phase + " failed")):
+                        with self.assertRaisesRegex(u.Refused, "Could not fetch the catalog: " + phase + " failed"):
+                            updater.serve_catalog({"schemaVersion": 1, "catalog": {"force": True}})
+                    after = (self.cache_dir / "catalog.json").stat()
+                    self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
+                    self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+                    self.assertEqual(updater.fds, [])
+                    self.assertEqual(self.temps(), [])
+
+    def test_forced_refresh_cli_exits_with_bounded_error_and_no_cached_stdout(self):
+        self.cached(self.compatible())
+        self.remote = u.Refused("Command failed: curl" + "x" * 300 + "\n")
+        request = {"schemaVersion": 1, "catalog": {"force": True}}
+        stdout, stderr = io.TextIOWrapper(io.BytesIO()), io.StringIO()
+        self.addCleanup(stdout.close)
+        # Execute the real CLI entry point with only the updater/home and I/O
+        # replaced; no live network or account cache is involved.
+        entry = Path(SPEC.origin).read_text().split('if __name__ == "__main__":', 1)[1]
+        namespace = {**vars(u), "Updater": self.updater}
+        with patch.object(sys, "argv", [SPEC.origin, json.dumps(request)]), \
+                patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr), \
+                patch.object(u.os, "umask"):
+            with self.assertRaises(SystemExit) as caught:
+                exec(compile("if True:" + entry, SPEC.origin, "exec"), namespace)
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(stdout.buffer.getvalue(), b"")
+        self.assertTrue(stderr.getvalue().startswith("Could not fetch the catalog: Command failed: curl"))
+        self.assertLessEqual(len(stderr.getvalue()), 201)
+        self.assertEqual(stderr.getvalue().count("\n"), 1)
 
     def test_fetch_failure_without_a_cache_is_refused(self):
         self.remote = u.Refused("Command failed: curl")
@@ -1131,6 +1174,62 @@ class CatalogCacheTests(unittest.TestCase):
                 self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
                 self.assertEqual(self.temps(), [])
 
+    def test_raw_catalog_above_old_cap_is_projected_and_cached(self):
+        self.remote["unusedMetadata"] = "x" * (8 * 1024 * 1024)
+        raw = json.dumps(self.remote).encode()
+        self.assertGreater(len(raw), 8 * 1024 * 1024)
+        self.assertLess(len(raw), 16 * 1024 * 1024)
+        served = self.serve(force=True)
+        self.assertLess(len(served), 8 * 1024 * 1024)
+        projected = json.loads(served)
+        self.assertEqual(projected["plugins"][0]["id"], "acme.clock")
+        self.assertEqual(projected["plugins"][0]["marketplaceHearts"], 42)
+        self.assertNotIn("unusedMetadata", projected)
+        self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), served)
+
+    def test_raw_cap_applies_to_projection_and_listing_authorization(self):
+        request = {"id": "acme.clock", "repository": REPO, "verifiedCommit": "a" * 40}
+        entry = dict(id=request["id"], repo=REPO, verificationCommit="a" * 40,
+                     verificationStatus="verified", sourceType="community")
+        raw = json.dumps({"plugins": [entry]}).encode().ljust(16 * 1024 * 1024)
+        self.assertIsNone(u.authorize(raw, request))
+        self.assertEqual(json.loads(u.project_catalog(raw, None))["plugins"][0]["id"], request["id"])
+        for consume in (lambda body: u.authorize(body, request),
+                        lambda body: u.project_catalog(body, None)):
+            with self.assertRaisesRegex(u.Refused, "JSON exceeds limit"):
+                consume(raw + b" ")
+        # A larger byte budget grants no new install/update authority.
+        for change, reason in [
+            ({"verificationStatus": "unverified"}, "Listing is not verified"),
+            ({"sourceType": "builtin"}, "Not a community snapshot"),
+            ({"repo": "https://github.com/other/plugin"}, "Repository changed"),
+            ({"verificationCommit": "b" * 40}, "Verified snapshot changed"),
+        ]:
+            with self.subTest(change=change):
+                body = json.dumps({"plugins": [{**entry, **change}]}).encode().ljust(8 * 1024 * 1024 + 1)
+                with self.assertRaisesRegex(u.Refused, reason):
+                    u.authorize(body, request)
+        with self.assertRaisesRegex(u.Refused, "Invalid catalog"):
+            u.authorize(json.dumps({"plugins": [entry] * 5001}).encode(), request)
+
+    def test_catalog_stream_cap_is_enforced_without_curl_cooperation(self):
+        updater = u.Updater(home=str(self.home))
+        real_popen = subprocess.Popen
+        size = 16 * 1024 * 1024
+
+        def producer(argv, **kwargs):
+            # Simulate an undeclared/chunked body: the actual stream reader,
+            # not curl's Content-Length check, must enforce the same budget.
+            return real_popen(["/usr/bin/python3", "-I", "-S", "-B", "-c",
+                "import sys; sys.stdout.buffer.write(b' ' * " + str(size) +
+                " + b'\\n200')"], **kwargs)
+
+        with patch.object(subprocess, "Popen", side_effect=producer):
+            self.assertEqual(len(updater.catalog_bytes()), size)
+            size += 1
+            with self.assertRaisesRegex(u.Refused, "Command output exceeds limit"):
+                updater.catalog_bytes()
+
     def test_oversized_or_malformed_catalog_bodies_keep_the_bounded_cache(self):
         data = self.cached(self.compatible(), age=30000)
         for body in [
@@ -1152,14 +1251,19 @@ class CatalogCacheTests(unittest.TestCase):
     def test_oversized_projection_is_refused_before_replacing_the_cache(self):
         data = self.cached(self.compatible(), age=30000)
         body = json.dumps({"generatedAt": "remote", "plugins": [{"id": "repeat"}] * 40000}).encode()
+        self.assertEqual(u.MAX_CATALOG, 8 * 1024 * 1024)
         self.assertLess(len(body), u.MAX_CATALOG)
+        with self.assertRaisesRegex(u.Refused, "Projection exceeds limit"):
+            u.project_catalog(body, None)
         self.remote = body
         self.assertEqual(self.serve(), data)
         self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
         self.assertEqual(self.temps(), [])
 
     def test_oversized_cache_is_never_served(self):
-        self.cached(b"x" * (u.MAX_CATALOG + 1))
+        oversized = json.dumps(self.compatible()).encode().ljust(8 * 1024 * 1024 + 1)
+        self.assertFalse(u.usable_projection(oversized))
+        self.cached(oversized)
         self.remote = u.Refused("Command failed: curl")
         with self.assertRaises(u.Refused):
             self.serve()
@@ -1260,6 +1364,8 @@ class CatalogCacheTests(unittest.TestCase):
         data = self.cached(self.compatible(), age=30000)
         with patch.object(os, "rename", side_effect=OSError("refused")):
             self.assertEqual(self.serve(), data)
+            with self.assertRaisesRegex(u.Refused, "Could not fetch the catalog: Internal error: OSError"):
+                self.serve(force=True)
         self.assertEqual((self.cache_dir / "catalog.json").read_bytes(), data)
         self.assertEqual(self.temps(), [])
         (self.cache_dir / "catalog.json").unlink()

@@ -3863,6 +3863,72 @@ test("an unreviewed install is confirmed and re-gated on the branch the dialog n
   assert.equal(refused.pendingKind, "")
 })
 
+test("catalog refresh failures retain displayed entries in every process callback order", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const process = store.slice(store.indexOf("    id: catalogProc"), store.indexOf("  // The Python worker is independent"))
+  const callbacks = process
+    .replace("onStreamFinished: {", "function outputFinished() {")
+    .replace("onStreamFinished: {", "function errorFinished() {")
+    .replace("onExited: function(exitCode)", "function exited(exitCode)")
+  const orders = [
+    ["outputFinished", "errorFinished", "exited"], ["outputFinished", "exited", "errorFinished"],
+    ["errorFinished", "outputFinished", "exited"], ["errorFinished", "exited", "outputFinished"],
+    ["exited", "outputFinished", "errorFinished"], ["exited", "errorFinished", "outputFinished"]
+  ]
+  for (const order of orders) {
+    for (const error of ["Could not fetch the catalog: Command failed: curl\n", "", "<error>\n" + "x".repeat(500)]) {
+      const displayed = [{ id: "cached" }]
+      const state = { catalog: displayed, catalogLoaded: true, catalogLoading: false, catalogError: "",
+        catalogGeneration: 4, catalogExitCode: 0, catalogOutputFinished: true, catalogErrorFinished: true,
+        pinnedHelperPath: "/plugin/helpers/pinned_update.py", rows: [] }
+      state.root = state
+      const catalogProc = { running: false }
+      const catalogOutput = { text: "" }, catalogErrors = { text: error }
+      const messages = []
+      const catalogWorker = { sendMessage: message => messages.push(message) }
+      let restamps = 0
+      const functions = ["loadCatalog", "finishCatalogFetch", "applyCatalog", "applyCatalogResult"]
+      const handlers = ["outputFinished", "errorFinished", "exited"]
+      const api = Function("state", "Model", "catalogProc", "catalogOutput", "catalogErrors", "catalogWorker", "restampCatalog",
+        `with (state) { ${functions.map(name => qmlFunction(store, name)).join("\n")}
+          ${handlers.map(name => qmlFunction(callbacks, name)).join("\n")}
+          return { ${[...functions, ...handlers].join(",")} }
+        }`)(state, Model, catalogProc, catalogOutput, catalogErrors, catalogWorker, () => restamps++)
+      state.finishCatalogFetch = api.finishCatalogFetch
+      api.loadCatalog(true)
+      api.applyCatalogResult({ generation: 4, entries: [{ id: "obsolete" }] })
+      assert.equal(state.catalog, displayed, "an earlier worker cannot overwrite a new refresh")
+      for (const [index, name] of order.entries()) {
+        api[name](1)
+        assert.equal(state.catalogLoading, index < 2)
+      }
+      assert.equal(state.catalog, displayed)
+      assert.equal(state.catalogLoaded, true)
+      assert.equal(messages.length, 0, "failed stdout never reaches the catalog worker")
+      assert.match(state.catalogError, /Catalog refresh failed\./)
+      assert.match(state.catalogError, /Try Refresh again\./)
+      if (error.startsWith("Could not")) assert.match(state.catalogError, /Command failed: curl/)
+      assert.ok(state.catalogError.length < 260)
+      assert.doesNotMatch(state.catalogError, /[<>\n]/)
+      // A subsequent successful refresh clears the error and discovers listings.
+      catalogProc.running = false
+      catalogOutput.text = JSON.stringify({ plugins: [{ id: "new" }] })
+      catalogErrors.text = ""
+      api.loadCatalog(true)
+      for (const name of order) api[name](0)
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].raw, catalogOutput.text)
+      assert.equal(state.catalogLoading, true, "success waits for worker projection")
+      const entries = [{ id: "new" }]
+      api.applyCatalogResult({ generation: messages[0].generation, entries })
+      assert.equal(state.catalog, entries)
+      assert.equal(state.catalogLoading, false)
+      assert.equal(state.catalogError, "")
+      assert.equal(restamps, 1)
+    }
+  }
+})
+
 test("the catalog is served by the pinned helper through an owner-checked cache, never a bash script", () => {
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const helper = readFileSync(new URL("../helpers/pinned_update.py", import.meta.url), "utf8")
@@ -3879,7 +3945,8 @@ test("the catalog is served by the pinned helper through an owner-checked cache,
   // loadCatalog runs the helper with the exact request shape it validates,
   // through the same scrubbed environment the transactions use.
   const catalogProc = { running: false }
-  const state = { catalogLoading: false, catalogError: "stale", pinnedHelperPath: "/plugin/helpers/pinned_update.py" }
+  const state = { catalogLoading: false, catalogError: "stale", pinnedHelperPath: "/plugin/helpers/pinned_update.py",
+    catalogGeneration: 0, catalogExitCode: 0, catalogOutputFinished: true, catalogErrorFinished: true }
   state.root = state
   const loadCatalog = Function("state", "catalogProc", `with (state) {
     ${qmlFunction(store, "loadCatalog")}; return loadCatalog
@@ -3893,8 +3960,14 @@ test("the catalog is served by the pinned helper through an owner-checked cache,
     JSON.stringify({ schemaVersion: 1, catalog: { force: true } })])
   catalogProc.running = false
   loadCatalog()
+  assert.equal(JSON.parse(catalogProc.command[8]).catalog.force, true, "unfinished callbacks block reuse")
+  state.catalogExitCode = 0
+  state.catalogOutputFinished = state.catalogErrorFinished = true
+  loadCatalog()
   assert.equal(JSON.parse(catalogProc.command[8]).catalog.force, false)
   catalogProc.running = false
+  state.catalogExitCode = 0
+  state.catalogOutputFinished = state.catalogErrorFinished = true
   loadCatalog("1")
   assert.equal(JSON.parse(catalogProc.command[8]).catalog.force, false, "only a boolean true forces")
   // A running fetch is never doubled.

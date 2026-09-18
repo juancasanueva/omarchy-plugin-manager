@@ -404,14 +404,36 @@ Item {
   // and publishes a fresh one with a descriptor-relative rename, so nothing
   // here names a cache path a symlink could redirect. Same scrubbed
   // environment as the transactions; the helper takes its home from passwd.
+  property int catalogExitCode: 0
+  property bool catalogOutputFinished: true
+  property bool catalogErrorFinished: true
+
   function loadCatalog(force) {
-    if (catalogProc.running) return
+    if (catalogProc.running || catalogExitCode === -1
+        || !catalogOutputFinished || !catalogErrorFinished) return
+    catalogGeneration += 1
+    catalogExitCode = -1
+    catalogOutputFinished = false
+    catalogErrorFinished = false
     catalogLoading = true
     catalogError = ""
     catalogProc.command = ["/usr/bin/env", "-i", "--", "PATH=/usr/bin:/bin",
       "/usr/bin/python3", "-I", "-S", pinnedHelperPath,
       JSON.stringify({ schemaVersion: 1, catalog: { force: force === true } })]
     catalogProc.running = true
+  }
+
+  // Exit and pipe completion may arrive in either order. Only successful
+  // output reaches the worker; a failed refresh keeps the displayed catalog.
+  function finishCatalogFetch() {
+    if (catalogExitCode === -1 || !catalogOutputFinished || !catalogErrorFinished) return
+    if (catalogExitCode !== 0) {
+      catalogLoading = false
+      var reason = Model.plainText(catalogErrors.text.slice(0, 200)).trim()
+      catalogError = "Catalog refresh failed. " + (reason ? reason + ". " : "") + "Try Refresh again."
+      return
+    }
+    applyCatalog(catalogOutput.text)
   }
 
   // Parsing 2MB of catalog JSON and sanitising every field of 2150 entries
@@ -1217,16 +1239,25 @@ Item {
     id: catalogProc
     clearEnvironment: true
     stdout: StdioCollector {
+      id: catalogOutput
       waitForEnd: true
-      onStreamFinished: root.applyCatalog(text)
+      onStreamFinished: {
+        root.catalogOutputFinished = true
+        root.finishCatalogFetch()
+      }
+    }
+    // The helper emits one reason_text error (at most 200 ASCII bytes).
+    stderr: StdioCollector {
+      id: catalogErrors
+      waitForEnd: true
+      onStreamFinished: {
+        root.catalogErrorFinished = true
+        root.finishCatalogFetch()
+      }
     }
     onExited: function(exitCode) {
-      if (exitCode === 0) return
-      // Whatever the stream handed the worker was the output of a failed
-      // fetch; a newer generation makes the worker's reply fall on the floor.
-      root.catalogGeneration += 1
-      root.catalogLoading = false
-      root.catalogError = "Could not reach omarchyplugins.com"
+      root.catalogExitCode = exitCode
+      root.finishCatalogFetch()
     }
   }
 
