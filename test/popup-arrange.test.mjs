@@ -18,7 +18,7 @@ function binding(source, name, state, fallback = "false") {
 }
 function actionStore(owner = null) {
   const effects = []
-  const state = { popupMoveOwner: owner, busyKind: "", barMovePending: null,
+  const state = { popupMoveOwner: owner, busyKind: "", barMovePending: null, cleanupProcess: null,
     actionProc: { running: false }, pinnedProc: { running: false }, barMoveProc: { running: false },
     selfId: "manager", selfEntry: {}, selfEntryLoaded: true, selfSettings: {},
     allowUnverifiedUpdates: false, allowUnverifiedInstalls: false, tiledExpandedPanel: false,
@@ -110,9 +110,9 @@ test("unresolved retained moves keep popup mutations locked after exit until rec
 })
 
 test("active local processes reject a move before reading host layout, including after busyKind clears", () => {
-  for (const process of ["actionProc", "pinnedProc"]) {
+  for (const process of ["actionProc", "pinnedProc", "cleanupProcess"]) {
     const { state } = actionStore()
-    state[process].running = true
+    state[process] = { running: true }
     Object.defineProperty(state.shell.barConfig, "layout", { get() { throw Error("preflight must not run") } })
     assert.equal(state.startBarMove({}, "left", 0, "right", 0), false)
     const p = popup({ busy: false, pending: false })
@@ -120,13 +120,24 @@ test("active local processes reject a move before reading host layout, including
     p.state.openArrange()
     assert.equal(p.state.requestBarMove({}, "left", 0, "right", 0), false)
     assert.equal(p.events.some(Array.isArray), false)
+    if (process === "cleanupProcess") {
+      state.cleanupProcess.running = false
+      assert.equal(state.busy, true, "cleanup owns the lock until its result settles")
+      assert.equal(state.actionRunning, true)
+      assert.equal(state.startBarMove({}, "left", 0, "right", 0), false)
+      state.cleanupProcess = null
+      assert.equal(state.busy, false)
+      assert.equal(state.actionRunning, false)
+    }
   }
 })
 
 function popup(owner = null) {
   const events = []
   const state = { popupMoveOwner: owner, opened: false, arrangeOpen: false, settingsOpen: true,
-    detailsEntry: { id: "old" }, store: { actionRunning: false }, busy: false, confirming: false, placing: false,
+    detailsEntry: { id: "old" },
+    store: { actionRunning: false, statusRefreshes: 0, refreshUpdateData() { this.statusRefreshes++ } },
+    busy: false, confirming: false, placing: false,
     bar: {}, anchorItem: {}, activeTab: "installed", pendingTab: "browse", contentFlipAngle: 45,
     contentFlipping: false, contentFlip: { stop() { events.push("stop flip") } },
     barBoard: { heldSnapshot: null, cancelDrag() { this.heldSnapshot = null; events.push("cancel drag") } },
@@ -270,9 +281,13 @@ test("rebuilt popup opens the actual local overlay once; a later Settings choice
   assert.equal(state.opened && state.arrangeOpen, true)
   assert.equal(h.other.arrangements, 0)
   assert.equal(h.dispatches(), 1)
+  assert.equal(state.store.statusRefreshes, 0)
   h.request(replacement); state.openSettings(); h.finish(); h.tick()
   assert.equal(state.settingsOpen, true)
   assert.equal(state.arrangeOpen, false)
+  assert.equal(state.store.statusRefreshes, 1)
+  state.openSettings()
+  assert.equal(state.store.statusRefreshes, 1, "already-open Settings must not refresh again")
 })
 
 test("popup overlay projects owner status, blocks background focus, and injects the board theme", () => {

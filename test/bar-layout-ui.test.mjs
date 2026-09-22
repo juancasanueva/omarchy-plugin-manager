@@ -69,14 +69,20 @@ test("explicit Expanded routing preserves the tab and screen, while Arrange stay
 })
 
 test("Expanded Arrange, Settings and details are exclusive and Back preserves the tab", () => {
+  let statusRefreshes = 0
   const state = { activeTab: "browse", settingsOpen: false, arrangeOpen: false, detailsEntry: { id: "old" },
+    store: { refreshUpdateData() { statusRefreshes++ } },
     flipTo(direction, apply) { apply() } }
   call(expanded, "openArrange", state)
   assert.equal(state.arrangeOpen, true)
   assert.equal(state.detailsEntry, null)
+  assert.equal(statusRefreshes, 0)
   call(expanded, "openSettings", state)
   assert.equal(state.arrangeOpen, false)
   assert.equal(state.settingsOpen, true)
+  assert.equal(statusRefreshes, 1)
+  call(expanded, "openSettings", state)
+  assert.equal(statusRefreshes, 1, "already-open Settings must not refresh again")
   call(expanded, "openArrange", state)
   assert.equal(state.settingsOpen, false)
   call(expanded, "closeArrange", state)
@@ -86,6 +92,7 @@ test("Expanded Arrange, Settings and details are exclusive and Back preserves th
   call(expanded, "openDetails", state, { id: "new" })
   assert.equal(state.arrangeOpen, false)
   assert.equal(state.detailsEntry.id, "new")
+  assert.equal(statusRefreshes, 1, "Arrange and details do not request update-data status")
   assert.match(expanded, /arrangeOpen = Model\.expandedPageFromPayload\(payloadJson\) === "arrange"/)
   assert.match(expanded, /onClicked: root\.arrangeOpen \? root\.closeArrange\(\) : root\.closeSettings\(\)/)
 })

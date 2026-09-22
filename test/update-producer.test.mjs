@@ -307,15 +307,17 @@ test("successful update queues the fresh cycle and update entry points enforce s
   const begin = source.indexOf("function finishPinnedUpdate()")
   const bodyEnd = source.indexOf("\n  }", begin) + 4
   for (const outcome of ["updated", "updated; reload failed", "updated; finalization failed", "unchanged; update refused", "invalid"]) {
-    let refreshes = 0, reloads = 0
+    let refreshes = 0, reloads = 0, statusRefreshes = 0
     const root = { pinnedExited: true, busyKind: "update", busyId: "Thing", busyRowId: "thing",
       pinnedOutput: JSON.stringify({ status: outcome, backup: "" }), pinnedOverflow: false,
       pendingUpdateReport: "old", rows: [], allowUnverifiedUpdates: false, setStatus(text, error) { this.status = text; this.error = error },
-      requestFreshUpdateCycle() { refreshes++ }, reload() { reloads++ }, actionFinished() {} }
+      requestFreshUpdateCycle() { refreshes++ }, reload() { reloads++ },
+      refreshUpdateData() { statusRefreshes++; assert.equal(this.busyKind, "") }, actionFinished() {} }
     Function("root", "Model", `with(root) { ${source.slice(begin, bodyEnd)}; finishPinnedUpdate() }`)(root, Model)
     assert.equal(root.busyKind, "")
     assert.equal(refreshes, outcome.startsWith("updated") ? 1 : 0)
     assert.equal(reloads, outcome.startsWith("updated") ? 0 : 1)
+    assert.equal(statusRefreshes, 1, `${outcome} must refresh retained update-data status`)
     assert.equal(root.error, outcome !== "updated")
   }
 
