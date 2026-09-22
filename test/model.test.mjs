@@ -1803,27 +1803,8 @@ test("buildCatalog turns raw catalog text into stamped entries, or an error, in 
   assert.equal(Object.keys(set).length, 3)
 })
 
-test("the catalog is built on a worker thread so the shell keeps answering", () => {
-  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
-  const worker = readFileSync(new URL("../CatalogWorker.js", import.meta.url), "utf8")
-  assert.match(store, /^import QtQml\.WorkerScript$/m)
-  assert.match(store, /WorkerScript \{\s*id: catalogWorker\s*source: "CatalogWorker\.js"\s*onMessage: function\(message\) \{ root\.applyCatalogResult\(message\) \}/)
-  // Each request is numbered; a result from an older request is dropped, so
-  // a refresh that overtakes a slow build never paints stale entries.
-  assert.match(store, /property int catalogGeneration: 0/)
-  const apply = store.slice(store.indexOf("function applyCatalog(raw) {"), store.indexOf("function applyCatalogResult(message) {"))
-  assert.match(apply, /catalogGeneration \+= 1/)
-  assert.match(apply, /catalogWorker\.sendMessage\(\{\s*generation: catalogGeneration,\s*raw: raw,\s*installedIds: Object\.keys\(Model\.installedIdSet\(rows\)\)\s*\}\)/)
-  assert.doesNotMatch(apply, /Model\.catalogEntries|Model\.parseCatalog/)
-  const result = store.slice(store.indexOf("function applyCatalogResult(message) {"), store.indexOf("function applyCatalogResult(message) {") + 700)
-  assert.match(result, /if \(!message \|\| message\.generation !== catalogGeneration\) return/)
-  assert.match(result, /catalogLoading = false/)
-  assert.match(result, /if \(!message\.entries\) \{[\s\S]*?catalogError = [\s\S]*?return\s*\}/)
-  assert.match(result, /catalog = message\.entries\s*catalogLoaded = true\s*catalogError = ""/)
-  // The worker is a shim over the same Model.js the main thread uses.
-  assert.match(worker, /Qt\.include\("Model\.js"\)/)
-  assert.match(worker, /WorkerScript\.onMessage = function\(message\) \{[\s\S]*?var built = buildCatalog\(message\.raw, message\.installedIds\)[\s\S]*?WorkerScript\.sendMessage\(\{ generation: message\.generation, entries: built\.entries, error: built\.error \}\)/)
-})
+// Catalog runtime, lifecycle, and Model.js parity are exercised in
+// catalog-builder.test.mjs rather than pinning one transport implementation.
 
 test("catalogStarsById joins GitHub stars onto installed rows by id", () => {
   const entries = Model.catalogEntries(catalogDoc, {})
@@ -3880,20 +3861,21 @@ test("catalog refresh failures retain displayed entries in every process callbac
       const displayed = [{ id: "cached" }]
       const state = { catalog: displayed, catalogLoaded: true, catalogLoading: false, catalogError: "",
         catalogGeneration: 4, catalogExitCode: 0, catalogOutputFinished: true, catalogErrorFinished: true,
-        pinnedHelperPath: "/plugin/helpers/pinned_update.py", rows: [] }
+        pinnedHelperPath: "/plugin/helpers/pinned_update.py", rows: [],
+        catalogBuildPending: null, catalogBuildExit: 0 }
       state.root = state
       const catalogProc = { running: false }
       const catalogOutput = { text: "" }, catalogErrors = { text: error }
       const messages = []
-      const catalogWorker = { sendMessage: message => messages.push(message) }
+      const startCatalogBuild = () => messages.push(state.catalogBuildPending)
       let restamps = 0
       const functions = ["loadCatalog", "finishCatalogFetch", "applyCatalog", "applyCatalogResult"]
       const handlers = ["outputFinished", "errorFinished", "exited"]
-      const api = Function("state", "Model", "catalogProc", "catalogOutput", "catalogErrors", "catalogWorker", "restampCatalog",
+      const api = Function("state", "Model", "catalogProc", "catalogOutput", "catalogErrors", "startCatalogBuild", "restampCatalog",
         `with (state) { ${functions.map(name => qmlFunction(store, name)).join("\n")}
           ${handlers.map(name => qmlFunction(callbacks, name)).join("\n")}
           return { ${[...functions, ...handlers].join(",")} }
-        }`)(state, Model, catalogProc, catalogOutput, catalogErrors, catalogWorker, () => restamps++)
+        }`)(state, Model, catalogProc, catalogOutput, catalogErrors, startCatalogBuild, () => restamps++)
       state.finishCatalogFetch = api.finishCatalogFetch
       api.loadCatalog(true)
       api.applyCatalogResult({ generation: 4, entries: [{ id: "obsolete" }] })
@@ -3925,6 +3907,39 @@ test("catalog refresh failures retain displayed entries in every process callbac
       assert.equal(state.catalogLoading, false)
       assert.equal(state.catalogError, "")
       assert.equal(restamps, 1)
+    }
+  }
+})
+
+test("catalog build completion waits for all callbacks and rejects stale generations", () => {
+  const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
+  const flags = ["catalogBuildExit", "catalogBuildOutputDone", "catalogBuildErrorDone"]
+  for (const first of flags) for (const second of flags.filter(flag => flag !== first)) {
+    const order = [first, second, flags.find(flag => flag !== first && flag !== second)]
+    for (const generation of [6, 7]) for (const exit of [0, 1]) {
+      const calls = []
+      const state = { catalogGeneration: 7, catalogBuildGeneration: generation,
+        catalogBuildExit: -1, catalogBuildStarted: true,
+        catalogBuildOutputDone: false, catalogBuildErrorDone: false,
+        catalogBuilder: {running: false},
+        catalogBuilt: {text: "bounded frames"}, startCatalogBuild() {},
+        publishCatalogBuild(text, gen) { calls.push([text, gen]) },
+        applyCatalogResult(result) { calls.push(result) } }
+      const api = Function("state", `with (state) {
+        ${qmlFunction(store, "finishCatalogBuild")}
+        ${qmlFunction(store, "catalogBuildRunningChanged")}
+        return { finishCatalogBuild, catalogBuildRunningChanged }
+      }`)(state)
+      for (const [i, flag] of order.entries()) {
+        state[flag] = flag === "catalogBuildExit" ? exit : true
+        // The process pointer may already be null while streams settle.
+        // That does not make a successfully started build a failed launch.
+        api.catalogBuildRunningChanged()
+        api.finishCatalogBuild()
+        assert.equal(calls.length, i === 2 && generation === 7 ? 1 : 0)
+      }
+      if (generation === 7 && exit === 0) assert.deepEqual(calls[0], ["bounded frames", 7])
+      if (generation === 7 && exit === 1) assert.match(calls[0].error, /Try Refresh again/)
     }
   }
 })
