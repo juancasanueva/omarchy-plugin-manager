@@ -440,6 +440,26 @@ for an update they remain in the original checkout at the transaction's
 none: its transaction directory keeps the journal alone once the checkout has
 been published out of it.
 
+### Read-only update-data status
+
+From the plugin checkout, run
+`/usr/bin/python3 -I -S helpers/pinned_update.py --update-data-status`.
+This fixed endpoint accepts no path arguments and returns one JSON object (at
+most 8 KiB), with `schemaVersion: 1`, canonical `paths.plugins`, `paths.active`
+and `paths.archive` derived from the account's passwd home, not `HOME` or XDG
+variables. Unsafe or oversized home metadata is refused, with `paths: null`.
+
+`available: true` includes `activeCount`, `limit: 32`, and `lowerBound`: false
+for counts 0–32, true for 33 (meaning **at least 33**). Every direct active entry
+counts, including unknown files and symlinks; contents and archives are never
+inspected. Missing active data or its configuration parents means zero; an
+unsafe/unreadable root means `available: false`, `activeCount: null`, a bounded
+`error`, and exit code 1 instead of success (0). A missing home is unavailable.
+The endpoint creates, archives and deletes nothing, does not open the plugins
+or archive directories, and does not acquire or replace the update lock.
+It is a bounded observation with cancellation/deadline checks, not a locked
+snapshot or permission to mutate data. Settings integration is separate.
+
 ### Recovery and retained transactions
 
 At **exactly 32 active entries**, the next install or update first archives

@@ -90,6 +90,7 @@ MAX_TREE = 16 * 1024 * 1024
 MAX_DISK = 128 * 1024 * 1024
 TRANSACTION_LIMIT = 32
 ARCHIVE_NAME = "plugin-manager-updates-archive"
+MAX_UPDATE_STATUS = 8192
 CAPACITY_REASON = ("Transaction limit: review ~/.config/omarchy/plugin-manager-updates "
                    "using README recovery guidance before retrying")
 ARCHIVE_REASON = ("Archive unsafe or incomplete: inspect active and archived transactions "
@@ -351,6 +352,12 @@ def create_file(parent, name, data):
     os.fsync(parent)
 
 
+def update_data_result():
+    """Fixed status schema; unavailable counts and paths are never invented."""
+    return {"schemaVersion": 1, "available": False, "paths": None,
+            "activeCount": None, "lowerBound": False, "limit": TRANSACTION_LIMIT, "error": ""}
+
+
 class Updater:
     def __init__(self, home=None):
         # Test injection is in-process only; argv/environment never select a home.
@@ -573,6 +580,56 @@ class Updater:
             for fd in reversed(self.fds):
                 os.close(fd)
             self.fds.clear()
+
+    def open_update_root(self):
+        """Open only existing active data; never create or open plugins/archives.
+
+        The active descriptor is the same inode update workers flock. Merely
+        observing it does not acquire a lock or authorize a future mutation.
+        """
+        fd = self.open_home()
+        for part in (".config", "omarchy", "plugin-manager-updates"):
+            self.checkpoint("status-root")
+            try:
+                child = self.hold(checked_dir(fd, part, private=part == "plugin-manager-updates"))
+            except FileNotFoundError:
+                return None
+            self.anchors.append((fd, part, identity(child)))
+            fd = child
+        self.state = fd
+        return fd
+
+    def update_data_status(self):
+        """Bounded, read-only observation, not a consistent snapshot or lock."""
+        result = update_data_result()
+        self.deadline = min(self.deadline, time.monotonic() + 5)
+        try:
+            self.checkpoint("status-start")
+            # Reject misleading display metadata instead of escaping/truncating
+            # a different path into the UI. Validate before allocating paths.
+            require(isinstance(self.home, str) and len(self.home) <= 512
+                    and self.home.isprintable() and not any(c in self.home for c in "<>&")
+                    and len(self.home.encode("utf-8")) <= 512 and self.home.startswith("/")
+                    and all(p not in ("", ".", "..") for p in self.home.split("/")[1:]),
+                    "Unsupported home path")
+            root = self.home + "/.config/omarchy/"
+            result["paths"] = {"plugins": root + "plugins", "active": root + "plugin-manager-updates",
+                               "archive": root + ARCHIVE_NAME}
+            active = self.open_update_root()
+            count = 0 if active is None else len(self.active_transactions())
+            self.check_anchors()
+            if active is not None:
+                parent, name, _ = self.anchors[-1]
+                self.recheck_directory(parent, name, active)
+            self.checkpoint("status-finish")
+            result.update(available=True, activeCount=count, lowerBound=count > TRANSACTION_LIMIT)
+        except (OSError, Refused, UnicodeError) as error:
+            result["error"] = reason_text(error)
+        finally:
+            for fd in reversed(self.fds):
+                os.close(fd)
+            self.fds.clear()
+        return result
 
     def open_paths(self, plugin_id, install=False):
         fd = self.open_home()
@@ -1209,7 +1266,30 @@ def launch(request, factory=Updater):
     sys.stdout.flush()
 
 
+def serve_update_data_status():
+    """Foreground status endpoint: no request parser, fork, network or writes."""
+    signals = {}
+    try:
+        updater = Updater()
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signals[sig] = signal.signal(sig, lambda *_: setattr(updater, "cancelled", True))
+        result = updater.update_data_status()
+        output = json.dumps(result, ensure_ascii=True, allow_nan=False)
+        require(len(output) + 1 <= MAX_UPDATE_STATUS, "Status output exceeds limit")
+    except Exception as error:
+        result = update_data_result()
+        result["error"] = reason_text(error)
+        output = json.dumps(result)
+    finally:
+        for sig, handler in signals.items():
+            signal.signal(sig, handler)
+    print(output)
+    return 0 if result["available"] else 1
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--update-data-status"]:
+        sys.exit(serve_update_data_status())
     kind = "update"
     try:
         os.umask(0o077)
