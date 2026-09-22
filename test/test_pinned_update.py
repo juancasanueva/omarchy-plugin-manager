@@ -498,6 +498,34 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual((Path(first["backup"]) / "Main.qml").read_text(), "base")
         self.assertEqual((Path(second["backup"]) / "Main.qml").read_text(), "verified")
 
+    def test_real_install_and_update_journals_allow_the_next_transaction_at_capacity(self):
+        state = self.home / ".config/omarchy/plugin-manager-updates"
+        archive = self.home / ".config/omarchy/plugin-manager-updates-archive"
+        # All four histories come from execute(), not just synthetic schemas.
+        for request in (self.install, self.request):
+            result = self.updater().execute(request)
+            self.assertIn(result["status"], ("installed", "updated"))
+        self.request.pop("verifiedCommit")
+        self.request.update(unverifiedCommit=self.tip, expectedLocalHead=self.target)
+        self.assertEqual(self.updater().execute(self.request)["status"], "updated")
+        tip_request = {**self.tip_install, "id": "acme.other"}
+        self.new_manifest["id"] = tip_request["id"]
+        (self.new_remote / "manifest.json").write_text(json.dumps(self.new_manifest))
+        self.new_tip = self.new_commit("another plugin")
+        self.git("-C", str(self.new_remote), "branch", "-f", "validated", self.new_tip)
+        self.assertEqual(self.updater().execute(tip_request)["status"], "installed")
+        histories = {tx.name: (tx / "result.json").read_bytes() for tx in state.iterdir()}
+        for i in range(28):
+            (state / ("pending-%d" % i)).mkdir(mode=0o700)
+        # The installed HEAD has changed since older records were written.
+        # Archival must use their journals, not compare them to today's HEAD.
+        later = self.commit("later update")
+        request = {**self.request, "expectedLocalHead": self.tip, "unverifiedCommit": later}
+        self.assertEqual(self.updater().execute(request)["status"], "updated")
+        self.assertEqual(len(list(state.iterdir())), 29)
+        for name, raw in histories.items():
+            self.assertEqual((archive / name / "result.json").read_bytes(), raw)
+
     def test_worker_survives_observer_death_and_source_directory_exchange(self):
         observer = os.fork()
         if observer == 0:
@@ -1407,6 +1435,438 @@ class CatalogCacheTests(unittest.TestCase):
                 self.assertEqual(result.stdout, b"")
                 self.assertIn(b"Invalid catalog request", result.stderr)
         self.assertFalse((self.home / ".cache").exists())
+
+
+class ArchivalTests(unittest.TestCase):
+    """Exercise capacity preflight without fetching or invoking the desktop."""
+
+    def fixture(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name) / "home"
+        self.omarchy = self.home / ".config/omarchy"
+        (self.omarchy / "plugins/acme.plugin").mkdir(parents=True)
+        self.state = self.omarchy / "plugin-manager-updates"
+        self.state.mkdir(mode=0o700)
+        self.archive = self.omarchy / "plugin-manager-updates-archive"
+
+    def record(self, tx, name, value):
+        path = tx / (name + ".json")
+        path.write_bytes(json.dumps(value).encode())
+        path.chmod(0o600)
+
+    def history(self, number, kind="update", verified=True):
+        tx = self.state / ("txn-%024x" % number)
+        tx.mkdir(mode=0o700)
+        request = dict(schemaVersion=1, id="acme.plugin", repository=REPO)
+        prepared = {"replacement": [tx.stat().st_dev, tx.stat().st_ino + 1000000]}
+        if kind == "update":
+            request.update(expectedLocalHead="a" * 40)
+            request["verifiedCommit" if verified else "unverifiedCommit"] = "b" * 40
+            checkout = tx / "checkout"
+            checkout.mkdir(mode=0o755)
+            (checkout / "valuable.txt").write_bytes(b"original backup\x00bytes")
+            prepared["original"] = [checkout.stat().st_dev, checkout.stat().st_ino]
+            result = dict(status="updated", backup=str(checkout))
+        else:
+            request.update(section="right")
+            request.update({"verifiedCommit": "b" * 40} if verified else {"branch": "main"})
+            result = dict(status="installed")
+        for name, value in (("request", request), ("prepared", prepared),
+                            ("published", result), ("result", result)):
+            self.record(tx, name, value)
+        return tx
+
+    def fill(self, start=1, stop=32):
+        for number in range(start, stop + 1):
+            (self.state / ("pending-%d" % number)).mkdir(mode=0o700)
+
+    def updater(self):
+        updater = u.Updater(home=str(self.home))
+        def close():
+            for fd in reversed(updater.fds):
+                os.close(fd)
+            updater.fds.clear()
+        self.addCleanup(close)
+        return updater
+
+    def preflight(self):
+        updater = self.updater()
+        try:
+            updater.open_paths("acme.plugin")
+        finally:
+            for fd in reversed(updater.fds):
+                os.close(fd)
+            updater.fds.clear()
+
+    def assert_limit(self):
+        with self.assertRaises(u.Refused) as caught:
+            self.preflight()
+        reason = u.reason_text(caught.exception)
+        self.assertIn("~/.config/omarchy/plugin-manager-updates", reason)
+        self.assertIn("README", reason)
+        self.assertLess(len(reason), 200)
+
+    def test_full_successful_histories_archive_without_rewriting_or_traversing_backups(self):
+        for kind in ("install", "update"):
+            for verified in (True, False):
+                with self.subTest(kind=kind, verified=verified):
+                    self.fixture()
+                    originals = [self.history(i, kind, verified) for i in range(32)]
+                    snapshots = {p.name: {f.name: (f.read_bytes(), f.stat().st_ino)
+                                 for f in p.glob("*.json")} for p in originals}
+                    backups = {p.name: (p / "checkout").stat().st_ino for p in originals
+                               if (p / "checkout").exists()}
+                    if backups:
+                        # Backup content is preserved, not scanned for eligibility.
+                        os.mkfifo(originals[0] / "checkout/opaque-fifo")
+                    with patch.object(u.Updater, "git", side_effect=AssertionError("No history HEAD lookup")):
+                        self.preflight()
+                    self.assertEqual(list(self.state.iterdir()), [])
+                    self.assertEqual(self.archive.stat().st_mode & 0o777, 0o700)
+                    for name, records in snapshots.items():
+                        archived = self.archive / name
+                        for filename, (raw, inode) in records.items():
+                            self.assertEqual((archived / filename).read_bytes(), raw)
+                            self.assertEqual((archived / filename).stat().st_ino, inode)
+                        if name in backups:
+                            self.assertEqual((archived / "checkout").stat().st_ino, backups[name])
+                            self.assertEqual((archived / "checkout/valuable.txt").read_bytes(),
+                                             b"original backup\x00bytes")
+
+    def test_below_pressure_does_not_open_history_or_archive(self):
+        self.fixture()
+        for i in range(31):
+            self.history(i)
+        self.archive.symlink_to(self.state, target_is_directory=True)
+        with patch.object(u, "read_file", side_effect=AssertionError("No history read below capacity")):
+            self.preflight()
+        self.assertEqual(len(list(self.state.iterdir())), 31)
+
+    def test_mixed_history_repeated_pressure_and_archive_is_never_enumerated(self):
+        self.fixture()
+        self.fill(stop=31)
+        scan = os.scandir
+        def active_only(fd):
+            self.assertEqual(u.identity(fd), (self.state.stat().st_dev, self.state.stat().st_ino))
+            return scan(fd)
+        for number in (100, 101):
+            tx = self.history(number)
+            with patch.object(u.os, "scandir", side_effect=active_only):
+                updater = self.updater()
+                updater.open_paths("acme.plugin")
+            # Release the held lock as an actual finished worker does.
+            for fd in reversed(updater.fds):
+                os.close(fd)
+            updater.fds.clear()
+            self.assertFalse(tx.exists())
+            self.assertTrue((self.archive / tx.name / "checkout/valuable.txt").exists())
+            self.assertEqual(len(list(self.state.iterdir())), 31)
+        self.assertEqual(len(list(self.archive.iterdir())), 2)
+
+    def test_unsafe_or_incomplete_histories_stay_active(self):
+        cases = ("missing-result", "reload", "enable", "finalization", "unknown-status",
+                 "wrong-backup", "published-mismatch", "result-extra", "request-extra",
+                 "request-derived", "request-version", "prepared-extra", "identity-bool",
+                 "identity-negative", "identity-mismatch", "identity-same", "refused",
+                 "refused-symlink", "duplicate", "oversize", "malformed", "journal-symlink",
+                 "journal-hardlink", "journal-fifo", "journal-mode", "transaction-mode",
+                 "transaction-symlink", "checkout-symlink", "checkout-mode", "bad-name",
+                 "install-checkout", "install-original", "wrong-owner", "unchanged-target",
+                 "journal-readable", "missing-request", "prepared-list", "replacement-float")
+        for case in cases:
+            with self.subTest(case=case):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100, "install" if case.startswith("install-") else "update")
+                result = json.loads((tx / "result.json").read_bytes())
+                prepared = json.loads((tx / "prepared.json").read_bytes())
+                request = json.loads((tx / "request.json").read_bytes())
+                if case in ("missing-result", "missing-request"):
+                    (tx / (case.removeprefix("missing-") + ".json")).rename(tx / "missing.json")
+                elif case == "unchanged-target":
+                    request["verifiedCommit"] = request["expectedLocalHead"]
+                    self.record(tx, "request", request)
+                elif case == "prepared-list":
+                    self.record(tx, "prepared", [])
+                elif case == "replacement-float":
+                    prepared["replacement"][1] = 1.5
+                    self.record(tx, "prepared", prepared)
+                elif case in ("reload", "enable", "finalization", "unknown-status"):
+                    result["status"] = "updated; " + case + " failed"
+                    self.record(tx, "result", result)
+                elif case == "wrong-backup":
+                    result["backup"] += "/other"
+                    for name in ("result", "published"):
+                        self.record(tx, name, result)
+                elif case == "published-mismatch":
+                    self.record(tx, "published", dict(status="installed"))
+                elif case == "result-extra":
+                    self.record(tx, "result", {**result, "other": 1})
+                elif case.startswith("request-"):
+                    request[{"request-extra": "other", "request-derived": "target",
+                             "request-version": "schemaVersion"}[case]] = 99
+                    self.record(tx, "request", request)
+                elif case in ("prepared-extra", "identity-bool", "identity-negative", "identity-mismatch",
+                              "identity-same", "install-original"):
+                    if case in ("prepared-extra", "install-original"):
+                        prepared["other" if case == "prepared-extra" else "original"] = [1, 2]
+                    elif case == "identity-same":
+                        prepared["replacement"] = prepared["original"]
+                    else:
+                        prepared["original"][1] = {"identity-bool": True, "identity-negative": -1,
+                                                    "identity-mismatch": 1}[case]
+                    self.record(tx, "prepared", prepared)
+                elif case == "refused":
+                    self.record(tx, "refused", {})
+                elif case == "refused-symlink":
+                    (tx / "refused.json").symlink_to("absent")
+                elif case in ("duplicate", "oversize", "malformed"):
+                    (tx / "result.json").write_bytes({"duplicate": b'{"status":"updated","status":"updated"}',
+                                                      "oversize": b" " * 65537,
+                                                      "malformed": b"{"}[case])
+                elif case.startswith("journal-"):
+                    path = tx / "result.json"
+                    path.rename(tx / "saved-result")
+                    if case == "journal-symlink":
+                        path.symlink_to("saved-result")
+                    elif case == "journal-hardlink":
+                        os.link(tx / "saved-result", path)
+                    elif case == "journal-fifo":
+                        os.mkfifo(path)
+                    else:
+                        self.record(tx, "result", result)
+                        path.chmod(0o644 if case == "journal-readable" else 0o666)
+                elif case in ("transaction-mode", "checkout-mode"):
+                    (tx if case == "transaction-mode" else tx / "checkout").chmod(0o777)
+                elif case == "transaction-symlink":
+                    moved = self.omarchy / "moved"
+                    tx.rename(moved)
+                    tx.symlink_to(moved, target_is_directory=True)
+                elif case == "checkout-symlink":
+                    (tx / "checkout").rename(tx / "saved-checkout")
+                    (tx / "checkout").symlink_to("saved-checkout")
+                elif case == "bad-name":
+                    tx = tx.rename(self.state / "txn-NOT-A-TRANSACTION")
+                elif case == "install-checkout":
+                    (tx / "checkout").mkdir()
+                if case == "wrong-owner":
+                    # Scope the foreign uid to journal validation, not the home chain.
+                    foreign_uid = os.getuid() + 1
+                    read = u.read_file
+                    def foreign(*args, **kwargs):
+                        with patch.object(u.os, "getuid", return_value=foreign_uid):
+                            return read(*args, **kwargs)
+                    with patch.object(u, "read_file", side_effect=foreign):
+                        self.assert_limit()
+                else:
+                    self.assert_limit()
+                self.assertTrue(tx.exists())
+                self.assertFalse(self.archive.exists())
+
+    def test_unsafe_archive_roots_and_all_collision_types_refuse_without_overwrite(self):
+        for case in ("root-symlink", "root-file", "root-mode", "collision-directory",
+                     "collision-file", "collision-symlink"):
+            with self.subTest(case=case):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100)
+                if case == "root-symlink":
+                    self.archive.symlink_to(self.state)
+                elif case == "root-file":
+                    self.archive.write_bytes(b"keep")
+                else:
+                    self.archive.mkdir(mode=0o700)
+                    if case == "root-mode":
+                        self.archive.chmod(0o755)
+                    elif case == "collision-directory":
+                        (self.archive / tx.name).mkdir()
+                    elif case == "collision-file":
+                        (self.archive / tx.name).write_bytes(b"keep")
+                    else:
+                        (self.archive / tx.name).symlink_to("absent")
+                collision = self.archive / tx.name if case.startswith("collision") else self.archive
+                before = collision.lstat()
+                with self.assertRaisesRegex(u.Refused, "Archive.*README"):
+                    self.preflight()
+                self.assertEqual(collision.lstat(), before)
+                self.assertTrue(tx.exists())
+
+    def test_archive_root_must_be_owned_and_on_the_same_filesystem(self):
+        for field in (2, 4):  # stat_result device and uid fields
+            with self.subTest(field=field):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100)
+                self.archive.mkdir(mode=0o700)
+                archive_inode = self.archive.stat().st_ino
+                fstat = os.fstat
+                def foreign(fd):
+                    info = fstat(fd)
+                    if info.st_ino == archive_inode:
+                        fields = list(info)
+                        fields[field] += 1
+                        return os.stat_result(fields)
+                    return info
+                with patch.object(u.os, "fstat", side_effect=foreign):
+                    with self.assertRaisesRegex(u.Refused, "Archive"):
+                        self.preflight()
+                self.assertTrue(tx.exists())
+                self.assertEqual(list(self.archive.iterdir()), [])
+
+    def test_mixed_success_and_failed_journals_preserve_unresolved_history(self):
+        self.fixture()
+        failed = {}
+        for i in range(32):
+            tx = self.history(i, "install" if i % 2 else "update", verified=bool(i % 3))
+            if i % 4 == 0:
+                result = json.loads((tx / "result.json").read_bytes())
+                result["status"] += "; reload failed"
+                self.record(tx, "result", result)
+                failed[tx.name] = (tx / "result.json").read_bytes()
+        self.preflight()
+        self.assertEqual({p.name for p in self.state.iterdir()}, set(failed))
+        self.assertEqual(len(list(self.archive.iterdir())), 24)
+        for name, raw in failed.items():
+            self.assertEqual((self.state / name / "result.json").read_bytes(), raw)
+
+    def test_archive_failures_never_admit_a_new_transaction(self):
+        for case in ("unavailable", "rename", "creation-fsync", "source-fsync", "archive-fsync",
+                     "cancel", "deadline", "replace-source", "replace-after", "replace-root"):
+            with self.subTest(case=case):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100)
+                updater = self.updater()
+                checkpoint = updater.checkpoint
+                rename = u.NOREPLACE
+                fsync = os.fsync
+                def check(phase):
+                    if phase == "before-archive":
+                        if case == "cancel":
+                            updater.cancelled = True
+                        elif case == "deadline":
+                            updater.deadline = 0
+                        elif case == "replace-source":
+                            tx.rename(self.omarchy / "displaced")
+                            tx.mkdir(mode=0o700)
+                        elif case == "replace-root":
+                            self.archive.rename(self.omarchy / "displaced-archive")
+                            self.archive.mkdir(mode=0o700)
+                    checkpoint(phase)
+                updater.checkpoint = check
+                def move(*args):
+                    if case == "rename":
+                        return -1
+                    rc = rename(*args)
+                    if case == "replace-after" and rc == 0:
+                        archived = self.archive / tx.name
+                        archived.rename(self.archive / "displaced")
+                        archived.mkdir(mode=0o700)
+                    return rc
+                def sync(fd):
+                    target = {"creation-fsync": self.omarchy, "source-fsync": self.state,
+                              "archive-fsync": self.archive}.get(case)
+                    if target is not None and target.exists() and u.identity(fd) == (
+                            target.stat().st_dev, target.stat().st_ino):
+                        raise OSError("injected fsync failure")
+                    fsync(fd)
+                with patch.object(u, "NOREPLACE", None if case == "unavailable" else move), \
+                     patch.object(u.os, "fsync", side_effect=sync):
+                    with self.assertRaises(u.Refused):
+                        updater.open_paths("acme.plugin")
+                self.assertEqual(updater.transaction, "")
+                self.assertTrue(tx.exists() or (self.archive / tx.name).exists())
+
+    def test_journal_mutation_after_validation_is_detected_before_and_after_rename(self):
+        for phase in ("before-archive", "rename"):
+            with self.subTest(phase=phase):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100)
+                updater = self.updater()
+                checkpoint, rename = updater.checkpoint, u.NOREPLACE
+                def check(current):
+                    if current == phase:
+                        self.record(tx, "result", {"status": "updated; reload failed"})
+                    checkpoint(current)
+                def move(*args):
+                    result = rename(*args)
+                    if phase == "rename" and result == 0:
+                        self.record(self.archive / tx.name, "refused", {})
+                    return result
+                updater.checkpoint = check
+                with patch.object(u, "NOREPLACE", side_effect=move):
+                    with self.assertRaisesRegex(u.Refused, "Archive"):
+                        updater.open_paths("acme.plugin")
+                self.assertEqual(updater.transaction, "")
+                self.assertTrue(tx.exists() if phase == "before-archive"
+                                else (self.archive / tx.name).exists())
+
+    def test_successful_move_still_needs_a_fresh_bounded_recount(self):
+        for case in ("refilled", "unreadable", "cancelled"):
+            with self.subTest(case=case):
+                self.fixture()
+                self.fill(stop=31)
+                tx = self.history(100)
+                updater = self.updater()
+                checkpoint = updater.checkpoint
+                scan = os.scandir
+                calls = []
+                def check(phase):
+                    if phase == "after-archive":
+                        if case == "refilled":
+                            self.fill(start=100, stop=100)
+                        elif case == "cancelled":
+                            updater.cancelled = True
+                    checkpoint(phase)
+                def inventory(fd):
+                    calls.append(fd)
+                    if case == "unreadable" and len(calls) == 2:
+                        raise OSError("recount unavailable")
+                    return scan(fd)
+                updater.checkpoint = check
+                with patch.object(u.os, "scandir", side_effect=inventory):
+                    with self.assertRaises(u.Refused):
+                        updater.open_paths("acme.plugin")
+                self.assertEqual(updater.transaction, "")
+                self.assertTrue((self.archive / tx.name).exists())
+                if case != "cancelled":
+                    self.assertEqual(len(calls), 2)
+
+    def test_lock_excludes_archival_and_inventory_stops_at_the_33rd_entry(self):
+        self.fixture()
+        self.fill(stop=32)
+        tx = self.history(100)
+        scan = os.scandir
+        seen = []
+        class BoundedScan:
+            def __init__(self, fd):
+                self.entries = scan(fd)
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                self.entries.close()
+            def __iter__(self):
+                return self
+            def __next__(self):
+                seen.append(1)
+                if len(seen) > 33:
+                    raise AssertionError("Read beyond the bounded inventory")
+                return next(self.entries)
+        with patch.object(u.os, "scandir", BoundedScan), \
+             patch.object(u, "read_file", side_effect=AssertionError("No inspection above capacity")):
+            self.assert_limit()
+        self.assertEqual(len(seen), 33)
+        self.assertTrue(tx.exists())
+        lock = os.open(self.state, u.DIR)
+        try:
+            u.fcntl.flock(lock, u.fcntl.LOCK_EX | u.fcntl.LOCK_NB)
+            with patch.object(u.os, "scandir", side_effect=AssertionError("Inventory needs the lock")):
+                with self.assertRaisesRegex(u.Refused, "Another pinned update"):
+                    self.preflight()
+        finally:
+            os.close(lock)
 
 
 if __name__ == "__main__":

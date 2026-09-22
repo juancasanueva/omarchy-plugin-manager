@@ -88,6 +88,12 @@ PROJECTED_KEYS = ("id", "name", "description", "author", "version", "category", 
                   "verificationCommit")
 MAX_TREE = 16 * 1024 * 1024
 MAX_DISK = 128 * 1024 * 1024
+TRANSACTION_LIMIT = 32
+ARCHIVE_NAME = "plugin-manager-updates-archive"
+CAPACITY_REASON = ("Transaction limit: review ~/.config/omarchy/plugin-manager-updates "
+                   "using README recovery guidance before retrying")
+ARCHIVE_REASON = ("Archive unsafe or incomplete: inspect active and archived transactions "
+                  "using README recovery guidance before retrying")
 LIBC = ctypes.CDLL(None, use_errno=True)
 EXCHANGE = getattr(LIBC, "renameat2", None)
 if EXCHANGE:
@@ -603,8 +609,146 @@ class Updater:
         except BlockingIOError as error:
             raise Refused("Another pinned update is running") from error
         self.anchors.append((fd, "plugin-manager-updates", identity(self.state)))
-        with os.scandir(self.state) as entries:
-            require(sum(1 for _ in zip(entries, range(33))) < 32, "Review retained transactions before updating")
+        self.archive_at_capacity()
+
+    def active_transactions(self):
+        """At most 32 names; the 33rd signals manual review without inspection."""
+        names = []
+        # A fresh view avoids stale directory enumeration on btrfs, while
+        # remaining bound to the held state inode (also important for recount).
+        view = os.open(".", DIR, dir_fd=self.state)
+        try:
+            with os.scandir(view) as entries:
+                for entry in entries:
+                    self.checkpoint("archive-inventory")
+                    names.append(entry.name)
+                    if len(names) > TRANSACTION_LIMIT:
+                        break
+        finally:
+            os.close(view)
+        return names
+
+    @staticmethod
+    def absent(parent, name):
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        return False
+
+    def completed_record(self, tx, name):
+        """Validate only known journals and the backup directory, never its tree.
+
+        Return byte/inode evidence for rechecks, not a recovered transaction or
+        an assertion about the plugin's current HEAD. Unknown history stays put.
+        """
+        require(self.absent(tx, "refused.json"), "Refused history")
+        records, evidence = {}, {}
+        for key in ("request", "prepared", "published", "result"):
+            raw, info = read_file(tx, key + ".json", 8192)
+            require(stat.S_IMODE(info.st_mode) == 0o600, "Unsafe journal permissions")
+            records[key] = document(raw, 8192)
+            evidence[key] = (raw, info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+        raw_request = records["request"]
+        require(type(raw_request) is dict and not set(raw_request).intersection(DERIVED),
+                "Unknown historical request")
+        request = request_value(raw_request)
+        prepared = records["prepared"]
+        keys = {"replacement"} if request["install"] else {"original", "replacement"}
+        require(type(prepared) is dict and set(prepared) == keys, "Unknown prepared record")
+        for pair in prepared.values():
+            require(type(pair) is list and len(pair) == 2
+                    and all(type(value) is int for value in pair)
+                    and pair[0] == os.fstat(tx).st_dev and pair[1] > 0, "Invalid prepared identity")
+        if request["install"]:
+            require(self.absent(tx, "checkout"), "Install still has a checkout")
+            expected = {"status": "installed"}
+        else:
+            require(request["target"] != request["expectedLocalHead"], "Contradictory update target")
+            require(prepared["original"] != prepared["replacement"], "Contradictory identities")
+            checkout = checked_dir(tx, "checkout")
+            try:
+                require(list(identity(checkout)) == prepared["original"], "Backup identity changed")
+            finally:
+                os.close(checkout)
+            expected = {"status": "updated", "backup": self.home
+                        + "/.config/omarchy/plugin-manager-updates/" + name + "/checkout"}
+        require(records["published"] == expected and records["result"] == expected,
+                "Incomplete or contradictory result")
+        return evidence
+
+    @staticmethod
+    def recheck_directory(parent, name, held):
+        current = checked_dir(parent, name, private=True)
+        try:
+            require(identity(current) == identity(held), "Archive directory identity changed")
+        finally:
+            os.close(current)
+
+    def open_archive(self):
+        require(NOREPLACE is not None, "Atomic archival unavailable")
+        self.check_anchors()
+        try:
+            os.mkdir(ARCHIVE_NAME, 0o700, dir_fd=self.omarchy)
+            os.fsync(self.omarchy)
+        except FileExistsError:
+            pass
+        archive = self.hold(checked_dir(self.omarchy, ARCHIVE_NAME, private=True))
+        require(os.fstat(archive).st_dev == os.fstat(self.state).st_dev,
+                "Archive must share filesystem")
+        self.anchors.append((self.omarchy, ARCHIVE_NAME, identity(archive)))
+        return archive
+
+    def archive_at_capacity(self):
+        names = self.active_transactions()
+        require(len(names) <= TRANSACTION_LIMIT, CAPACITY_REASON)
+        if len(names) < TRANSACTION_LIMIT:
+            return
+        archive = None
+        try:
+            for name in names:
+                self.checkpoint("archive-history")
+                if re.fullmatch(r"txn-[0-9a-f]{24}", name) is None:
+                    continue
+                try:
+                    tx = checked_dir(self.state, name, private=True)
+                except (OSError, Refused):
+                    continue
+                try:
+                    try:
+                        evidence = self.completed_record(tx, name)
+                    except (OSError, Refused):
+                        continue
+                    if archive is None:
+                        archive = self.open_archive()
+                    self.checkpoint("before-archive")
+                    self.check_anchors()
+                    self.recheck_directory(self.omarchy, "plugin-manager-updates", self.state)
+                    self.recheck_directory(self.omarchy, ARCHIVE_NAME, archive)
+                    self.recheck_directory(self.state, name, tx)
+                    require(self.completed_record(tx, name) == evidence, "History changed")
+                    # This lock excludes helper workers, not arbitrary same-user
+                    # writers. Rechecks detect changes, not a race-free snapshot.
+                    if NOREPLACE(self.state, name.encode(), archive, name.encode(), 1) != 0:
+                        raise Refused("Atomic archival refused")
+                    os.fsync(self.state)
+                    os.fsync(archive)
+                    self.check_anchors()
+                    self.recheck_directory(self.omarchy, "plugin-manager-updates", self.state)
+                    self.recheck_directory(self.omarchy, ARCHIVE_NAME, archive)
+                    self.recheck_directory(archive, name, tx)
+                    require(self.absent(self.state, name)
+                            and self.completed_record(tx, name) == evidence, "Archived history changed")
+                    self.checkpoint("after-archive")
+                finally:
+                    os.close(tx)
+            # Never admit a new transaction merely because a rename succeeded.
+            names = self.active_transactions()
+            self.check_anchors()
+            self.checkpoint("archive-recount")
+        except (OSError, Refused) as error:
+            raise Refused(ARCHIVE_REASON) from error
+        require(len(names) < TRANSACTION_LIMIT, CAPACITY_REASON)
 
     def check_anchors(self):
         for parent, name, expected in self.anchors:

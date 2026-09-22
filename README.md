@@ -439,6 +439,30 @@ for an update they remain in the original checkout at the transaction's
 `checkout/` backup. An install replaces nothing, so it has no backup and reports
 none: its transaction directory keeps the journal alone once the checkout has
 been published out of it.
+
+### Recovery and retained transactions
+
+At **exactly 32 active entries**, the next install or update first archives
+provably completed transactions into
+`~/.config/omarchy/plugin-manager-updates-archive/txn-<same-id>/`. Below that
+threshold, nothing is archived. Only exact `installed` or `updated` results
+qualify: the published result, original request, prepared identities and
+backup layout must agree, with no `refused.json` marker. Reload, enable or
+finalization failures, partial records, unknown schemas and unsafe entries
+stay active. Historical eligibility does not depend on the plugin's current HEAD.
+
+Archival moves each whole transaction, including its original checkout, without
+copying or deleting files, traversing backup contents, rewriting journals or
+leaving aliases in the active directory. The private 0700 archive is on the
+same filesystem; no-replace renames never overwrite an existing archive entry.
+Both directories are fsynced. The archive grows cumulatively and is never
+automatically pruned or enumerated by the helper.
+
+**Archived journals keep their historical absolute backup paths.** If the
+recorded active path no longer exists, look under
+`~/.config/omarchy/plugin-manager-updates-archive/<same txn>/checkout` and inspect
+the journals beside it. Do not blindly reuse a stale `backup` string.
+
 Inspect `request.json`, `prepared.json` (directory device/inode identities),
 `published.json` and `result.json` to distinguish staging from publication.
 A crash between publication and journaling requires checking those identities
@@ -449,8 +473,15 @@ There is no automatic recovery or rollback that could overwrite later edits.
 The advisory lock serializes helper requests, not arbitrary same-user writers;
 final rechecks do not make concurrent external edits race-free.
 Keep backups until reviewed, and recover manually only after preserving the
-current checkout. At 32 retained transactions, further updates refuse until
-those transaction directories are reviewed and moved out of this state directory.
+current checkout. If 32 entries remain unresolved, or discovery encounters a
+33rd entry, further installs/updates refuse with a README recovery hint. Review
+`~/.config/omarchy/plugin-manager-updates/` and manually move only transactions
+you have understood and preserved; the helper never guesses about incomplete
+history. Discovery inspects at most 32 direct entries under the existing helper
+lock, and successful archival requires a fresh capacity count before proceeding.
+An archive error also refuses the new transaction: inspect both active and
+archive locations before retrying, since an earlier move may have completed.
+Never resolve a collision by overwriting an archived transaction.
 
 Once clicked, the finite worker runs independently of the QML observer. Closing
 the window is **not cancellation**, including during a manager self-update.
@@ -688,7 +719,8 @@ omarchy plugin remove io.github.juancasanueva.plugin-manager --yes
 That deletes `~/.config/omarchy/plugins/io.github.juancasanueva.plugin-manager`
 and takes the widget out of your bar. The catalog cache at
 `~/.cache/omarchy-plugin-manager/` and transactions/backups under
-`~/.config/omarchy/plugin-manager-updates/` survive removal. An already accepted
+`~/.config/omarchy/plugin-manager-updates/` and
+`~/.config/omarchy/plugin-manager-updates-archive/` survive removal. An already accepted
 finite update also continues through finalization. Review retained transactions
 before removing or moving them; the manager never automatically deletes backups.
 
@@ -728,7 +760,10 @@ back to repository `preview.png` files and accent tiles.
 Only on an explicit action: enabling/disabling edits shell configuration via
 host commands, and installation/removal uses host commands. Pinned updates
 write private staging, transaction records and retained original checkouts,
-and atomically exchange one plugin directory. They do not edit shell.json.
+and atomically exchange one plugin directory. At the active transaction limit,
+pinned installs/updates can create `~/.config/omarchy/plugin-manager-updates-archive/`
+and move completed transaction directories there, preserving all recovery data.
+Archival does not edit shell.json or change installed plugins.
 The Browse cache at `~/.cache/omarchy-plugin-manager/` is written automatically
 when the catalog is missing or stale, through owner-checked no-follow
 directory descriptors with a descriptor-relative atomic rename, never through
