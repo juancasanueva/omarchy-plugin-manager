@@ -92,8 +92,9 @@ while Settings is open, and the cards scroll when the available height is small.
 Under the hood the plugin registers a second kind, `panel`, whose entry point
 is `Expanded.qml`. Both surfaces share one data layer, `PluginStore.qml`, so
 an install, update, enable, disable or remove is the same code whichever
-window you started it from, and the catalog is parsed on a worker thread so a
-two-thousand-entry marketplace never freezes the window that asked for it.
+window you started it from. Catalog parsing, enrichment and initial sorting run
+in an isolated offscreen Quickshell process; the desktop receives bounded result
+frames instead of hosting a WorkerScript.
 One consequence of the extra kind: the shell now routes
 `omarchy-shell shell toggle io.github.juancasanueva.plugin-manager` to the
 expanded panel, which makes it the thing to bind a hotkey to, while the bar
@@ -583,7 +584,7 @@ see the old bytes or the new ones and nothing outside that directory is ever
 created or replaced.
 
 The work per keystroke is kept small on purpose. Each entry's lowercased
-search text and its listing timestamp are derived once, on the worker thread,
+search text and its listing timestamp are derived once, in the isolated builder,
 so the main thread does one substring test per entry rather than lowercasing
 four fields and parsing a date. The catalog is sorted once per sort mode and
 then filtered in that order, since filtering keeps the order it is given, so
@@ -714,6 +715,7 @@ This uses Quickshell's supported command list instead of a map-to-hash environme
 | `curl` | fetching the catalog and remote manifests |
 | `notify-send` | reporting install and pinned-update outcomes outside the panel |
 | `python3`, `omarchy-plugin-validate`, `qs` | bounded update transaction, staged validation, and post-publication rescan |
+| `/usr/bin/quickshell` | isolated offscreen catalog building with the existing `Model.js` |
 | `bash`, coreutils | the loading and install scripts |
 | `omarchy-launch-browser` | opening repository links in your chosen browser |
 
@@ -731,6 +733,10 @@ The Browse cache at `~/.cache/omarchy-plugin-manager/` is written automatically
 when the catalog is missing or stale, through owner-checked no-follow
 directory descriptors with a descriptor-relative atomic rename, never through
 a path a symlink could redirect.
+Each catalog build also uses a private `/tmp/omarchy-catalog-*` directory for its
+request descriptor and isolated XDG config/cache/runtime/logs. Its guardian removes
+that directory on completion, failure, cancellation, or owner exit. Force-killing
+the guardian itself can leave this temporary state behind.
 
 ## Develop
 
@@ -746,6 +752,42 @@ omarchy-shell shell rescanPlugins
 omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 ```
 
+### Catalog shutdown workaround
+
+Issue #3 reports a Qt 6.11.2 / Quickshell 0.3.1 shutdown crash in WorkerScript
+destruction. The plugin no longer instantiates WorkerScript, even when Browse
+has never opened. `CatalogBuilder.qml` imports the unchanged `Model.js` in a
+separate process; `helpers/catalog_build.py` supervises it without network access
+or a new runtime dependency. This avoids the implicated lifetime boundary; the
+original full-shell crash has not been reproduced locally.
+
+The helper rejects, rather than truncates, requests above 8 MiB of catalog text,
+1 MiB of encoded installed IDs, or 49 MiB of transport JSON. Enriched publication
+has a separate 16 MiB budget and 64 KiB frames (each entry must fit one frame).
+There is no 5,000-entry browsing cap. Child stdout and stderr are bounded, and the
+offscreen engine has a 2 GiB address-space limit. The helper checks a cooperative
+20-second budget at I/O boundaries, not an independent wall-clock watchdog:
+JSON processing, framing, process launch/wait and filesystem cleanup can extend
+elapsed time beyond that budget. An observer/guardian pair handles early owner
+destruction, when Quickshell kills its direct child before that child can clean
+up; it terminates the owned engine group and reaps its direct engine child.
+Teardown tests check for non-running descendants, not the absence of zombies.
+Failed launches retain the catalog and permit retry. Cancellation waits for an
+owned positive PID, and stale generations never replace the displayed catalog.
+
+The desktop parses one result frame per event-loop turn. Final assignment,
+installed/opt-in re-stamping and view bindings still cost synchronous time; this
+is not a claim of zero-cost publication. Run the isolated regression/timing suite
+without installing the plugin or restarting the desktop:
+
+```bash
+node --test test/catalog-builder.test.mjs
+```
+
+It tests Model parity, errors/retry, stale results, budgets, owner/parent teardown
+and complete 6,000-entry publication. Its timing smoke test covers the store,
+not rendering a full panel or the reporter's exact IPC shutdown sequence.
+
 ## Layout
 
 | File | Role |
@@ -758,7 +800,7 @@ omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'
 | `InstalledDetails.qml` | One installed plugin in full: switch and action buttons, screenshot, description, facts, and links |
 | `CatalogDetailsPane.qml` | The expanded panel's Browse details page: preview, facts, warning, repository, Release, and Install |
 | `PluginStore.qml` | The shared data layer: plugin list, update check, catalog fetch, actions, and what is pending confirmation |
-| `CatalogWorker.js` | The worker thread that parses the catalog so the window never waits on it |
+| `CatalogBuilder.qml`, `helpers/catalog_build.py` | Isolated catalog model builder and bounded process supervisor |
 | `ReleaseNavigator.qml` | The click-time Release probe and the one place a browser is launched from, shared by both surfaces |
 | `PluginRow.qml` | One popup row: name, author/kind/version, description, repository link, on/off switch, and its buttons |
 | `CatalogCard.qml` | One compact marketplace card: preview, summary, state, metrics, details, and install |

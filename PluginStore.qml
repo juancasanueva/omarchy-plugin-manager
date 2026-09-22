@@ -1,5 +1,4 @@
 import QtQuick
-import QtQml.WorkerScript
 import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
@@ -424,7 +423,7 @@ Item {
   }
 
   // Exit and pipe completion may arrive in either order. Only successful
-  // output reaches the worker; a failed refresh keeps the displayed catalog.
+  // output reaches the builder; a failed refresh keeps the displayed catalog.
   function finishCatalogFetch() {
     if (catalogExitCode === -1 || !catalogOutputFinished || !catalogErrorFinished) return
     if (catalogExitCode !== 0) {
@@ -436,26 +435,136 @@ Item {
     applyCatalog(catalogOutput.text)
   }
 
-  // Parsing 2MB of catalog JSON and sanitising every field of 2150 entries
-  // takes seconds in QML's engine, and on the main thread those seconds are
-  // ones in which the shell answers no IPC at all — including the call that
-  // reads the plugin list. The build runs on a worker thread instead; each
-  // request is numbered so a reply overtaken by a newer request is dropped.
+  // Parse/build/sort in a separate QML engine, not an in-process WorkerScript:
+  // Qt 6.11.2 can destroy the worker engine before its WorkerScript objects.
   property int catalogGeneration: 0
-
-  WorkerScript {
-    id: catalogWorker
-    source: "CatalogWorker.js"
-    onMessage: function(message) { root.applyCatalogResult(message) }
-  }
+  property var catalogBuildPending: null
+  property int catalogBuildGeneration: 0
+  property int catalogBuildExit: 0
+  property bool catalogBuildStarted: false
+  property bool catalogBuildOutputDone: true
+  property bool catalogBuildErrorDone: true
 
   function applyCatalog(raw) {
     catalogGeneration += 1
-    catalogWorker.sendMessage({
-      generation: catalogGeneration,
-      raw: raw,
-      installedIds: Object.keys(Model.installedIdSet(rows))
-    })
+    catalogBuildPending = null
+    if (raw.length > 8 * 1024 * 1024) {
+      applyCatalogResult({ generation: catalogGeneration, error: "Catalog exceeds input limit" })
+      return
+    }
+    var ids = Object.keys(Model.installedIdSet(rows))
+    var idUnits = ids.length
+    for (var i = 0; i < ids.length && idUnits <= 1024 * 1024; i++) idUnits += ids[i].length
+    if (idUnits > 1024 * 1024) {
+      applyCatalogResult({ generation: catalogGeneration, error: "Installed ids exceed request limit" })
+      return
+    }
+    catalogBuildPending = { generation: catalogGeneration, raw: raw, installedIds: ids }
+    if (catalogBuildExit === -1) stopCatalogBuild()
+    startCatalogBuild()
+  }
+
+  function stopCatalogBuild() {
+    // running includes Starting, when there may not yet be an owned PID.
+    if (catalogBuilder.running && Number(catalogBuilder.processId) > 0) catalogBuilder.signal(15)
+  }
+
+  function catalogBuildRunningChanged() {
+    if (catalogBuilder.running) return
+    // FailedToStart emits only runningChanged: no exit or stream callbacks.
+    // A started process must still settle those callbacks in either order.
+    if (catalogBuildExit === -1 && !catalogBuildStarted) {
+      catalogBuilder.request = ""
+      catalogBuilder.stdinEnabled = false
+      catalogBuildExit = 1
+      catalogBuildOutputDone = true
+      catalogBuildErrorDone = true
+      applyCatalogResult({ generation: catalogBuildGeneration,
+        error: "Could not start the catalog builder. Try Refresh again." })
+    }
+    startCatalogBuild()
+  }
+
+  function startCatalogBuild() {
+    if (!catalogBuildPending || catalogBuilder.running || catalogBuildExit === -1
+        || !catalogBuildOutputDone || !catalogBuildErrorDone) return
+    catalogBuildGeneration = catalogBuildPending.generation
+    catalogBuilder.request = JSON.stringify(catalogBuildPending)
+    catalogBuildPending = null
+    if (catalogBuilder.request.length > 49 * 1024 * 1024) {
+      applyCatalogResult({ generation: catalogBuildGeneration, error: "Catalog exceeds request limit" })
+      catalogBuilder.request = ""
+      return
+    }
+    catalogBuildExit = -1
+    catalogBuildStarted = false
+    catalogBuildOutputDone = false
+    catalogBuildErrorDone = false
+    catalogBuilder.stdinEnabled = true
+    catalogBuilder.running = true
+  }
+
+  function finishCatalogBuild() {
+    if (catalogBuildExit === -1 || !catalogBuildOutputDone || !catalogBuildErrorDone) return
+    var generation = catalogBuildGeneration
+    if (generation === catalogGeneration) {
+      if (catalogBuildExit !== 0)
+        applyCatalogResult({ generation: generation, error: "Could not build the plugin catalog. Try Refresh again." })
+      else publishCatalogBuild(catalogBuilt.text, generation)
+    }
+    startCatalogBuild()
+  }
+
+  function publishCatalogBuild(text, generation) {
+    // The supervisor caps bytes before stdout reaches the shell. Parse at most
+    // one 64 KiB frame per event-loop turn; the final array assignment and
+    // current installed/opt-in stamping remain bounded, synchronous work.
+    var frames = text.trim().split("\n")
+    var entries = []
+    var index = 0
+    function nextFrame() {
+      if (generation !== root.catalogGeneration) return
+      try {
+        var frame = JSON.parse(frames[index++])
+        if (index === frames.length) {
+          if (frame.generation !== generation) throw new Error("generation")
+          root.applyCatalogResult({ generation: generation, entries: frame.error ? null : entries, error: frame.error })
+          return
+        }
+        if (!Array.isArray(frame)) throw new Error("frame")
+        for (var i = 0; i < frame.length; i++) entries.push(frame[i])
+        Qt.callLater(nextFrame)
+      } catch (error) {
+        root.applyCatalogResult({ generation: generation, error: "Could not read the plugin catalog" })
+      }
+    }
+    Qt.callLater(nextFrame)
+  }
+
+  Process {
+    id: catalogBuilder
+    property string request: ""
+    command: ["/usr/bin/python3", "-I", "-S", decodeURIComponent(Qt.resolvedUrl("helpers/catalog_build.py").toString().replace(/^file:\/\//, ""))]
+    clearEnvironment: true
+    onStarted: {
+      root.catalogBuildStarted = true
+      if (root.catalogBuildGeneration !== root.catalogGeneration) root.stopCatalogBuild()
+      else write(request)
+      request = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      id: catalogBuilt
+      waitForEnd: true
+      onStreamFinished: { root.catalogBuildOutputDone = true; root.finishCatalogBuild() }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: { root.catalogBuildErrorDone = true; root.finishCatalogBuild() }
+    }
+    onExited: function(code) { root.catalogBuildExit = code; root.finishCatalogBuild() }
+    onRunningChanged: root.catalogBuildRunningChanged()
+    Component.onDestruction: root.stopCatalogBuild()
   }
 
   function applyCatalogResult(message) {
@@ -470,7 +579,7 @@ Item {
     catalog = message.entries
     catalogLoaded = true
     catalogError = ""
-    // The worker knows nothing about this plugin's own settings, so it builds
+    // The helper knows nothing about this plugin's own settings, so it builds
     // every entry with the install opt-in off. One re-stamp here is what makes
     // a fresh fetch agree with the switch; it assigns nothing when it is off.
     restampCatalog()
