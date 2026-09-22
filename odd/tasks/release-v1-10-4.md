@@ -11,7 +11,7 @@ Independent final verifier mud8av7a-l-uali:402 Node tests and144 Python tests pa
 ## Tasks
 - [x] R1 Prepare manifest and scope.
 - [x] R2 Resolve fixture regressions and independently pass full release checks.
-- [ ] R3 Commit release, fast-forward master, atomically push master/tag, publish GitHub release and verify remote evidence. IN PROGRESS.
+- [x] R3 Release committed, master fast-forwarded, master/tag atomically pushed, GitHub release published and remote evidence verified.
 
 ## Publication contract
-Tag v1.10.4 identifies the release commit. Verify remote master/tag identity at publication, release normal/published/latest, correct manifest. Notes distinguish archival preserving backups from irreversible confirmed cleanup; unresolved/unsafe history remains, active counter excludes archive. Rollback code to prior release does not restore deleted backups. Record publication outcome after it is observed; no premature success claim.
+Tag v1.10.4 identifies the release commit. Verify remote master/tag identity at publication, release normal/published/latest, correct manifest. Notes distinguish archival preserving backups from irreversible confirmed cleanup; unresolved/unsafe history remains, active counter excludes archive. Rollback code to prior release does not restore deleted backups. Release commit: 50975a458bc738a234d202a8161ff36b2d05f29c. Remote master and peeled v1.10.4 matched this commit at publication; no local branches remained unmerged. GitHub published v1.10.4 at 2026-09-22T22:15:32Z as latest, non-draft/non-prerelease, no uploaded assets. Tagged manifest is 1.10.4. URL: https://github.com/juancasanueva/omarchy-plugin-manager/releases/tag/v1.10.4 . This post-publication evidence is recorded in a follow-up documentation commit; the release tag remains immutable.
