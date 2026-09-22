@@ -401,21 +401,69 @@ def cleanup_mount_id(fd):
 
 
 class CleanupLock:
-    """Own the existing active inode flock, never create/rotate an update root.
+    """Own the active inode flock; only explicit cleanup may create a missing root.
 
     Use a fresh Updater. parent() supplies only held active/archive descriptors;
     keep this context open across all calls to remove_completed().
     """
-    def __init__(self, worker):
+    def __init__(self, worker, *, create_missing=False):
         self.worker = worker
+        self.create_missing = create_missing
         self.parents = {}
         self.state = None
+        self.failure = None
+
+    def open_explicit_root(self):
+        """Never create parents; archive-only storage needs the updater's lock inode."""
+        worker = self.worker
+        fd = worker.open_home()
+        for part in (".config", "omarchy"):
+            worker.checkpoint("cleanup-root")
+            try:
+                child = worker.hold(checked_dir(fd, part))
+            except FileNotFoundError:
+                worker.check_anchors()
+                return None
+            worker.anchors.append((fd, part, identity(child)))
+            fd = child
+        self.root = fd
+        # Validate archive even when active is absent. Unsafe storage is not empty.
+        try:
+            archive = worker.hold(checked_dir(fd, ARCHIVE_NAME, private=True))
+        except FileNotFoundError:
+            archive = None
+        if archive is not None:
+            self.parents[archive] = ARCHIVE_NAME
+            require(os.fstat(archive).st_dev == os.fstat(fd).st_dev
+                    and cleanup_mount_id(archive) == cleanup_mount_id(fd),
+                    "Cleanup root crosses a mount")
+        try:
+            active = worker.hold(checked_dir(fd, "plugin-manager-updates", private=True))
+        except FileNotFoundError:
+            worker.check_anchors()
+            if archive is None:
+                return None
+            worker.recheck_directory(fd, ARCHIVE_NAME, archive)
+            worker.checkpoint("cleanup-create-lock-root")
+            # EEXIST is a race, not permission to adopt a different lock root.
+            os.mkdir("plugin-manager-updates", 0o700, dir_fd=fd)
+            created = os.stat("plugin-manager-updates", dir_fd=fd, follow_symlinks=False)
+            active = worker.hold(checked_dir(fd, "plugin-manager-updates", private=True))
+            require(identity(active) == (created.st_dev, created.st_ino), "Cleanup root changed")
+            os.fsync(fd)
+        worker.anchors.append((fd, "plugin-manager-updates", identity(active)))
+        worker.state = active
+        return active
 
     def __enter__(self):
         require(not self.worker.fds and self.state is None, "Cleanup requires a fresh worker")
         require(len(self.worker.home.split("/")) <= 32, "Too many home components")
         try:
-            self.state = self.worker.open_update_root()
+            self.state = (self.open_explicit_root() if self.create_missing
+                          else self.worker.open_update_root())
+            if self.state is None and self.create_missing:
+                self.worker.checkpoint("cleanup-empty")
+                return self
             require(self.state is not None, "Active update directory missing")
             self.root = self.worker.anchors[-1][0]
             self.parents[self.state] = "plugin-manager-updates"
@@ -428,14 +476,22 @@ class CleanupLock:
             raise
 
     def check(self):
-        require(self.state is not None, "Cleanup lock is closed")
-        # A real flock, not a caller-supplied boolean or a remembered assertion.
-        fcntl.flock(self.state, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.worker.check_anchors()
-        for fd, name in self.parents.items():
-            self.worker.recheck_directory(self.root, name, fd)
-            require(os.fstat(fd).st_dev == self.device and cleanup_mount_id(fd) == self.mount,
-                    "Cleanup root crosses a mount")
+        if self.failure is not None:
+            raise self.failure
+        try:
+            require(self.state is not None, "Cleanup lock is closed")
+            # A real flock, not a caller-supplied boolean or remembered assertion.
+            fcntl.flock(self.state, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.worker.check_anchors()
+            for fd, name in self.parents.items():
+                self.worker.recheck_directory(self.root, name, fd)
+                require(os.fstat(fd).st_dev == self.device and cleanup_mount_id(fd) == self.mount,
+                        "Cleanup root crosses a mount")
+        except (OSError, Refused) as error:
+            # remove_completed reports refusals; never swallow a fatal lock loss
+            # as a candidate skip, even if the next check would succeed.
+            self.failure = error
+            raise
 
     def parent(self, *, archived=False):
         self.check()
@@ -639,6 +695,107 @@ def remove_completed(lock, parent, name, budget):
     finally:
         if tx is not None:
             os.close(tx)
+    return result
+
+
+CLEANUP_DISCOVERY_PER_ROOT = 256
+CLEANUP_DISCOVERY_TOTAL = 512
+CLEANUP_CANDIDATES = 128
+MAX_CLEANUP_OUTPUT = 4096
+
+
+def cleanup_result():
+    return {"schemaVersion": 1, "status": "failed", "discovered": 0, "visited": 0,
+            "removed": 0, "preserved": 0, "partial": 0, "removedUnsynced": 0,
+            "unknown": 0, "discoveryComplete": False, "refreshRequired": True, "error": ""}
+
+
+def cleanup_completed(worker):
+    """One lock and budget; bounded snapshots before removal, no automatic retry.
+
+    Counters concern only this invocation, never total retained history. Status
+    refresh is deliberately separate: no recount after cancellation or exhaustion.
+    """
+    result = cleanup_result()
+    budget = CleanupBudget()
+    attempted = False
+    try:
+        budget.spend(worker)
+        with CleanupLock(worker, create_missing=True) as lock:
+            if lock.state is None:
+                result.update(status="complete", discoveryComplete=True)
+                return result
+            parents = [lock.parent()]
+            try:
+                parents.append(lock.parent(archived=True))
+            except FileNotFoundError:
+                pass
+            candidates = []
+            limited = False
+            for parent in parents:
+                budget.spend(worker)
+                lock.check()
+                view = os.open(".", DIR, dir_fd=parent)
+                count = 0
+                try:
+                    with os.scandir(view) as entries:
+                        for entry in entries:
+                            # Charge even the single lookahead name. Never sort or
+                            # materialize an unbounded directory (including archive).
+                            budget.spend(worker, entries=1, metadata=len(os.fsencode(entry.name)) + 128)
+                            if (count == CLEANUP_DISCOVERY_PER_ROOT or
+                                    result["discovered"] == CLEANUP_DISCOVERY_TOTAL):
+                                limited = True
+                                break
+                            candidates.append((parent, entry.name))
+                            count += 1
+                            result["discovered"] += 1
+                finally:
+                    os.close(view)
+                if limited:
+                    break
+            result["discoveryComplete"] = not limited
+            processed = 0
+            for parent, name in candidates:
+                budget.spend(worker)
+                lock.check()
+                if re.fullmatch(r"txn-[0-9a-f]{24}", name) is None:
+                    result["visited"] += 1
+                    result["preserved"] += 1
+                    continue
+                if processed == CLEANUP_CANDIDATES:
+                    limited = True
+                    break
+                processed += 1
+                attempted = True
+                outcome = remove_completed(lock, parent, name, budget)
+                attempted = False
+                result["visited"] += 1
+                if outcome["status"] == "removed":
+                    result["removed"] += 1
+                elif outcome["status"] == "partial":
+                    result["partial"] += 1
+                    result["removedUnsynced"] += int(outcome["transactionRemoved"])
+                    result.update(status="partial", error=outcome["error"])
+                    return result
+                else:
+                    result["preserved"] += 1
+                # Detect cancellation/exhaustion hidden in a primitive refusal,
+                # and the lock's latched failure before visiting another candidate.
+                budget.spend(worker)
+                lock.check()
+            budget.spend(worker)
+            lock.check()
+            result.update(status="limited" if limited else "complete",
+                          error="Cleanup discovery or candidate limit reached" if limited else "")
+    except Exception as error:
+        if attempted:
+            result["visited"] += 1
+            result["unknown"] += 1
+        status = ("unknown" if result["unknown"] else "cancelled" if worker.cancelled else
+                  "limited" if time.monotonic() >= budget.deadline or
+                  any(value < 0 for value in budget.remaining.values()) else "failed")
+        result.update(status=status, error=reason_text(error))
     return result
 
 
@@ -1572,7 +1729,36 @@ def serve_update_data_status():
     return 0 if result["available"] else 1
 
 
+def serve_cleanup_completed():
+    """Foreground, finite mutation; loss of stdout never causes a second attempt."""
+    handlers = {}
+    result = cleanup_result()
+    try:
+        try:
+            worker = Updater()
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                handlers[sig] = signal.signal(sig, lambda *_: setattr(worker, "cancelled", True))
+        except Exception as error:
+            result["error"] = reason_text(error)
+        else:
+            result = cleanup_completed(worker)
+        output = json.dumps(result, ensure_ascii=True, allow_nan=False)
+        require(len(output) + 1 <= MAX_CLEANUP_OUTPUT, "Cleanup output exceeds limit")
+        sys.stdout.write(output + "\n")
+        sys.stdout.flush()
+        return 0 if result["status"] == "complete" else 1
+    except Exception:
+        # No replacement success/zero-count response after possible mutation.
+        # A missing or malformed response means unknown to the caller.
+        return 1
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--cleanup-completed"]:
+        sys.exit(serve_cleanup_completed())
     if sys.argv[1:] == ["--update-data-status"]:
         sys.exit(serve_update_data_status())
     kind = "update"

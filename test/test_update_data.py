@@ -818,5 +818,310 @@ class CompletedDeletionTests(unittest.TestCase):
         self.assertTrue(fixture.new_plugin.is_dir())
 
 
+class CleanupCommandTests(unittest.TestCase):
+    # Reuse disposable history builders, not the primitive test cases.
+    setUp = CompletedDeletionTests.setUp
+    fixture = CompletedDeletionTests.fixture
+    assert_sentinels = CompletedDeletionTests.assert_sentinels
+    def test_command_removes_both_roots_and_preserves_other_history(self):
+        good = [self.fixture(1), self.fixture(2, archived=True, install=True)]
+        bad = self.fixture(3, archived=True)
+        (bad / u.CLEANUP_MARKER).touch()
+        (self.active / "unknown").touch()
+        failed = self.fixture(4)
+        (failed / "result.json").write_text('{"status":"updated; reload failed"}')
+        incomplete = self.fixture(5, archived=True)
+        (incomplete / "result.json").unlink()
+        malformed = self.fixture(6)
+        (malformed / "request.json").write_text("not json")
+        unsafe = self.fixture(7, archived=True)
+        (unsafe / "checkout/unsafe").symlink_to(self.outside)
+        snapshots = {tx: CompletedDeletionTests.snapshot(tx)
+                     for tx in (bad, failed, incomplete, malformed, unsafe)}
+        result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((result["discovered"], result["visited"], result["removed"],
+                          result["preserved"], result["partial"]), (8, 8, 2, 6, 0))
+        self.assertTrue(result["discoveryComplete"])
+        self.assertTrue(result["refreshRequired"])
+        for tx, before in snapshots.items():
+            self.assertEqual(CompletedDeletionTests.snapshot(tx), before)
+        self.assertTrue(all(not tx.exists() for tx in good))
+        self.assert_sentinels()
+
+    def test_missing_and_archive_only_storage_create_only_the_lock_root(self):
+        self.active.rmdir()
+        tx = self.fixture(archived=True)
+        with patch.object(u.Updater, "open_paths", side_effect=AssertionError("update")), \
+                patch.object(u.subprocess, "Popen", side_effect=AssertionError("spawn")):
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["removed"], 1, result)
+        self.assertFalse(tx.exists())
+        self.assertEqual(stat.S_IMODE(self.active.stat().st_mode), 0o700)
+        self.active.rmdir()
+        self.archive.rmdir()
+        self.assertEqual(u.cleanup_completed(u.Updater(home=str(self.home)))["status"], "complete")
+        self.assertFalse(self.active.exists())
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(u.cleanup_completed(u.Updater(home=home))["status"], "complete")
+            self.assertEqual(list(Path(home).iterdir()), [])
+
+    def test_unsafe_roots_and_creation_races_fail_without_deleting(self):
+        self.active.rmdir()
+        tx = self.fixture(archived=True)
+        self.archive.chmod(0o755)
+        result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(self.active.exists())
+        self.archive.chmod(0o700)
+        with patch.object(u.os, "mkdir", side_effect=FileExistsError("raced")):
+            self.assertEqual(u.cleanup_completed(u.Updater(home=str(self.home)))["status"], "failed")
+        self.assertFalse(self.active.exists())
+        self.active.symlink_to(self.archive, target_is_directory=True)
+        self.assertEqual(u.cleanup_completed(u.Updater(home=str(self.home)))["status"], "failed")
+        self.assertTrue(tx.exists())
+
+    def test_one_shared_lock_excludes_another_worker_and_never_opens_plugins(self):
+        self.fixture()
+        self.fixture(2, archived=True)
+        remove, opened = u.remove_completed, u.os.open
+        locks, budgets = set(), set()
+        def checked_open(name, *args, **kwargs):
+            self.assertNotEqual(name, "plugins")
+            return opened(name, *args, **kwargs)
+        def checked_remove(lock, parent, name, budget):
+            locks.add(id(lock))
+            budgets.add(id(budget))
+            with self.assertRaises(BlockingIOError), u.CleanupLock(u.Updater(home=str(self.home))):
+                self.fail("second lock admitted")
+            return remove(lock, parent, name, budget)
+        with patch.object(u.os, "open", side_effect=checked_open), \
+                patch.object(u, "remove_completed", side_effect=checked_remove):
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["removed"], 2, result)
+        self.assertEqual((len(locks), len(budgets)), (1, 1))
+        with u.CleanupLock(u.Updater(home=str(self.home))):
+            refused = u.cleanup_completed(u.Updater(home=str(self.home)))
+        self.assertEqual(refused["status"], "failed")
+        self.assert_sentinels()
+
+    def test_discovery_caps_early_stop_and_charged_name_metadata(self):
+        budget = u.CleanupBudget()
+        def entries():
+            for number in range(257):
+                yield SimpleNamespace(name="unknown-%d" % number)
+            self.fail("unbounded discovery")
+        with patch.object(u.os, "scandir") as scan, patch.object(u, "CleanupBudget", return_value=budget):
+            scan.return_value.__enter__.return_value = entries()
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["status"], "limited")
+        self.assertFalse(result["discoveryComplete"])
+        self.assertEqual((result["discovered"], result["preserved"]), (256, 256))
+        self.assertEqual(budget.remaining["entries"], 32768 - 257)
+        self.assertLess(budget.remaining["metadata"], 4 * 1024 * 1024 - 257 * 128)
+        scan.assert_called_once()
+
+    def test_archive_discovery_and_total_caps_apply_before_sorting(self):
+        for n in range(257):
+            (self.archive / str(n)).touch()
+        result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["status"], "limited")
+        self.assertEqual(result["discovered"], 256)
+        self.assertFalse(result["discoveryComplete"])
+        with patch.object(u, "CLEANUP_DISCOVERY_TOTAL", 3):
+            result = u.cleanup_completed(u.Updater(home=str(self.home)))
+        self.assertEqual(result["discovered"], 3)
+        self.assertFalse(result["discoveryComplete"])
+
+    def test_candidate_limit_is_shared_and_refusals_do_not_reset_it(self):
+        for n in range(129):
+            ((self.active if n < 64 else self.archive) / ("txn-%024x" % n)).mkdir(mode=0o700)
+        with patch.object(u, "remove_completed", wraps=u.remove_completed) as remove:
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual(result["status"], "limited")
+        self.assertTrue(result["discoveryComplete"])
+        self.assertEqual((result["discovered"], result["visited"], result["preserved"]), (129, 128, 128))
+        self.assertEqual(remove.call_count, 128)
+
+    def test_one_budget_spans_discovery_candidates_and_refusals(self):
+        self.fixture()
+        self.fixture(2, archived=True)
+        budget = u.CleanupBudget(metadata=70000)
+        with patch.object(u, "CleanupBudget", return_value=budget), \
+                patch.object(u, "remove_completed", wraps=u.remove_completed) as remove:
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual((result["status"], result["removed"], result["preserved"]), ("limited", 1, 1))
+        self.assertEqual(remove.call_count, 2)
+        budget = u.CleanupBudget(entries=0)
+        with patch.object(u, "CleanupBudget", return_value=budget), \
+                patch.object(u, "remove_completed") as remove:
+            result = u.cleanup_completed(u.Updater(home=str(self.home)))
+        self.assertEqual(result["status"], "limited")
+        remove.assert_not_called()
+        self.assertEqual(result["visited"], 0)
+
+    def test_partial_stops_and_final_sync_removal_is_not_confirmed_success(self):
+        first = self.fixture()
+        second = self.fixture(2, archived=True)
+        sync = u.os.fsync
+        def failed_sync(fd):
+            if not first.exists():
+                raise OSError(5, "final sync")
+            sync(fd)
+        with patch.object(u.os, "fsync", side_effect=failed_sync):
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual((result["status"], result["removed"], result["partial"],
+                          result["removedUnsynced"], result["visited"]), ("partial", 0, 1, 1, 1))
+        self.assertTrue(second.exists())
+        self.assertTrue(result["error"])
+
+    def test_later_partial_or_fatal_failure_preserves_prior_removal_counts(self):
+        self.fixture()
+        tx = self.fixture(2, archived=True)
+        sync = u.os.fsync
+        def fail_after_marker(fd):
+            if (tx / u.CLEANUP_MARKER).exists():
+                raise OSError(5, "partial")
+            sync(fd)
+        with patch.object(u.os, "fsync", side_effect=fail_after_marker):
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual((result["status"], result["removed"], result["partial"]), ("partial", 1, 1))
+        self.assertTrue((tx / "result.json").exists())
+        self.fixture(3)
+        flock = u.fcntl.flock
+        def lose_lock(*args):
+            if not (self.active / ("txn-%024x" % 3)).exists():
+                raise BlockingIOError("transient lock loss")
+            return flock(*args)
+        with patch.object(u.fcntl, "flock", side_effect=lose_lock):
+            result = u.cleanup_completed(u.Updater(home=str(self.home)))
+        self.assertEqual((result["status"], result["removed"]), ("failed", 1))
+        self.assertTrue(result["error"])
+
+    def test_transient_lock_error_inside_primitive_is_fatal_not_a_skip(self):
+        self.fixture()
+        self.fixture(2, archived=True)
+        remove = u.remove_completed
+        def transient(lock, *args):
+            with patch.object(u.fcntl, "flock", side_effect=BlockingIOError("busy")):
+                return remove(lock, *args)
+        with patch.object(u, "remove_completed", side_effect=transient) as called:
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual((result["status"], result["preserved"]), ("failed", 1))
+        self.assertEqual(called.call_count, 1)
+
+    def test_cancellation_deadline_and_unknown_outcomes_do_not_become_success(self):
+        self.fixture()
+        self.worker.cancelled = True
+        self.assertEqual(u.cleanup_completed(self.worker)["status"], "cancelled")
+        with patch.object(u, "CleanupBudget", return_value=u.CleanupBudget(seconds=-1)):
+            self.assertEqual(u.cleanup_completed(u.Updater(home=str(self.home)))["status"], "limited")
+        with patch.object(u, "remove_completed", side_effect=RuntimeError("lost observation")):
+            result = u.cleanup_completed(u.Updater(home=str(self.home)))
+        self.assertEqual((result["status"], result["unknown"], result["removed"]), ("unknown", 1, 0))
+        self.assertTrue(result["refreshRequired"])
+
+    def test_foreground_signals_output_loss_and_strict_schema(self):
+        tx = self.fixture()
+        unlink = u.os.unlink
+        handlers = {sig: u.signal.getsignal(sig) for sig in (u.signal.SIGTERM, u.signal.SIGINT, u.signal.SIGHUP)}
+        def cancel(name, **kwargs):
+            unlink(name, **kwargs)
+            u.signal.raise_signal(u.signal.SIGTERM)
+        output = io.StringIO()
+        with patch.object(u, "Updater", return_value=self.worker), redirect_stdout(output), \
+                patch.object(u.os, "unlink", side_effect=cancel):
+            self.assertEqual(u.serve_cleanup_completed(), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue((tx / "result.json").exists())
+        self.assertEqual(set(result), {"schemaVersion", "status", "discovered", "visited", "removed",
+            "preserved", "partial", "removedUnsynced", "unknown", "discoveryComplete", "refreshRequired", "error"})
+        self.assertEqual(result["visited"], sum(result[k] for k in ("removed", "preserved", "partial", "unknown")))
+        for sig, handler in handlers.items():
+            self.assertEqual(u.signal.getsignal(sig), handler)
+        with patch.object(u, "Updater", return_value=u.Updater(home=str(self.home))), \
+                patch.object(sys.stdout, "write", side_effect=BrokenPipeError), \
+                patch.object(u, "cleanup_completed", wraps=u.cleanup_completed) as cleanup:
+            self.assertEqual(u.serve_cleanup_completed(), 1)
+            cleanup.assert_called_once()
+
+    def test_exact_cli_has_no_path_or_option_overrides(self):
+        cli = UpdateDataTests.cli
+        code, result = cli(self, ["--cleanup-completed"])
+        self.assertEqual((code, result["status"]), (0, "complete"))
+        for args in (["--cleanup-completed", str(self.home)], ["--cleanup-completed=/tmp"],
+                     ["--cleanup-completed", "--update-data-status"], ["--cleanup-completed", "--force"]):
+            code, result = cli(self, args)
+            self.assertEqual((code, result["status"]), (1, "unchanged; request refused"))
+
+    def test_initialization_failure_has_bounded_json_and_exit_one(self):
+        code, result = UpdateDataTests.cli(self, ["--cleanup-completed"], passwd=KeyError("missing"))
+        self.assertEqual((code, result["status"], result["removed"]), (1, "failed", 0))
+        self.assertTrue(result["error"])
+
+    def test_all_cancellation_signals_before_mutation_and_flush_failure(self):
+        self.fixture()
+        spend = u.CleanupBudget.spend
+        for sig in (u.signal.SIGTERM, u.signal.SIGINT, u.signal.SIGHUP):
+            worker = u.Updater(home=str(self.home))
+            def cancel(budget, worker, **costs):
+                u.signal.raise_signal(sig)
+                spend(budget, worker, **costs)
+            output = io.StringIO()
+            with patch.object(u, "Updater", return_value=worker), redirect_stdout(output), \
+                    patch.object(u.CleanupBudget, "spend", cancel):
+                self.assertEqual(u.serve_cleanup_completed(), 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual((result["status"], result["visited"]), ("cancelled", 0))
+        output = io.StringIO()
+        worker = u.Updater(home=str(self.home))
+        with patch.object(u, "Updater", return_value=worker), redirect_stdout(output), \
+                patch.object(output, "flush", side_effect=BrokenPipeError):
+            self.assertEqual(u.serve_cleanup_completed(), 1)
+        self.assertEqual(json.loads(output.getvalue())["removed"], 1)
+        self.assertEqual(list(self.active.iterdir()), [])
+
+    def test_late_scan_failure_keeps_unknown_remaining_not_a_zero_recount(self):
+        (self.active / "unknown").touch()
+        scan = u.os.scandir
+        calls = 0
+        def fail_archive(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise PermissionError("archive changed")
+            return scan(fd)
+        with patch.object(u.os, "scandir", side_effect=fail_archive):
+            result = u.cleanup_completed(self.worker)
+        self.assertEqual((result["status"], result["discovered"], result["visited"]), ("failed", 1, 0))
+        self.assertFalse(result["discoveryComplete"])
+        self.assertNotIn("activeCount", result)
+        self.assertTrue(result["refreshRequired"])
+
+    def test_real_worker_indexes_in_both_roots(self):
+        spec = importlib.util.spec_from_file_location("cleanup_fixture", Path(__file__).with_name("test_pinned_update.py"))
+        fixtures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixtures)
+        fixture = fixtures.TransactionTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.assertEqual(fixture.updater().execute(fixture.request)["status"], "updated")
+        active = fixture.home / ".config/omarchy/plugin-manager-updates"
+        archive = active.parent / u.ARCHIVE_NAME
+        archive.mkdir(mode=0o700)
+        tx = next(active.iterdir())
+        self.assertEqual((tx / "index-before").read_bytes()[:4], b"DIRC")
+        tx.rename(archive / tx.name)
+        fixture.request.update(expectedLocalHead=fixture.target, verifiedCommit=fixture.tip)
+        fixture.catalog["plugins"][0]["verificationCommit"] = fixture.tip
+        self.assertEqual(fixture.updater().execute(fixture.request)["status"], "updated")
+        self.assertEqual((next(active.iterdir()) / "index-final").read_bytes()[:4], b"DIRC")
+        installed = (fixture.plugin / "Helper.py").read_bytes()
+        result = u.cleanup_completed(u.Updater(home=str(fixture.home)))
+        self.assertEqual((result["status"], result["removed"]), ("complete", 2), result)
+        self.assertEqual((fixture.plugin / "Helper.py").read_bytes(), installed)
+
+
 if __name__ == "__main__":
     unittest.main()

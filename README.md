@@ -460,23 +460,76 @@ or archive directories, and does not acquire or replace the update lock.
 It is a bounded observation with cancellation/deadline checks, not a locked
 snapshot or permission to mutate data. Settings integration is separate.
 
-### Internal completed-transaction removal
+### Delete completed update data
 
-There is **no cleanup CLI or Settings action yet**. The internal Python primitive
-`remove_completed(lock, parent, name, budget)` removes one confirmed-success
-transaction, including its rollback backup, from either active or archived data.
-It never opens installed plugins or uses a journal's backup string as a path.
-Failed, unresolved, malformed, unsafe or unknown contents are preserved.
+**This permanently removes rollback backups.** To explicitly delete only
+confirmed-success transactions in both active and archived data, run from the
+plugin checkout:
 
-For integration, hold `CleanupLock(Updater())` for the whole operation. Its
-`parent(archived=False)` / `parent(archived=True)` returns an existing, held root;
-it creates nothing and takes the same active-directory inode flock as updates.
-Pass the original `txn-<24 hex digits>` name even for archived journals. Reuse
-one `CleanupBudget` across discovery and all candidates, charging discovery via
-`budget.spend(worker, entries=1, metadata=...)`; never reset it after a refusal.
-Root enumeration, confirmation, CLI dispatch and aggregate results are separate
-work, not implicit behavior of this primitive. Lock/root acquisition errors must
-be handled separately from per-candidate results.
+```sh
+/usr/bin/python3 -I -S helpers/pinned_update.py --cleanup-completed
+```
+
+The command is the authorization: it has no interactive prompt and accepts no
+paths, extra options or environment overrides. **Settings integration and its
+confirmation dialog are pending.** Failed, unresolved, malformed, unsafe and
+interrupted histories are preserved. Installed plugins are never opened, and
+journal backup strings are never used as deletion paths.
+
+The command holds the updater's active-directory inode lock throughout discovery
+and removal. If only safe archive storage exists, it creates just the missing
+active lock directory (0700) under the validated existing Omarchy parent. Missing
+storage is a no-op; it never creates configuration parents, a lockfile, or an
+archive directory, and never replaces an existing active root. Unsafe roots and
+lock contention fail closed. The read-only status endpoint still creates nothing.
+
+#### Result and process contract
+
+Stdout is one JSON object plus newline, at most 4 KiB. Exit 0 means `complete`;
+all other outcomes exit 1. Version 1 has exactly these fields:
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | Integer `1`. |
+| `status` | `complete`, `limited`, `cancelled`, `partial`, `failed`, or `unknown` (see below). |
+| `discovered`, `visited` | Nonnegative integers: names collected and names processed, respectively; `visited <= discovered <= 512`. |
+| `removed` | Confirmed, synced transaction removals. |
+| `preserved` | Visited names left untouched: non-transaction names or refused candidates. Not a total retained count. |
+| `partial` | Candidates where mutation began but completion/durability failed (at most one). |
+| `removedUnsynced` | Subset of `partial`: directory removed but final parent sync failed. Never included in `removed`. |
+| `unknown` | Attempted candidate whose outcome could not be observed (at most one). |
+| `discoveryComplete` | Boolean: both present roots were fully enumerated. Does not imply every discovered candidate was processed. |
+| `refreshRequired` | Always `true`: separately call `--update-data-status` after completion; there is no embedded recount or locked final count. |
+| `error` | Empty for `complete`; otherwise sanitized diagnostic, at most 200 characters. No per-path results. |
+
+`visited = removed + preserved + partial + unknown`. Unvisited discovered names
+are `discovered - visited`; incomplete discovery leaves the remaining total
+unknown. Earlier counts survive later errors. `complete` means the bounded
+inventory was processed, not that all history was eligible or that storage is
+empty. `limited` means discovery/candidate/budget/deadline exhaustion; `cancelled`
+means cancellation before a reported partial mutation; `partial` stops after the
+first partial candidate; `failed` covers storage/lock/I/O failure; `unknown`
+means an attempted removal lost its outcome. Never treat partial/unknown as
+success or automatically retry them.
+
+Discovery stores at most **256 names per root, 512 total**, without sorting,
+charging one extra lookahead name to detect overflow. At most **128 transaction
+candidates across both roots** are attempted, including refusals. A single shared
+budget (below) covers discovery and every candidate; exhausted budgets stop work,
+not just one candidate. Names are collected from fresh held-descriptor views.
+
+Cleanup stays foreground, creates no subprocesses, and handles TERM/INT/HUP by
+cooperative cancellation. It is not the updater's detached launch path. A caller
+must supply its own process-group timeout/hard-stop for blocked I/O (the future
+Settings integration owns that). Missing/truncated JSON, output failure or owner
+destruction means **outcome unknown**, even if files were removed. Do not retry
+automatically; refresh status and inspect retained history.
+
+#### Removal safety
+
+The command uses `remove_completed(lock, parent, name, budget)` for each original
+`txn-<24 lowercase hex digits>` name. `CleanupLock(Updater())` itself remains
+existing-only; only the command opts into missing-active-root creation.
 
 | Boundary | Internal contract |
 |---|---|
@@ -490,8 +543,8 @@ The result has `status`, `transactionRemoved` and a bounded `error`:
 `refused` means this call changed nothing; `removed` means removal and parent
 sync succeeded; `partial` means mutation began but completion or durability is
 uncertain. `transactionRemoved: true` with `partial` specifically reports a
-removed directory whose final parent sync failed. A future caller must not
-present such an outcome as fully successful or automatically retry it.
+removed directory whose final parent sync failed. The CLI counts that outcome
+in `partial` and `removedUnsynced`, never in `removed`.
 
 Recursive deletion is **not atomic and has no rollback**. Before the first
 unlink, an exclusive `.cleanup-started` marker is synced in the transaction.
