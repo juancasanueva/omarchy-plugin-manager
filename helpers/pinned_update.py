@@ -358,6 +358,290 @@ def update_data_result():
             "activeCount": None, "lowerBound": False, "limit": TRANSACTION_LIMIT, "error": ""}
 
 
+CLEANUP_MARKER = ".cleanup-started"
+CLEANUP_JOURNALS = ("request.json", "prepared.json", "published.json", "result.json")
+
+
+class CleanupBudget:
+    """Shared, consumptive ceilings across discovery and every candidate/pass.
+
+    Call spend() for T3's enumeration too; do not reset after a refusal. The
+    deadline is cooperative between bounded filesystem calls, not an I/O timeout.
+    """
+    def __init__(self, *, work=200000, entries=32768, metadata=4 * 1024 * 1024,
+                 bytes=512 * 1024 * 1024, seconds=15):
+        self.remaining = dict(work=work, entries=entries, metadata=metadata, bytes=bytes)
+        self.deadline = time.monotonic() + min(seconds, 15)
+
+    def spend(self, worker, **costs):
+        worker.checkpoint("cleanup")
+        require(time.monotonic() < self.deadline, "Cleanup deadline exceeded")
+        costs["work"] = costs.get("work", 0) + 1
+        for key, cost in costs.items():
+            self.remaining[key] -= cost
+        require(all(value >= 0 for value in self.remaining.values()), "Cleanup budget exhausted")
+
+
+def cleanup_mount_id(fd):
+    """Linux fdinfo distinguishes even same-device bind mounts; no fallback."""
+    info = os.open("/proc/self/fdinfo/%d" % fd, FILE)
+    try:
+        raw = bytearray()
+        while len(raw) <= 4096:
+            chunk = os.read(info, 4097 - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        matches = re.findall(rb"^mnt_id:\s*([0-9]+)$", raw, re.MULTILINE)
+        require(len(raw) <= 4096 and len(matches) == 1 and len(matches[0]) <= 20,
+                "Mount identity unavailable")
+        return int(matches[0])
+    finally:
+        os.close(info)
+
+
+class CleanupLock:
+    """Own the existing active inode flock, never create/rotate an update root.
+
+    Use a fresh Updater. parent() supplies only held active/archive descriptors;
+    keep this context open across all calls to remove_completed().
+    """
+    def __init__(self, worker):
+        self.worker = worker
+        self.parents = {}
+        self.state = None
+
+    def __enter__(self):
+        require(not self.worker.fds and self.state is None, "Cleanup requires a fresh worker")
+        require(len(self.worker.home.split("/")) <= 32, "Too many home components")
+        try:
+            self.state = self.worker.open_update_root()
+            require(self.state is not None, "Active update directory missing")
+            self.root = self.worker.anchors[-1][0]
+            self.parents[self.state] = "plugin-manager-updates"
+            self.mount = cleanup_mount_id(self.root)
+            self.device = os.fstat(self.root).st_dev
+            self.check()
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    def check(self):
+        require(self.state is not None, "Cleanup lock is closed")
+        # A real flock, not a caller-supplied boolean or a remembered assertion.
+        fcntl.flock(self.state, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.worker.check_anchors()
+        for fd, name in self.parents.items():
+            self.worker.recheck_directory(self.root, name, fd)
+            require(os.fstat(fd).st_dev == self.device and cleanup_mount_id(fd) == self.mount,
+                    "Cleanup root crosses a mount")
+
+    def parent(self, *, archived=False):
+        self.check()
+        if not archived:
+            return self.state
+        for fd, name in self.parents.items():
+            if name == ARCHIVE_NAME:
+                return fd
+        fd = self.worker.hold(checked_dir(self.root, ARCHIVE_NAME, private=True))
+        self.parents[fd] = ARCHIVE_NAME
+        self.check()
+        return fd
+
+    def __exit__(self, *_):
+        for fd in reversed(self.worker.fds):
+            os.close(fd)
+        self.worker.fds.clear()
+        self.worker.anchors.clear()
+        self.parents.clear()
+        self.state = None
+
+
+def cleanup_signature(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def remove_completed(lock, parent, name, budget):
+    """Remove ONE known completed transaction; no discovery, retries or recovery.
+
+    Result status: refused = untouched by us; partial = marker created or later
+    mutation attempted successfully, including durability failure; removed = all
+    removals synced. transactionRemoved remains true if only the final sync fails.
+    Archives use the original txn name, never a journal-provided deletion path.
+    """
+    result = {"status": "refused", "transactionRemoved": False, "error": ""}
+    tx = None
+    started = False
+    worker = lock.worker
+    chain = []
+
+    def safe(fd):
+        budget.spend(worker)
+        info = os.fstat(fd)
+        directory = stat.S_ISDIR(info.st_mode)
+        require(info.st_uid == os.getuid() and not info.st_mode & 0o7022
+                and (directory or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                                   and info.st_size <= 32 * 1024 * 1024)),
+                "Unsafe cleanup object")
+        require(info.st_dev == lock.device and cleanup_mount_id(fd) == lock.mount,
+                "Cleanup object crosses a mount")
+        return cleanup_signature(info)
+
+    def opened(directory, entry, expected=None):
+        budget.spend(worker)
+        info = os.stat(entry, dir_fd=directory, follow_symlinks=False)
+        require(stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode),
+                "Cleanup symlink or special file")
+        require(hasattr(os, "O_PATH"), "Safe cleanup descriptors unavailable")
+        flags = DIR if stat.S_ISDIR(info.st_mode) else os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(entry, flags, dir_fd=directory)
+        try:
+            signature = safe(fd)
+            require(signature == cleanup_signature(info) and
+                    (expected is None or signature == expected), "Cleanup object changed")
+            return fd, signature
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def scan(fd, depth=0):
+        require(depth <= 20, "Cleanup tree too deep")
+        before = safe(fd)
+        nodes = []
+        view = os.open(".", DIR, dir_fd=fd)
+        try:
+            with os.scandir(view) as entries:
+                # scandir owns a duplicate; do not retain a third fd per level.
+                os.close(view)
+                view = None
+                for entry in entries:
+                    budget.spend(worker, entries=1, metadata=len(os.fsencode(entry.name)) + 128)
+                    counts[0] += 1
+                    require(counts[0] <= 4096, "Too many cleanup entries")
+                    require(len(os.fsencode(entry.name)) <= 255, "Cleanup name too long")
+                    if depth == 0:
+                        require(entry.name in (*CLEANUP_JOURNALS, "index-before", "index-final", "checkout"),
+                                "Unknown transaction content")
+                    child, signature = opened(fd, entry.name)
+                    try:
+                        directory = stat.S_ISDIR(signature[2])
+                        if depth == 0:
+                            require(directory == (entry.name == "checkout"), "Unknown transaction layout")
+                        if directory:
+                            children = scan(child, depth + 1)
+                        else:
+                            counts[1] += signature[5]
+                            budget.spend(worker, bytes=signature[5])
+                            require(counts[1] <= 128 * 1024 * 1024, "Cleanup tree too large")
+                            children = None
+                        nodes.append((entry.name, signature, children))
+                    finally:
+                        os.close(child)
+        finally:
+            if view is not None:
+                os.close(view)
+        require(safe(fd) == before, "Cleanup directory changed during preflight")
+        return sorted(nodes)
+
+    def anchors():
+        budget.spend(worker, work=len(worker.anchors) + len(chain))
+        lock.check()
+        for directory, entry, fd, signature in chain:
+            current = safe(fd)
+            # Our own unlinks change directory size/timestamps/link counts.
+            require(current[:4] == signature[:4], "Cleanup anchor changed")
+            info = os.stat(entry, dir_fd=directory, follow_symlinks=False)
+            require(cleanup_signature(info)[:4] == current[:4], "Cleanup anchor detached")
+
+    def erase(directory, node):
+        entry, signature, children = node
+        fd, current = opened(directory, entry, signature)
+        try:
+            if children is not None:
+                chain.append((directory, entry, fd, current))
+                try:
+                    for child in children:
+                        erase(fd, child)
+                    anchors()
+                    os.rmdir(entry, dir_fd=directory)
+                finally:
+                    chain.pop()
+            else:
+                anchors()
+                require(safe(fd) == signature and cleanup_signature(os.stat(
+                    entry, dir_fd=directory, follow_symlinks=False)) == signature,
+                    "Cleanup file changed before unlink")
+                os.unlink(entry, dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            os.close(fd)
+
+    try:
+        budget.spend(worker)
+        lock.check()
+        require(parent in lock.parents and re.fullmatch(r"txn-[0-9a-f]{24}", name) is not None,
+                "Unknown cleanup candidate")
+        tx, signature = opened(parent, name)
+        require(stat.S_ISDIR(signature[2]) and stat.S_IMODE(signature[2]) == 0o700,
+                "Unsafe transaction directory")
+        chain.append((parent, name, tx, signature))
+        counts = [0, 0]
+        tree = scan(tx)
+        budget.spend(worker, metadata=4 * 8192)
+        evidence = worker.completed_record(tx, name)
+        # Validate the entire snapshot again before creating even the marker.
+        counts = [0, 0]
+        require(scan(tx) == tree, "Cleanup preflight changed")
+        anchors()
+        budget.spend(worker, metadata=4 * 8192)
+        require(worker.completed_record(tx, name) == evidence, "Completed history changed")
+        anchors()
+        marker = os.open(CLEANUP_MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=tx)
+        started = True
+        try:
+            os.fsync(marker)
+            marker_signature = cleanup_signature(os.fstat(marker))
+        finally:
+            os.close(marker)
+        os.fsync(tx)
+        # Backup first; its root and all journals survive while contents go.
+        ordered = sorted(tree, key=lambda node: (0 if node[0] == "checkout" else
+                         2 if node[0] in CLEANUP_JOURNALS else 1, node[0]))
+        remaining = {node[0] for node in tree} | {CLEANUP_MARKER}
+        for node in (*ordered, (CLEANUP_MARKER, marker_signature, None)):
+            # A late unknown entry must not cost the remaining journals. This
+            # bounded shallow recheck is not a new candidate or recovery scan.
+            view = os.open(".", DIR, dir_fd=tx)
+            try:
+                seen = set()
+                with os.scandir(view) as entries:
+                    for entry in entries:
+                        budget.spend(worker, entries=1, metadata=len(os.fsencode(entry.name)))
+                        require(entry.name in remaining and entry.name not in seen,
+                                "Transaction contents changed during cleanup")
+                        seen.add(entry.name)
+                require(seen == remaining, "Transaction contents disappeared during cleanup")
+            finally:
+                os.close(view)
+            erase(tx, node)
+            remaining.remove(node[0])
+        anchors()
+        os.rmdir(name, dir_fd=parent)
+        result["transactionRemoved"] = True
+        os.fsync(parent)
+        result["status"] = "removed"
+    except (OSError, Refused) as error:
+        result["status"] = "partial" if started else "refused"
+        result["error"] = reason_text(error)
+    finally:
+        if tx is not None:
+            os.close(tx)
+    return result
+
+
 class Updater:
     def __init__(self, home=None):
         # Test injection is in-process only; argv/environment never select a home.
@@ -700,6 +984,7 @@ class Updater:
         an assertion about the plugin's current HEAD. Unknown history stays put.
         """
         require(self.absent(tx, "refused.json"), "Refused history")
+        require(self.absent(tx, CLEANUP_MARKER), "Interrupted cleanup history")
         records, evidence = {}, {}
         for key in ("request", "prepared", "published", "result"):
             raw, info = read_file(tx, key + ".json", 8192)

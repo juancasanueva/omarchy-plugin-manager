@@ -460,6 +460,53 @@ or archive directories, and does not acquire or replace the update lock.
 It is a bounded observation with cancellation/deadline checks, not a locked
 snapshot or permission to mutate data. Settings integration is separate.
 
+### Internal completed-transaction removal
+
+There is **no cleanup CLI or Settings action yet**. The internal Python primitive
+`remove_completed(lock, parent, name, budget)` removes one confirmed-success
+transaction, including its rollback backup, from either active or archived data.
+It never opens installed plugins or uses a journal's backup string as a path.
+Failed, unresolved, malformed, unsafe or unknown contents are preserved.
+
+For integration, hold `CleanupLock(Updater())` for the whole operation. Its
+`parent(archived=False)` / `parent(archived=True)` returns an existing, held root;
+it creates nothing and takes the same active-directory inode flock as updates.
+Pass the original `txn-<24 hex digits>` name even for archived journals. Reuse
+one `CleanupBudget` across discovery and all candidates, charging discovery via
+`budget.spend(worker, entries=1, metadata=...)`; never reset it after a refusal.
+Root enumeration, confirmation, CLI dispatch and aggregate results are separate
+work, not implicit behavior of this primitive. Lock/root acquisition errors must
+be handled separately from per-candidate results.
+
+| Boundary | Internal contract |
+|---|---|
+| Eligibility | Rechecked `request`, `prepared`, `published` and `result` journals must prove exact success. Only those four journal files, optional `index-before` / `index-final` files and an update's `checkout` directory are accepted at the top level. |
+| Preflight | Two bounded full-tree passes before mutation. Owned, safe-mode real directories and singly linked regular files only; no symlinks, specials or mount crossings. Linux's bounded `/proc/self/fdinfo` mount IDs also reject same-device bind mounts; unavailable checks fail closed. |
+| Tree ceilings | 32 MiB per file, 128 MiB total, 4,096 entries and directory depth 20 relative to the transaction. Descriptor use is depth-bounded, not entry-count-bounded; account paths over 32 components are refused. |
+| Shared budget | By default: 200,000 work units, 32,768 visited entries, 4 MiB charged name/record metadata and 512 MiB inspected file sizes across all passes/candidates. A 15-second cooperative deadline and worker cancellation checks apply; these cannot interrupt a blocked kernel I/O call. |
+| Mutation | Descriptor-relative identity rechecks; backup contents first, checkout root and journals later, interruption marker and transaction last. Changes are fsynced; active/archive roots are never removed or replaced. |
+
+The result has `status`, `transactionRemoved` and a bounded `error`:
+`refused` means this call changed nothing; `removed` means removal and parent
+sync succeeded; `partial` means mutation began but completion or durability is
+uncertain. `transactionRemoved: true` with `partial` specifically reports a
+removed directory whose final parent sync failed. A future caller must not
+present such an outcome as fully successful or automatically retry it.
+
+Recursive deletion is **not atomic and has no rollback**. Before the first
+unlink, an exclusive `.cleanup-started` marker is synced in the transaction.
+Even a marker-only failure is `partial`. Eligibility rejects that marker,
+including during updater archival; it remains through backup/journal removal.
+If the marker has already gone, the success journals have too, so remaining
+malformed data cannot silently qualify again. Interrupted remnants require
+manual inspection, not automatic recovery. Removing a backup forfeits its
+rollback data; this primitive does not undo any installed update.
+
+The advisory lock excludes cooperating update/cleanup workers, not arbitrary
+same-user writers. Rechecks detect observed changes but cannot make a recursive
+snapshot or eliminate the final check-to-unlink race. Tests use disposable data
+and simulated mount identities, never host mounts or live update roots.
+
 ### Recovery and retained transactions
 
 At **exactly 32 active entries**, the next install or update first archives
