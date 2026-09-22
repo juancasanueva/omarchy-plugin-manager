@@ -89,6 +89,26 @@ written down.
 **Restart Shell** action into rounded cards. Search and filters stay hidden
 while Settings is open, and the cards scroll when the available height is small.
 
+The **Info** card shows the canonical plugin and active update-data paths from
+the account's passwd home, plus the active entry count (for example `12/32`).
+`≥33/32 (lower bound)` means at least 33 entries, not an exact total. The archive
+is excluded from this counter. Loading or unavailable data is never shown as zero
+or replaced with an environment-derived path.
+
+**Delete update data** asks before permanently deleting **completed journals and
+rollback backups from both active and archive roots**. Deletion is irreversible;
+it does not uninstall plugins or undo updates. Failed, unresolved, interrupted
+and unsafe histories are preserved. Cancel sends no deletion request. A zero
+active count does not disable the button: the archive may still contain completed
+data. The button waits for an available status and for local actions to settle.
+
+Opening Settings only reads status; it never starts cleanup automatically.
+After each cleanup attempt, Settings keeps a bounded outcome message with this
+pass's removed/preserved sample counts and separately refreshes the active count.
+These counts are not the total retained history and do not claim both roots are
+empty. Unknown or partial outcomes require inspection, not an automatic retry.
+Closing the popup can lose the outcome; reopen Settings for a new observation.
+
 Under the hood the plugin registers a second kind, `panel`, whose entry point
 is `Expanded.qml`. Both surfaces share one data layer, `PluginStore.qml`, so
 an install, update, enable, disable or remove is the same code whichever
@@ -458,7 +478,10 @@ unsafe/unreadable root means `available: false`, `activeCount: null`, a bounded
 The endpoint creates, archives and deletes nothing, does not open the plugins
 or archive directories, and does not acquire or replace the update lock.
 It is a bounded observation with cancellation/deadline checks, not a locked
-snapshot or permission to mutate data. Settings integration is separate.
+snapshot or permission to mutate data. Both Settings surfaces request it on
+opening and after local cleanup, update and install completions, including
+failures. There is no polling loop. An invalidated response cannot restore a
+pre-mutation count.
 
 ### Delete completed update data
 
@@ -471,10 +494,12 @@ plugin checkout:
 ```
 
 The command is the authorization: it has no interactive prompt and accepts no
-paths, extra options or environment overrides. **Settings integration and its
-confirmation dialog are pending.** Failed, unresolved, malformed, unsafe and
-interrupted histories are preserved. Installed plugins are never opened, and
-journal backup strings are never used as deletion paths.
+paths, extra options or environment overrides. In Settings, the shared
+confirmation dialog explicitly names both roots, completed journals, rollback
+backups and irreversible deletion; its destructive **Delete** action sends one
+request. It rechecks busy/action/status state when answered. Failed, unresolved,
+malformed, unsafe and interrupted histories are preserved. Installed plugins
+are never opened, and journal backup strings are never used as deletion paths.
 
 The command holds the updater's active-directory inode lock throughout discovery
 and removal. If only safe archive storage exists, it creates just the missing
@@ -519,11 +544,29 @@ budget (below) covers discovery and every candidate; exhausted budgets stop work
 not just one candidate. Names are collected from fresh held-descriptor views.
 
 Cleanup stays foreground, creates no subprocesses, and handles TERM/INT/HUP by
-cooperative cancellation. It is not the updater's detached launch path. A caller
-must supply its own process-group timeout/hard-stop for blocked I/O (the future
-Settings integration owns that). Missing/truncated JSON, output failure or owner
-destruction means **outcome unknown**, even if files were removed. Do not retry
-automatically; refresh status and inspect retained history.
+cooperative cancellation. It is not the updater's detached launch path. A CLI
+caller must supply its own process-group timeout/hard-stop for blocked I/O.
+Missing/truncated JSON, output failure or owner destruction means **outcome
+unknown**, even if files were removed. Do not retry automatically; refresh status
+and inspect retained history.
+
+Settings uses dedicated raw `SplitParser` processes, not the generic action
+collector. Both stdout and stderr have conservative UTF-8 budgets: 8 KiB each
+for status, 4 KiB each for cleanup, in addition to the helper's producer limits.
+Schema, exit code and counter relationships must agree before reporting an
+outcome. Labels contain static prose and validated numbers, never helper error
+markup. A fresh status process is created only after the previous one's deferred
+exit callbacks settle; requests coalesce without retrying cleanup.
+
+Fixed argv invokes the bundled helper through `/usr/bin/python3 -I -S` with
+`--update-data-status` or `--cleanup-completed`, never a shell or a displayed
+path. Each runs under an inner `/usr/bin/timeout -k 1` (6 seconds for status,
+20 for cleanup) and an outer `/usr/bin/timeout` (8 or 22 seconds). The outer
+observer forwards TERM on overflow/destruction; it has no competing KILL timer.
+The independent inner supervisor retains its group and one-second hard-stop if
+QML destroys the direct child. The existing detached updater is unchanged.
+Cleanup joins the store's busy state, while the helper's inode lock remains the
+authority across surfaces/processes; UI guards are not a global filesystem lock.
 
 #### Removal safety
 

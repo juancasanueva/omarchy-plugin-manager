@@ -76,7 +76,10 @@ Item {
 
   // ---- In-flight action ---------------------------------------------------
 
-  property string busyKind: ""   // "install" | "update" | "remove"
+  property string busyKind: ""   // "install" | "update" | "remove" | "cleanup"
+  onBusyKindChanged: if (busyKind !== "") invalidateUpdateData()
+  onBusyChanged: Qt.callLater(drainUpdateDataRefresh)
+  onActionRunningChanged: Qt.callLater(drainUpdateDataRefresh)
   // Which row an update is running on, by id: busyId carries the label for
   // messages, and labels are not unique.
   property string busyRowId: ""
@@ -84,8 +87,8 @@ Item {
   // Only popup stores opt into the retained owner's lock. Never feed this
   // projection back into that owner or copy it into local action state.
   property bool externalBusy: false
-  readonly property bool busy: busyKind !== "" || barMovePending !== null || externalBusy
-  readonly property bool actionRunning: actionProc.running || pinnedProc.running
+  readonly property bool busy: busyKind !== "" || barMovePending !== null || externalBusy || cleanupProcess !== null
+  readonly property bool actionRunning: actionProc.running || pinnedProc.running || cleanupProcess !== null
 
   // Kept past the exit so a late stderr can still upgrade the message it
   // belongs to (see actionProc below).
@@ -224,6 +227,11 @@ Item {
     ? Model.updateCompareUrl(Model.findRow(rows, pendingId)) : ""
 
   readonly property string confirmMessage: {
+    if (pendingKind === "cleanup")
+      return "Delete completed journals and rollback backups from both active and archive update data?\n\n"
+        + "This deletion is irreversible: deleted rollback backups cannot be recovered. "
+        + "Failed and unresolved histories are preserved, as are installed plugins. "
+        + "Unsafe or interrupted entries are preserved. The active count excludes the archive."
     if (pendingKind === "install" && pendingBranch !== "")
       return Model.installUnverifiedConfirmMessage(pendingLabel, pendingUrl, pendingBranch, pendingPlacementNeeded)
     if (pendingKind === "install")
@@ -798,6 +806,12 @@ Item {
   // plugin widget, the surfaces included, so there is no "after the install"
   // in which to ask anything.
   function confirmPending() {
+    if (pendingKind === "cleanup") {
+      var allowed = canCleanupUpdateData()
+      cancelPending()
+      if (allowed) startCleanupUpdateData()
+      return
+    }
     if (busy) return
     if (pendingKind === "disable") {
       var row = Model.findRow(rows, pendingId)
@@ -990,6 +1004,7 @@ Item {
       }
       root.requestFreshUpdateCycle()
     } else root.reload()
+    root.refreshUpdateData()
     root.actionFinished(kind, label, outcome === done ? 0 : 1)
   }
 
@@ -1001,6 +1016,174 @@ Item {
     actionStderr = ""
     actionProc.command = command
     actionProc.running = true
+  }
+
+  // ---- Settings update data -----------------------------------------------
+  // Each surface has a store; the helper's inode flock, not these UI guards,
+  // excludes cooperating workers in other surfaces/processes.
+  property var updateDataStatus: null
+  readonly property var updateDataPaths: updateDataStatus ? updateDataStatus.paths : null
+  property bool updateDataLoading: false
+  readonly property string updateDataCount: Model.updateDataCountLabel(updateDataStatus, updateDataLoading)
+  readonly property bool cleanupEnabled: canCleanupUpdateData()
+  property string cleanupOutcome: ""
+  property bool cleanupIsError: false
+  property var updateDataProcess: null
+  property var cleanupProcess: null
+  property int updateDataGeneration: 0
+  property bool updateDataRefreshQueued: false
+  property bool updateDataDestroying: false
+
+  function canCleanupUpdateData() {
+    return !updateDataDestroying && !busy && !actionProc.running && !pinnedProc.running
+      && cleanupProcess === null && updateDataProcess === null && !updateDataLoading
+      && !updateDataRefreshQueued && updateDataStatus !== null && updateDataStatus.available === true
+  }
+
+  function askCleanupUpdateData() {
+    if (!canCleanupUpdateData() || pendingKind !== "") return
+    pendingKind = "cleanup"
+  }
+
+  function invalidateUpdateData() {
+    updateDataGeneration++
+    updateDataStatus = null
+    updateDataLoading = true
+    updateDataRefreshQueued = true
+    // Do not reuse an in-flight Process or its raw parsers. Let its exit and
+    // deferred final chunks settle before draining the coalesced refresh.
+    if (updateDataProcess && updateDataProcess.running) updateDataProcess.signal(15)
+  }
+
+  function refreshUpdateData() {
+    if (updateDataDestroying) return
+    invalidateUpdateData()
+    drainUpdateDataRefresh()
+  }
+
+  function drainUpdateDataRefresh() {
+    if (updateDataDestroying || !updateDataRefreshQueued || busy || actionRunning
+        || updateDataProcess !== null || cleanupProcess !== null) return
+    updateDataRefreshQueued = false
+    var proc = updateDataProcessComponent.createObject(root, {
+      cleanup: false, requestGeneration: updateDataGeneration
+    })
+    if (!proc) {
+      updateDataLoading = false
+      return
+    }
+    updateDataProcess = proc
+    proc.command = Model.updateDataCommand(pinnedHelperPath, false)
+    proc.running = true
+    // Failed-to-start may have no exited signal. A settled non-running child
+    // with no observed exit is unknown, never a fabricated successful exit.
+    Qt.callLater(function() { root.finishUpdateDataProcess(proc) })
+  }
+
+  function startCleanupUpdateData() {
+    if (!canCleanupUpdateData()) return
+    invalidateUpdateData()
+    cleanupOutcome = "Deleting completed update data…"
+    cleanupIsError = false
+    var proc = updateDataProcessComponent.createObject(root, {
+      cleanup: true, requestGeneration: updateDataGeneration
+    })
+    if (!proc) {
+      cleanupOutcome = Model.cleanupOutcomeText(null)
+      cleanupIsError = true
+      refreshUpdateData()
+      return
+    }
+    cleanupProcess = proc
+    busyKind = "cleanup"
+    proc.command = Model.updateDataCommand(pinnedHelperPath, true)
+    proc.running = true
+    Qt.callLater(function() { root.finishUpdateDataProcess(proc) })
+  }
+
+  function readUpdateDataChunk(proc, chunk, stderr) {
+    if (updateDataDestroying || !proc || proc.settled || proc.overflow) return
+    var limit = proc.cleanup ? 4096 : 8192
+    var buffer = Model.boundedUpdateDataChunk(stderr ? "" : proc.output,
+      stderr ? proc.errorBytes : proc.outputBytes, chunk, limit)
+    if (buffer.overflow) {
+      proc.overflow = true
+      proc.output = ""
+      // TERM reaches the supervisor. Its independent inner timeout owns group
+      // KILL escalation even if this component is destroyed in the meantime.
+      if (proc.running) proc.signal(15)
+    } else if (stderr) proc.errorBytes = buffer.bytes
+    else {
+      proc.output = buffer.text
+      proc.outputBytes = buffer.bytes
+    }
+  }
+
+  function finishUpdateDataProcess(proc) {
+    if (updateDataDestroying || !proc || proc.settled || proc.running) return
+    proc.settled = true
+    var code = proc.processExited && !proc.overflow ? proc.exitCode : -1
+    if (proc.cleanup && cleanupProcess === proc) {
+      var result = Model.parseCleanupResult(proc.output, code)
+      cleanupOutcome = Model.cleanupOutcomeText(result)
+      cleanupIsError = !result || result.status !== "complete"
+      cleanupProcess = null
+      busyKind = ""
+      setStatus(cleanupOutcome, cleanupIsError, "update-data")
+      // Required even after failure, overflow, timeout or an unknown result.
+      // Never derive the active count from removed, and never retry deletion.
+      refreshUpdateData()
+    } else if (!proc.cleanup && updateDataProcess === proc) {
+      updateDataProcess = null
+      if (proc.requestGeneration === updateDataGeneration) {
+        updateDataStatus = Model.parseUpdateDataStatus(proc.output, code)
+        updateDataLoading = false
+      }
+    }
+    proc.destroy()
+    Qt.callLater(drainUpdateDataRefresh)
+  }
+
+  function stopUpdateDataProcesses() {
+    updateDataDestroying = true
+    updateDataGeneration++
+    updateDataRefreshQueued = false
+    if (updateDataProcess && updateDataProcess.running) updateDataProcess.signal(15)
+    if (cleanupProcess && cleanupProcess.running) cleanupProcess.signal(15)
+  }
+
+  Component.onDestruction: stopUpdateDataProcesses()
+
+  Component {
+    id: updateDataProcessComponent
+    Process {
+      id: dataProc
+      required property bool cleanup
+      required property int requestGeneration
+      property string output: ""
+      property int outputBytes: 0
+      property int errorBytes: 0
+      property bool overflow: false
+      property bool processExited: false
+      property int exitCode: -1
+      property bool settled: false
+      clearEnvironment: true
+      stdout: SplitParser {
+        splitMarker: ""
+        onRead: function(chunk) { root.readUpdateDataChunk(dataProc, chunk, false) }
+      }
+      stderr: SplitParser {
+        splitMarker: ""
+        onRead: function(chunk) { root.readUpdateDataChunk(dataProc, chunk, true) }
+      }
+      onExited: function(code, status) {
+        dataProc.exitCode = status === 0 ? code : -1
+        dataProc.processExited = true
+        Qt.callLater(function() { root.finishUpdateDataProcess(dataProc) })
+      }
+      onRunningChanged: if (!running)
+        Qt.callLater(function() { root.finishUpdateDataProcess(dataProc) })
+    }
   }
 
   // ---- Positional layout moves (Expanded only) -----------------------------
@@ -1425,6 +1608,7 @@ Item {
       }
 
       root.reload()
+      root.refreshUpdateData()
       root.actionFinished(kind, label, exitCode)
     }
   }

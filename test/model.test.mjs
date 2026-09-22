@@ -3068,9 +3068,9 @@ test("Settings About links use the existing navigation owners and release helper
   assert.match(info, /root\.githubNavigationRequested\([\s\S]*?root\.repositoryUrl\)/)
   for (const file of ["Panel.qml", "Expanded.qml"]) {
     const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
-    const start = source.indexOf("SettingsInfo {")
-    assert.ok(start >= 0)
-    const wiring = source.slice(start, start + 1100)
+    const info = source.match(/SettingsInfo \{([\s\S]*?)\n {10}\}/)
+    assert.ok(info, "complete SettingsInfo block exists")
+    const wiring = info[1]
     assert.match(wiring, /onRepositoryNavigationRequested: function\(url\) \{ root\.navigateExternalUrl\(url\) \}/)
     assert.match(wiring, /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{ root\.requestGithubNavigation\(candidates, fallbackUrl\) \}/)
   }
@@ -4878,7 +4878,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.doesNotMatch(store, /pendingKind === "add"|pendingKind = "add"/)
   for (const surface of ["Panel.qml", "Expanded.qml"]) {
     const source = readFileSync(new URL("../" + surface, import.meta.url), "utf8")
-    assert.match(source, /confirmText: Model\.actionVerb\(root\.pendingKind\) === "Action"\s*\? "Confirm"\s*: Model\.actionVerb\(root\.pendingKind\)/, surface)
+    assert.match(source, /confirmText: root\.pendingKind === "cleanup" \? "Delete" : Model\.actionVerb\(root\.pendingKind\) === "Action"\s*\? "Confirm"\s*: Model\.actionVerb\(root\.pendingKind\)/, surface)
   }
   assert.equal(Model.actionVerb("install"), "Install")
   assert.equal(Model.actionGerund("install"), "Installing")
@@ -5317,7 +5317,7 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
   assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
   assert.match(expanded, /id: tabs\s*enabled: !root\.barMovePending\s*anchors\.right: arrangeButton\.left/)
-  assert.match(expanded, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*flipTo\(1, function\(\) \{\s*detailsEntry = null\s*arrangeOpen = false\s*settingsOpen = true\s*\}\)\s*\}/)
+  assert.match(expanded, /function openSettings\(\) \{\s*if \(settingsOpen\) return\s*flipTo\(1, function\(\) \{\s*detailsEntry = null\s*arrangeOpen = false\s*settingsOpen = true\s*store\.refreshUpdateData\(\)\s*\}\)\s*\}/)
   assert.match(expanded, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*flipTo\(-1, function\(\) \{ settingsOpen = false \}\)\s*\}/)
   const handler = expanded.slice(expanded.indexOf("onActiveTabChanged: {"), expanded.indexOf("onActiveTabChanged: {") + 200)
   assert.match(handler, /settingsOpen = false/)
@@ -5449,7 +5449,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
 
   // An overlay like the details page, not a third face of the two-tab flip.
   assert.match(panel, /property bool settingsOpen: false/)
-  assert.match(panel, /function openSettings\(\) \{\s*closeArrange\(\)\s*if \(settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*detailsEntry = null\s*settingsOpen = true\s*\}/)
+  assert.match(panel, /function openSettings\(\) \{\s*closeArrange\(\)\s*if \(settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*detailsEntry = null\s*settingsOpen = true\s*store\.refreshUpdateData\(\)\s*\}/)
   assert.match(panel, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = false\s*\}/)
   const pane = panel.slice(panel.indexOf("id: settingsPane"), panel.indexOf("PluginDetails {"))
   assert.match(pane, /anchors\.fill: parent\s*z: 10\s*visible: root\.settingsOpen/)

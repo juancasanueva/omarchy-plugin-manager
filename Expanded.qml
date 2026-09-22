@@ -576,6 +576,7 @@ Item {
       detailsEntry = null
       arrangeOpen = false
       settingsOpen = true
+      store.refreshUpdateData()
     })
   }
 
@@ -2043,7 +2044,13 @@ Item {
 
           SettingsInfo {
             width: parent.width
-            pluginsBasePath: Quickshell.env("HOME") + "/.config/omarchy/plugins"
+            pluginsBasePath: store.updateDataPaths ? store.updateDataPaths.plugins : ""
+            updateDataPath: store.updateDataPaths ? store.updateDataPaths.active : ""
+            updateDataCount: store.updateDataCount
+            updateDataLoading: store.updateDataLoading
+            cleanupEnabled: store.cleanupEnabled
+            cleanupOutcome: store.cleanupOutcome
+            onCleanupRequested: store.askCleanupUpdateData()
             readonly property var selfRow: Model.findRow(store.rows, store.selfId)
             installedVersion: selfRow ? selfRow.localVersion : ""
             foreground: root.foreground
@@ -2064,7 +2071,7 @@ Item {
         actionText: "View changes"
         actionVisible: store.confirmCompareUrl !== ""
         onActionRequested: root.requestGithubNavigation([], store.confirmCompareUrl)
-        confirmText: Model.actionVerb(root.pendingKind) === "Action"
+        confirmText: root.pendingKind === "cleanup" ? "Delete" : Model.actionVerb(root.pendingKind) === "Action"
           ? "Confirm"
           : Model.actionVerb(root.pendingKind)
         background: Color.menu.background

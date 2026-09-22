@@ -2666,3 +2666,111 @@ function countBehind(rows) {
     if (rows[i] && rows[i].behind === true) total++
   return total
 }
+
+// ---- Update data: fixed helper protocol, never a source of commands --------
+
+// Three bytes per non-ASCII UTF-16 code unit is conservative even when a raw
+// parser splits a surrogate pair. No encoded copy of an oversized chunk.
+function updateDataByteBound(text) {
+  var bytes = 0
+  for (var i = 0; i < text.length; i++) {
+    var code = text.charCodeAt(i)
+    bytes += code < 128 ? 1 : code < 2048 ? 2 : 3
+  }
+  return bytes
+}
+
+function boundedUpdateDataChunk(text, bytes, chunk, limit) {
+  if (chunk.length > limit || bytes + updateDataByteBound(chunk) > limit)
+    return { text: "", bytes: limit + 1, overflow: true }
+  return { text: text + chunk, bytes: bytes + updateDataByteBound(chunk), overflow: false }
+}
+
+function updateDataObject(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).sort().join(",") === keys.split(",").sort().join(",")
+}
+
+function updateDataInteger(value, max) {
+  return typeof value === "number" && isFinite(value) && Math.floor(value) === value
+    && value >= 0 && value <= max
+}
+
+function updateDataJson(raw, limit) {
+  if (typeof raw !== "string" || raw.length > limit || updateDataByteBound(raw) > limit) return null
+  try { return JSON.parse(raw) } catch (error) { return null }
+}
+
+function validUpdateDataPaths(paths) {
+  if (!updateDataObject(paths, "plugins,active,archive")) return false
+  var suffix = "/.config/omarchy/plugins"
+  if (typeof paths.plugins !== "string" || paths.plugins.slice(-suffix.length) !== suffix) return false
+  var home = paths.plugins.slice(0, -suffix.length)
+  if (home.length === 0 || home.length > 512 || updateDataByteBound(home) > 512
+      || home.charAt(0) !== "/" || /[<>&\s\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/.test(home.replace(/ /g, ""))) return false
+  var components = home.slice(1).split("/")
+  for (var i = 0; i < components.length; i++)
+    if (components[i] === "" || components[i] === "." || components[i] === "..") return false
+  return paths.active === home + "/.config/omarchy/plugin-manager-updates"
+    && paths.archive === home + "/.config/omarchy/plugin-manager-updates-archive"
+}
+
+function parseUpdateDataStatus(raw, exitCode) {
+  var value = updateDataJson(raw, 8192)
+  if (!updateDataObject(value, "schemaVersion,paths,available,activeCount,lowerBound,limit,error")
+      || value.schemaVersion !== 1 || value.limit !== 32 || typeof value.available !== "boolean"
+      || typeof value.lowerBound !== "boolean" || typeof value.error !== "string" || value.error.length > 200
+      || (value.paths !== null && !validUpdateDataPaths(value.paths))) return null
+  if (value.available) {
+    if (exitCode !== 0 || value.paths === null || value.error !== ""
+        || !updateDataInteger(value.activeCount, 33) || value.lowerBound !== (value.activeCount === 33)) return null
+  } else if (exitCode !== 1 || value.activeCount !== null || value.lowerBound || value.error === "") return null
+  return value
+}
+
+function parseCleanupResult(raw, exitCode) {
+  var value = updateDataJson(raw, 4096)
+  if (!updateDataObject(value, "schemaVersion,status,discovered,visited,removed,preserved,partial,removedUnsynced,unknown,discoveryComplete,refreshRequired,error")
+      || value.schemaVersion !== 1 || value.refreshRequired !== true || typeof value.discoveryComplete !== "boolean"
+      || typeof value.error !== "string" || value.error.length > 200
+      || ["complete", "limited", "cancelled", "partial", "failed", "unknown"].indexOf(value.status) < 0) return null
+  var counts = ["discovered", "visited", "removed", "preserved", "partial", "removedUnsynced", "unknown"]
+  for (var i = 0; i < counts.length; i++)
+    if (!updateDataInteger(value[counts[i]], i < 4 ? 512 : 1)) return null
+  if (value.visited > value.discovered || value.removedUnsynced > value.partial
+      || value.removed + value.partial + value.unknown > 128
+      || value.visited !== value.removed + value.preserved + value.partial + value.unknown
+      || value.partial !== (value.status === "partial" ? 1 : 0)
+      || value.unknown !== (value.status === "unknown" ? 1 : 0)) return null
+  if (value.status === "complete") {
+    if (exitCode !== 0 || !value.discoveryComplete || value.visited !== value.discovered || value.error !== "") return null
+  } else if (exitCode !== 1 || value.error === "") return null
+  return value
+}
+
+function updateDataCountLabel(status, loading) {
+  if (loading) return "Loading…"
+  if (!status || !status.available) return "Unavailable"
+  return status.lowerBound ? "≥33/32 (lower bound)" : status.activeCount + "/32"
+}
+
+// Host-owned labels never receive helper errors, paths or free-form output.
+// These are invocation sample counts, not a claim about all retained history.
+function cleanupOutcomeText(result) {
+  if (!result) return "Cleanup outcome unknown. Refresh status and inspect retained history before another attempt."
+  return "Cleanup " + result.status + ". Sampled entries: removed " + result.removed
+    + "; preserved " + result.preserved + "; partial " + result.partial
+    + " (removed without confirmed sync " + result.removedUnsynced + "); unknown " + result.unknown
+    + ". Counts cover this pass only. Inspect retained history; rollback backups deleted cannot be recovered."
+}
+
+function updateDataCommand(helperPath, cleanup) {
+  // QML destruction can SIGKILL its direct child. The inner timeout retains
+  // its own process group and deadline even if the outer observer disappears.
+  // TERM to the outer forwards to the inner; only the inner escalates to KILL,
+  // so no observer-side KILL can tear down supervision before the owned group.
+  return ["/usr/bin/timeout", cleanup ? "22" : "8",
+    "/usr/bin/timeout", "-k", "1", cleanup ? "20" : "6",
+    "/usr/bin/python3", "-I", "-S", helperPath,
+    cleanup ? "--cleanup-completed" : "--update-data-status"]
+}
