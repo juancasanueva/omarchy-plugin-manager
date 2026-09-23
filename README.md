@@ -89,11 +89,10 @@ written down.
 **Restart Shell** action into rounded cards. Search and filters stay hidden
 while Settings is open, and the cards scroll when the available height is small.
 
-The **Info** card shows the canonical plugin and active update-data paths from
-the account's passwd home, plus the active entry count (for example `12/32`).
-`≥33/32 (lower bound)` means at least 33 entries, not an exact total. The archive
-is excluded from this counter. Loading or unavailable data is never shown as zero
-or replaced with an environment-derived path.
+The **Info** card shows the plugin, active update-data, and update-data archive
+paths, abbreviating the account's passwd home as `~` for display only. Loading
+or unavailable paths are labeled accordingly, never replaced with an
+environment-derived path.
 
 **Delete update data** asks before permanently deleting **completed journals and
 rollback backups from both active and archive roots**. Deletion is irreversible;

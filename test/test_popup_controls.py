@@ -188,10 +188,13 @@ QtObject {
             component = QQmlComponent(engine, QUrl.fromLocalFile(str(fixture / "SettingsInfo.qml")))
             self.assertEqual(component.status(), QQmlComponent.Ready,
                              "\n".join(error.toString() for error in component.errors()))
-            path = "/home/" + "long-home-name" * 12 + "/.config/omarchy/plugins"
+            home = "/srv/accounts/" + "long-home-name" * 12
+            path = home + "/.config/omarchy/plugins"
+            active = home + "/.config/omarchy/plugin-manager-updates"
+            archive = active + "-archive"
             owner = component.createWithInitialProperties({
-                "pluginsBasePath": path, "updateDataPath": path + "-updates",
-                "updateDataCount": "12/32", "cleanupEnabled": True, "foreground": "white",
+                "pluginsBasePath": path, "updateDataPath": active,
+                "cleanupEnabled": True, "foreground": "white",
                 "secondaryForeground": "#bbbbbb", "fontFamily": "sans-serif", "width": 420,
             })
             self.assertIsNotNone(owner, "\n".join(error.toString() for error in component.errors()))
@@ -218,11 +221,36 @@ QtObject {
                     settle()
 
                 settle()
-                self.assertEqual(path_text.property("text"), "Plugins installed in " + path)
+                self.assertEqual(path_text.property("text"), "~/.config/omarchy/plugins")
+                self.assertTrue(owner.setProperty("updateDataArchivePath", archive))
                 update_path = owner.findChild(QQuickItem, "updateDataPathText")
-                self.assertEqual(update_path.property("text"), "Plugin Manager Updates are in " + path + "-updates")
-                counter = owner.findChild(QQuickItem, "updateDataCounter")
-                self.assertEqual(counter.property("text"), "12/32")
+                archive_path = owner.findChild(QQuickItem, "updateDataArchivePathText")
+                self.assertIsNotNone(archive_path)
+                paths = [path_text, update_path, archive_path]
+                labels = [owner.findChild(QQuickItem, item.objectName() + "Label") for item in paths]
+                captions = ["Plugins installed in", "Updates are in", "Updates Archives are in"]
+                properties = ["pluginsBasePath", "updateDataPath", "updateDataArchivePath"]
+                for label, caption, item, raw in zip(labels, captions, paths, [path, active, archive]):
+                    self.assertEqual(label.property("text"), caption)
+                    self.assertEqual(label.property("color").name(), "#bbbbbb")
+                    self.assertEqual(item.property("color").name(), "#aabbcc")
+                    self.assertEqual(item.property("text"), "~" + raw[len(home):])
+                    self.assertEqual(label.parentItem(), item.parentItem())
+                entries = [item.parentItem() for item in paths]
+                siblings = entries[0].parentItem().childItems()
+                self.assertEqual([siblings.index(entry) for entry in entries], [0, 1, 2])
+                self.assertIsNone(owner.findChild(QQuickItem, "updateDataCounter"))
+                for raw in ("/var/lib/plugin-manager-updates", home + "-other/updates", home, home + "/nested/updates"):
+                    for prop, item in zip(properties[1:], paths[1:]):
+                        owner.setProperty(prop, raw)
+                        expected = "~" + raw[len(home):] if raw == home or raw.startswith(home + "/") else raw
+                        self.assertEqual(item.property("text"), expected)
+                owner.setProperty("pluginsBasePath", "/opt/plugins")
+                owner.setProperty("updateDataPath", active)
+                owner.setProperty("updateDataArchivePath", archive)
+                for item, raw in zip(paths, ["/opt/plugins", active, archive]):
+                    self.assertEqual(item.property("text"), raw)
+                owner.setProperty("pluginsBasePath", path)
                 delete_button = owner.findChild(QQuickItem, "deleteUpdateDataButton")
                 self.assertIsNotNone(delete_button)
                 self.assertTrue(delete_button.property("bordered"))
@@ -269,6 +297,9 @@ QtObject {
                     owner.setWidth(width)
                     settle()
                     heights.append(owner.implicitHeight())
+                    for label, item in zip(labels, paths):
+                        self.assertGreaterEqual(item.y(), label.y() + label.height())
+                        self.assertAlmostEqual(item.y() + item.height(), item.parentItem().height())
                     for text in owner.findChildren(QQuickItem):
                         if text.isVisible() and text.metaObject().indexOfProperty("textFormat") >= 0:
                             plain = QQmlExpression(engine.rootContext(), text, "textFormat === 0")
@@ -283,14 +314,14 @@ QtObject {
                 self.assertGreater(heights[1], heights[0])
                 self.assertGreater(heights[2], heights[1])
                 self.assertLessEqual(delete_button.width(), owner.width() - 24)
-                owner.setProperty("pluginsBasePath", "")
-                owner.setProperty("updateDataPath", "")
-                owner.setProperty("updateDataLoading", True)
-                settle()
-                self.assertEqual(path_text.property("text"), "Plugins installed in Loading…")
-                owner.setProperty("updateDataLoading", False)
-                settle()
-                self.assertEqual(update_path.property("text"), "Plugin Manager Updates are in Unavailable")
+                for prop in properties:
+                    owner.setProperty(prop, "")
+                for loading, fallback in ((True, "Loading…"), (False, "Unavailable")):
+                    owner.setProperty("updateDataLoading", loading)
+                    settle()
+                    for item in paths:
+                        self.assertEqual(item.property("text"), fallback)
+                    self.assertEqual([label.property("text") for label in labels], captions)
                 self.assertEqual(warnings, [])
             finally:
                 window.close()

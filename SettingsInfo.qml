@@ -9,7 +9,7 @@ Column {
 
   property string pluginsBasePath: ""
   property string updateDataPath: ""
-  property string updateDataCount: "Unavailable"
+  property string updateDataArchivePath: ""
   property bool updateDataLoading: false
   property bool cleanupEnabled: false
   property string cleanupOutcome: ""
@@ -20,11 +20,60 @@ Column {
   readonly property string repositoryUrl: "https://github.com/juancasanueva/omarchy-plugin-manager"
   readonly property string versionLabel: Model.releaseVersionLabel(installedVersion)
 
+  // The store supplies validated passwd-home paths, independently of $HOME.
+  readonly property string displayHomePath: {
+    var suffix = "/.config/omarchy/plugins"
+    return pluginsBasePath.startsWith("/") && pluginsBasePath.endsWith(suffix)
+      ? pluginsBasePath.slice(0, -suffix.length) : ""
+  }
+
+  function displayPath(path) {
+    if (path === "") return updateDataLoading ? "Loading…" : "Unavailable"
+    if (displayHomePath !== "" && (path === displayHomePath || path.startsWith(displayHomePath + "/")))
+      return "~" + path.slice(displayHomePath.length)
+    return path
+  }
+
   signal cleanupRequested()
   signal repositoryNavigationRequested(string url)
   signal githubNavigationRequested(var candidates, string fallbackUrl)
 
   spacing: Style.space(14)
+
+  component PathEntry: Column {
+    id: entry
+    required property string label
+    required property string path
+    required property string pathObjectName
+
+    width: parent.width
+    spacing: Style.space(4)
+
+    Text {
+      id: pathLabel
+      objectName: entry.pathObjectName + "Label"
+      width: parent.width
+      textFormat: Text.PlainText
+      text: entry.label
+      color: root.secondaryForeground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      wrapMode: Text.WrapAnywhere
+    }
+
+    Text {
+      id: pathValue
+      objectName: entry.pathObjectName
+      width: parent.width
+      textFormat: Text.PlainText
+      text: root.displayPath(entry.path)
+      color: Color.accent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: true
+      wrapMode: Text.WrapAnywhere
+    }
+  }
 
   Text {
     width: parent.width
@@ -54,49 +103,22 @@ Column {
       anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(10)
 
-      Text {
-        objectName: "installationPath"
-        width: parent.width
-        textFormat: Text.PlainText
-        text: "Plugins installed in " + (root.pluginsBasePath !== "" ? root.pluginsBasePath
-          : root.updateDataLoading ? "Loading…" : "Unavailable")
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        wrapMode: Text.WrapAnywhere
+      PathEntry {
+        pathObjectName: "installationPath"
+        label: "Plugins installed in"
+        path: root.pluginsBasePath
       }
 
-      Text {
-        objectName: "updateDataPathText"
-        width: parent.width
-        textFormat: Text.PlainText
-        text: "Plugin Manager Updates are in " + (root.updateDataPath !== "" ? root.updateDataPath
-          : root.updateDataLoading ? "Loading…" : "Unavailable")
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        wrapMode: Text.WrapAnywhere
+      PathEntry {
+        pathObjectName: "updateDataPathText"
+        label: "Updates are in"
+        path: root.updateDataPath
       }
 
-      Text {
-        objectName: "updateDataCounter"
-        width: parent.width
-        textFormat: Text.PlainText
-        text: root.updateDataCount
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        wrapMode: Text.WrapAnywhere
-      }
-
-      Text {
-        width: parent.width
-        textFormat: Text.PlainText
-        text: "Active entries only; archive excluded. Delete removes completed data from both."
-        color: root.secondaryForeground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        wrapMode: Text.WrapAnywhere
+      PathEntry {
+        pathObjectName: "updateDataArchivePathText"
+        label: "Updates Archives are in"
+        path: root.updateDataArchivePath
       }
 
       Button {

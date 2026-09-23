@@ -2046,7 +2046,7 @@ Item {
             width: parent.width
             pluginsBasePath: store.updateDataPaths ? store.updateDataPaths.plugins : ""
             updateDataPath: store.updateDataPaths ? store.updateDataPaths.active : ""
-            updateDataCount: store.updateDataCount
+            updateDataArchivePath: store.updateDataPaths ? store.updateDataPaths.archive : ""
             updateDataLoading: store.updateDataLoading
             cleanupEnabled: store.cleanupEnabled
             cleanupOutcome: store.cleanupOutcome
