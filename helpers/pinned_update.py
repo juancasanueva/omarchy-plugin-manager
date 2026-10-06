@@ -69,7 +69,9 @@ ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-MAX_RAW_CATALOG = 16 * 1024 * 1024
+# The raw marketplace download, bounded by curl and the stream reader. Sized
+# for growth: 16 MiB would have been reached about a month after October 2026.
+MAX_RAW_CATALOG = 64 * 1024 * 1024
 MAX_CATALOG = 8 * 1024 * 1024  # Projected output and cache only.
 MAX_STATS = 1024 * 1024
 MAX_PLUGINS = 4 * 1024 * 1024

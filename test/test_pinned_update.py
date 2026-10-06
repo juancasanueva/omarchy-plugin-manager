@@ -249,7 +249,7 @@ class TransactionTests(unittest.TestCase):
             curl, options = calls[-1]
             self.assertEqual(curl, ["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
                 "--proto", "=https", "--noproxy", "*", "--connect-timeout", "5", "--max-time", "20",
-                "--max-filesize", str(16 * 1024 * 1024), "--header", "Cache-Control: no-cache",
+                "--max-filesize", str(64 * 1024 * 1024), "--header", "Cache-Control: no-cache",
                 "--write-out", "\n%{http_code}", "--", "https://plugins.omarchy.org/catalog.json"])
             self.assertTrue(options["start_new_session"])
             self.assertEqual(options["env"]["GIT_ALLOW_PROTOCOL"], "https")
@@ -1219,7 +1219,9 @@ class CatalogCacheTests(unittest.TestCase):
         request = {"id": "acme.clock", "repository": REPO, "verifiedCommit": "a" * 40}
         entry = dict(id=request["id"], repo=REPO, verificationCommit="a" * 40,
                      verificationStatus="verified", sourceType="community")
-        raw = json.dumps({"plugins": [entry]}).encode().ljust(16 * 1024 * 1024)
+        # 64 MiB leaves months of headroom: the raw catalog grew by about
+        # 2,500 listings a month through September 2026.
+        raw = json.dumps({"plugins": [entry]}).encode().ljust(64 * 1024 * 1024)
         self.assertIsNone(u.authorize(raw, request))
         self.assertEqual(json.loads(u.project_catalog(raw, None))["plugins"][0]["id"], request["id"])
         for consume in (lambda body: u.authorize(body, request),
@@ -1245,7 +1247,7 @@ class CatalogCacheTests(unittest.TestCase):
     def test_catalog_stream_cap_is_enforced_without_curl_cooperation(self):
         updater = u.Updater(home=str(self.home))
         real_popen = subprocess.Popen
-        size = 16 * 1024 * 1024
+        size = u.MAX_RAW_CATALOG
 
         def producer(argv, **kwargs):
             # Simulate an undeclared/chunked body: the actual stream reader,

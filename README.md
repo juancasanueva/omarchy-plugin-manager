@@ -443,7 +443,7 @@ switched on reads as one that did not install.
 | Ordinary SHA-1 checkout with one origin and standard core/branch configuration | Includes, other config sections, external object stores/worktrees, symlinks and hardlinks are refused; local Git config is never executed |
 | Clean tracked files and index | Dirty, staged, untracked, ignored files and special index flags are refused; never stash, reset or delete user changes |
 | Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
-| Bounded work | 120-second transaction; 16 MiB raw authorization catalog; 8 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
+| Bounded work | 120-second transaction; 64 MiB raw authorization catalog; 8 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
 | Same filesystem with atomic exchange support | Refuse rather than use two renames |
 | Install target name unused, and its id unknown to the host catalog | Refuse rather than overwrite, merge into, or shadow an existing plugin |
 
@@ -760,7 +760,7 @@ empty one. The refresh button forces a re-fetch; if it fails, Browse shows a
 refresh error and keeps the catalog already on screen. Retry Refresh to check
 for new listings.
 
-Raw marketplace downloads are capped at 16 MiB by both curl and the helper's
+Raw marketplace downloads are capped at 64 MiB by both curl and the helper's
 stream reader. The projected catalog sent to Browse and stored in the cache
 is still capped at 8 MiB; unused upstream fields do not consume that budget.
 Consumer entry-count, nesting-depth, string-length and time limits are unchanged.
