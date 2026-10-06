@@ -456,7 +456,7 @@ Item {
   function applyCatalog(raw) {
     catalogGeneration += 1
     catalogBuildPending = null
-    if (raw.length > 8 * 1024 * 1024) {
+    if (raw.length > 16 * 1024 * 1024) {
       applyCatalogResult({ generation: catalogGeneration, error: "Catalog exceeds input limit" })
       return
     }
@@ -499,7 +499,9 @@ Item {
     catalogBuildGeneration = catalogBuildPending.generation
     catalogBuilder.request = JSON.stringify(catalogBuildPending)
     catalogBuildPending = null
-    if (catalogBuilder.request.length > 49 * 1024 * 1024) {
+    // REQUEST_LIMIT in helpers/catalog_build.py: six times the catalog budget
+    // (worst-case JSON escaping) plus 1 MiB for the installed ids.
+    if (catalogBuilder.request.length > 97 * 1024 * 1024) {
       applyCatalogResult({ generation: catalogBuildGeneration, error: "Catalog exceeds request limit" })
       catalogBuilder.request = ""
       return

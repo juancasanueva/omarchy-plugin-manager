@@ -71,13 +71,16 @@ test("isolated catalog helper returns the same model without WorkerScript", () =
 }))
 
 test("invalid and oversized requests fail closed; invalid catalogs return the Model error", () => isolated((dir, env) => {
-  for (const input of ["invalid", "{}", request("x".repeat(8 * 1024 * 1024 + 1))]) {
+  for (const input of ["invalid", "{}", request("x".repeat(16 * 1024 * 1024 + 1))]) {
     const result = helper(env, input)
     assert.equal(result.status, 1, result.stderr)
     assert.equal(result.stdout, "")
     assert.ok(result.stderr.length < 200)
   }
   assert.equal(decode(helper(env, request("not JSON"))).error, "Could not read the plugin catalog")
+  // Catalog text between the old 8 MiB and the current 16 MiB input budget
+  // reaches the Model instead of failing closed.
+  assert.equal(decode(helper(env, request("x".repeat(8 * 1024 * 1024 + 1)))).error, "Could not read the plugin catalog")
   // Enrichment duplicates text into searchText. A small raw document can
   // exceed the separate publication-frame budget; it must not be truncated.
   const result = helper(env, request(JSON.stringify({ plugins: [{ id: "big", description: "x".repeat(40000) }] })))
@@ -351,15 +354,15 @@ test("deadline and raw output overflow stop the isolated engine", () => isolated
   assert.ok(Date.now() - start < 2000)
   writeFileSync(join(dir, "helpers/catalog_build.py"), readFileSync(join(root, "helpers/catalog_build.py")))
   writeFileSync(join(dir, "CatalogBuilder.qml"), `import QtQuick\nimport Quickshell
-ShellRoot { Component.onCompleted: { console.log("x".repeat(17 * 1024 * 1024)); Qt.callLater(Qt.quit) } }`)
+ShellRoot { Component.onCompleted: { console.log("x".repeat(33 * 1024 * 1024)); Qt.callLater(Qt.quit) } }`)
   const overflow = helper(env, request(), dir)
   assert.equal(overflow.status, 1)
   assert.equal(overflow.stdout, "")
 }))
 
 test("aggregate publication budget is independent of raw catalog bytes", () => isolated((dir, env) => {
-  const catalog = JSON.stringify({plugins: Array.from({length: 5000}, (_, i) => ({id: `test.${i}`, description: "é".repeat(300)}))})
-  assert.ok(Buffer.byteLength(catalog) < 8 * 1024 * 1024)
+  const catalog = JSON.stringify({plugins: Array.from({length: 12000}, (_, i) => ({id: `test.${i}`, description: "é".repeat(300)}))})
+  assert.ok(Buffer.byteLength(catalog) < 16 * 1024 * 1024)
   const result = helper(env, request(catalog))
   assert.equal(result.status, 1)
   assert.equal(result.stdout, "", "an oversized publication must never be partially emitted")

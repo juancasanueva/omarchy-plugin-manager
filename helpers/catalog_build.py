@@ -12,9 +12,10 @@ import sys
 import tempfile
 import time
 
-RAW_LIMIT = 8 * 1024 * 1024
+# Kept in step with MAX_CATALOG in pinned_update.py and PluginStore.qml.
+RAW_LIMIT = 16 * 1024 * 1024
 REQUEST_LIMIT = 6 * RAW_LIMIT + 1024 * 1024
-OUTPUT_LIMIT = 16 * 1024 * 1024
+OUTPUT_LIMIT = 32 * 1024 * 1024
 FRAME_LIMIT = 64 * 1024
 DEADLINE = 20
 cancelled = False

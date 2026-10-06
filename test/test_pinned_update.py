@@ -1282,8 +1282,8 @@ class CatalogCacheTests(unittest.TestCase):
 
     def test_oversized_projection_is_refused_before_replacing_the_cache(self):
         data = self.cached(self.compatible(), age=30000)
-        body = json.dumps({"generatedAt": "remote", "plugins": [{"id": "repeat"}] * 40000}).encode()
-        self.assertEqual(u.MAX_CATALOG, 8 * 1024 * 1024)
+        body = json.dumps({"generatedAt": "remote", "plugins": [{"id": "repeat"}] * 80000}).encode()
+        self.assertEqual(u.MAX_CATALOG, 16 * 1024 * 1024)
         self.assertLess(len(body), u.MAX_CATALOG)
         with self.assertRaisesRegex(u.Refused, "Projection exceeds limit"):
             u.project_catalog(body, None)
@@ -1293,7 +1293,7 @@ class CatalogCacheTests(unittest.TestCase):
         self.assertEqual(self.temps(), [])
 
     def test_oversized_cache_is_never_served(self):
-        oversized = json.dumps(self.compatible()).encode().ljust(8 * 1024 * 1024 + 1)
+        oversized = json.dumps(self.compatible()).encode().ljust(u.MAX_CATALOG + 1)
         self.assertFalse(u.usable_projection(oversized))
         self.cached(oversized)
         self.remote = u.Refused("Command failed: curl")
