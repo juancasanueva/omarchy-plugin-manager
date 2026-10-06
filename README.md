@@ -443,7 +443,7 @@ switched on reads as one that did not install.
 | Ordinary SHA-1 checkout with one origin and standard core/branch configuration | Includes, other config sections, external object stores/worktrees, symlinks and hardlinks are refused; local Git config is never executed |
 | Clean tracked files and index | Dirty, staged, untracked, ignored files and special index flags are refused; never stash, reset or delete user changes |
 | Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
-| Bounded work | 120-second transaction; 16 MiB raw/5,000-entry authorization catalog; 8 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
+| Bounded work | 120-second transaction; 16 MiB raw authorization catalog; 8 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
 | Same filesystem with atomic exchange support | Refuse rather than use two renames |
 | Install target name unused, and its id unknown to the host catalog | Refuse rather than overwrite, merge into, or shadow an existing plugin |
 
@@ -961,7 +961,7 @@ original full-shell crash has not been reproduced locally.
 The helper rejects, rather than truncates, requests above 8 MiB of catalog text,
 1 MiB of encoded installed IDs, or 49 MiB of transport JSON. Enriched publication
 has a separate 16 MiB budget and 64 KiB frames (each entry must fit one frame).
-There is no 5,000-entry browsing cap. Child stdout and stderr are bounded, and the
+There is no entry-count cap on the catalog, only byte budgets. Child stdout and stderr are bounded, and the
 offscreen engine has a 2 GiB address-space limit. The helper checks a cooperative
 20-second budget at I/O boundaries, not an independent wall-clock watchdog:
 JSON processing, framing, process launch/wait and filesystem cleanup can extend

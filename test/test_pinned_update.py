@@ -1237,8 +1237,10 @@ class CatalogCacheTests(unittest.TestCase):
                 body = json.dumps({"plugins": [{**entry, **change}]}).encode().ljust(8 * 1024 * 1024 + 1)
                 with self.assertRaisesRegex(u.Refused, reason):
                     u.authorize(body, request)
-        with self.assertRaisesRegex(u.Refused, "Invalid catalog"):
-            u.authorize(json.dumps({"plugins": [entry] * 5001}).encode(), request)
+        # The marketplace passed 5,000 listings in October 2026. Only the byte
+        # budget bounds the catalog: a large one still authorizes the listing.
+        others = [dict(entry, id=f"acme.plugin{n}") for n in range(5200)]
+        self.assertIsNone(u.authorize(json.dumps({"plugins": others + [entry]}).encode(), request))
 
     def test_catalog_stream_cap_is_enforced_without_curl_cooperation(self):
         updater = u.Updater(home=str(self.home))

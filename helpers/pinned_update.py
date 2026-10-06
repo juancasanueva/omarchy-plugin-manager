@@ -284,8 +284,9 @@ def project_catalog(raw, stats_raw):
 
 def authorize(raw, request):
     doc = document(raw, MAX_RAW_CATALOG)
-    require(type(doc) is dict and type(doc.get("plugins")) is list
-            and len(doc["plugins"]) <= 5000, "Invalid catalog")
+    # No entry count: the byte budget above already bounds the parse, and the
+    # marketplace outgrew a fixed count once, refusing every verified install.
+    require(type(doc) is dict and type(doc.get("plugins")) is list, "Invalid catalog")
     matches = []
     for entry in doc["plugins"]:
         require(type(entry) is dict and isinstance(entry.get("id"), str), "Malformed catalog entry")
@@ -901,7 +902,7 @@ class Updater:
         raw = self.run(["/usr/bin/omarchy-plugin-catalog"], cap=MAX_PLUGINS,
                        extra_env={"HOME": self.home, "OMARCHY_PATH": OMARCHY})
         doc = document(raw, MAX_PLUGINS)
-        require(type(doc) is list and len(doc) <= 5000, "Invalid plugin catalog")
+        require(type(doc) is list, "Invalid plugin catalog")
         ids = set()
         for entry in doc:
             require(type(entry) is dict and isinstance(entry.get("id"), str), "Malformed plugin entry")
