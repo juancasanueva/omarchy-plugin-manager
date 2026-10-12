@@ -6,7 +6,7 @@ const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
 const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 const Model = Function(readFileSync(new URL("../Model.js", import.meta.url), "utf8") +
-  "; return { barLayoutSnapshot, barLayoutMove, tiledExpandedPanel, parseSelfSettings, selfEntryFromShellConfig, expandedTabFromPayload, expandedPageFromPayload, expandedScreenFromPayload }")()
+  "; return { barLayoutSnapshot, barLayoutMove, tiledExpandedPanel, openAs, expandedModeFromPayload, parseSelfSettings, selfEntryFromShellConfig, expandedTabFromPayload, expandedPageFromPayload, expandedScreenFromPayload }")()
 function call(source, name, state, ...args) {
   const match = source.match(new RegExp(`  function ${name}\\(([^)]*)\\) \\{([\\s\\S]*?)\\n  \\}`))
   assert.ok(match, `${name} exists`)

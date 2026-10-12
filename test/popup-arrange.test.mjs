@@ -21,16 +21,16 @@ function actionStore(owner = null) {
   const state = { popupMoveOwner: owner, busyKind: "", barMovePending: null, cleanupProcess: null,
     actionProc: { running: false }, pinnedProc: { running: false }, barMoveProc: { running: false },
     selfId: "manager", selfEntry: {}, selfEntryLoaded: true, selfSettings: {},
-    allowUnverifiedUpdates: false, allowUnverifiedInstalls: false, tiledExpandedPanel: false,
+    allowUnverifiedUpdates: false, allowUnverifiedInstalls: false, openAs: "popup",
     pendingKind: "", pendingId: "", pendingLabel: "", pendingPlacementNeeded: false,
     rows: [], catalog: [], catalogLoaded: true, pinnedHelperPath: "/fake/helper", noticeScript: "fake",
     shell: { updateEntryInline(id, entry) { effects.push([id, entry]); return true },
       barConfig: { layout: { left: ["a"], center: [], right: [] } } },
     Quickshell: { execDetached(argv) { effects.push(argv) }, env() { return "" } },
-    Model: Function(read("Model.js") + "; return { withSelfSetting, parseSelfSettings, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove }")(),
+    Model: Function(read("Model.js") + "; return { withSelfSetting, withOpenAs, parseSelfSettings, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove }")(),
     loadProcessSettled: () => true, updateProcessSettled: () => true }
   state.root = state
-  for (const name of ["setStatus", "writeSelfSetting", "setAllowUnverifiedUpdates", "setAllowUnverifiedInstalls", "setTiledExpandedPanel",
+  for (const name of ["setStatus", "writeSelfSetting", "setAllowUnverifiedUpdates", "setAllowUnverifiedInstalls", "setOpenAs",
     "runDetached", "startEnable", "startDisable", "startMoveTo", "restartShell", "askRemove", "askInstall", "askEnable", "askDisable", "askMove",
     "confirmPending", "confirmPlacement", "cancelPending", "startAdd", "launchInstall", "runAction", "canStartUpdate", "startUpdate", "runUpdate", "startBarMove"])
     state[name] = (...args) => call(storeSource, name, state, ...args)
@@ -44,7 +44,7 @@ for (const lock of ["owner", "local"]) {
   test(`${lock} lock blocks actual popup setters, inventory actions and restart without consuming confirmations`, () => {
     const owner = { busy: lock === "owner" }
     const attempts = [
-      s => s.setAllowUnverifiedUpdates(true), s => s.setAllowUnverifiedInstalls(true), s => s.setTiledExpandedPanel(true),
+      s => s.setAllowUnverifiedUpdates(true), s => s.setAllowUnverifiedInstalls(true), s => s.setOpenAs("window"),
       s => s.runDetached("test", "test", ["fake"]), s => s.startEnable({ id: "a", name: "A", enabled: false }, "right"),
       s => s.startDisable({ id: "a", name: "A", enabled: true }), s => s.restartShell(),
       s => s.askRemove({ id: "a", removable: true }),
@@ -75,7 +75,7 @@ test("owner unlock and removal restore popup actions; local busy and owner-free 
   assert.equal(state.busy, true)
   owner.busy = false
   assert.equal(state.busy, false)
-  assert.equal(state.setTiledExpandedPanel(true), true)
+  assert.equal(state.setOpenAs("window"), true)
   state.restartShell()
   state.askDisable({ id: "a", name: "A", enabled: true, canDisable: true })
   assert.equal(effects.length, 3)

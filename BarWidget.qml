@@ -83,6 +83,11 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.toggle()
   }
 
+  function openFromBar() {
+    cancelPopupArrange()
+    if (panelLoader.item) panelLoader.item.openFromBar()
+  }
+
   function refresh() {
     if (panelLoader.item && panelLoader.item.reload) panelLoader.item.reload()
   }
@@ -136,7 +141,7 @@ BarWidget {
     // "refresh in place" gesture the weather and clock widgets use.
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.refresh()
-      else root.togglePanel()
+      else root.openFromBar()
     }
   }
 

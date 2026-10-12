@@ -204,6 +204,32 @@ function tiledExpandedPanel(settings) {
     && settings.tiledExpandedPanel === true
 }
 
+// How the manager opens from the bar, and where its corner button sends it
+// next: the popup, the overlay, or a plain window the compositor tiles. One
+// value instead of a switch, so the button that changes it is also the place
+// it shows. An entry written before this existed carries only the tiled
+// switch, which meant "the full panel is a window", so it reads as window.
+var OPEN_AS_MODES = ["popup", "overlay", "window"]
+
+function openAs(settings) {
+  if (settings && hasOwnKey(settings, "openAs") && OPEN_AS_MODES.indexOf(settings.openAs) >= 0)
+    return settings.openAs
+  return tiledExpandedPanel(settings) ? "window" : "popup"
+}
+
+function nextOpenAs(mode) {
+  var index = OPEN_AS_MODES.indexOf(mode)
+  return OPEN_AS_MODES[((index < 0 ? 0 : index) + 1) % OPEN_AS_MODES.length]
+}
+
+// The entry to write back with the mode set. The tiled switch it replaces is
+// dropped, so the file never says two things about the same choice.
+function withOpenAs(entry, mode) {
+  var out = withSelfSetting(entry, "tiledExpandedPanel", false)
+  out.openAs = OPEN_AS_MODES.indexOf(mode) >= 0 ? mode : "popup"
+  return out
+}
+
 // This plugin's own entry, found in shell.json itself rather than in what the
 // loader printed. The expanded window has to know which kind of window to open
 // before the store's first load has run, so it reads the file and asks here.
@@ -1742,6 +1768,16 @@ function expandedTabFromPayload(json) {
   try { parsed = JSON.parse(String(json || "")) } catch (e) { return "installed" }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "installed"
   return parsed.tab === "browse" ? "browse" : "installed"
+}
+
+// The host a summon asked for. The corner button names it because the
+// setting it just wrote may not have reached the file yet; anything else
+// leaves the choice to the setting.
+function expandedModeFromPayload(json) {
+  var parsed = null
+  try { parsed = JSON.parse(String(json || "")) } catch (e) { return "" }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
+  return parsed.mode === "overlay" || parsed.mode === "window" ? parsed.mode : ""
 }
 
 // Only the read-only arrangement preview is addressable through IPC.

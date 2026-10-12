@@ -33,7 +33,7 @@ const Model = new Function(
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, installRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
-    tiledExpandedPanel, selfEntryFromShellConfig,
+    tiledExpandedPanel, openAs, nextOpenAs, withOpenAs, expandedModeFromPayload, selfEntryFromShellConfig,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -4107,7 +4107,7 @@ test("bar update dot projects the panel's confirmed count without changing butto
   assert.equal(tooltipText({ updateCount: 2 }), "Plugins - 2 to update")
   assert.equal(tooltipText({ updateCount: 12 }), "Plugins - 12 to update")
   assert.match(barWidget,
-    /if \(b === Qt\.MiddleButton\) root\.refresh\(\)\s+else root\.togglePanel\(\)/)
+    /if \(b === Qt\.MiddleButton\) root\.refresh\(\)\s+else root\.openFromBar\(\)/)
 })
 
 // ---- Expanded panel --------------------------------------------------------
@@ -4147,7 +4147,8 @@ test("the expanded panel opens on the monitor the popup was on", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   // The popup names its own output in the payload; the overlay resolves that
   // name against the live screens and falls back to the shell's default.
-  assert.match(panel, /bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}\)\)/)
+  assert.match(panel, /var payload = \{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}/)
+  assert.match(panel, /bar\.shell\.summon\(pluginId, JSON\.stringify\(payload\)\)/)
   assert.match(panel, /var screenName = panel\.screen \? String\(panel\.screen\.name \|\| ""\) : ""/)
   assert.match(expanded, /property string targetScreenName: ""/)
   assert.match(expanded, /targetScreenName = Model\.expandedScreenFromPayload\(payloadJson\)/)
@@ -4929,8 +4930,8 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.match(button, /anchors\.rightMargin: Style\.space\(6\)/)
   assert.match(button, /iconText: "󰊓"/)
   assert.match(button, /fontSize: Style\.font\.display/)
-  assert.match(button, /tooltipText: "Expand into a full panel"/)
-  assert.match(button, /onClicked: root\.expand\(\)/)
+  assert.match(button, /tooltipText: "Open as an overlay \(it opens that way from now on\)"/)
+  assert.match(button, /onClicked: root\.advanceOpenAs\(\)/)
   // Arrange sits beside Settings without moving the tabs between pages.
   assert.match(panel, /id: tabs\s*anchors\.right: arrangeButton\.left/)
   assert.match(panel, /id: settingsButton\s*anchors\.right: expandButton\.left/)
@@ -4938,7 +4939,7 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.doesNotMatch(panel, /id: subtitle[\s\S]{0,400}anchors\.right: marketplaceLink/)
   // Close first, then summon: the popup and the panel are never up together,
   // and a bar without a shell reference (tests, odd hosts) is a no-op.
-  assert.match(panel, /function expand\(page\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(\{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}\)\)\s*\}/)
+  assert.match(panel, /function expand\(page, mode\) \{\s*if \(!bar \|\| !bar\.shell \|\| typeof bar\.shell\.summon !== "function"\) return[\s\S]*?close\(\)\s*var payload = \{ tab: tab, screen: screenName, page: page === "arrange" \? "arrange" : "" \}\s*if \(mode === "overlay" \|\| mode === "window"\) payload\.mode = mode\s*bar\.shell\.summon\(pluginId, JSON\.stringify\(payload\)\)\s*\}/)
 })
 
 test("the expanded window is a layer-shell overlay that the shell summons and hides", () => {
@@ -4974,9 +4975,9 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.doesNotMatch(expanded, /summonBarWidget/)
 
   // Chrome: title, tabs, refresh, and the way back to the popup.
-  assert.match(expanded, /iconText: "󰊔"/)
-  assert.match(expanded, /tooltipText: "Back to the popup"/)
-  assert.match(expanded, /onClicked: root\.collapse\(\)/)
+  assert.match(expanded, /iconText: root\.tiled \? "󰊔" : "\\uf2d0"/)
+  assert.match(expanded, /tooltipText: root\.tiled \? "Back to the popup \(it opens that way from now on\)"/)
+  assert.match(expanded, /onClicked: root\.advanceOpenAs\(\)/)
   assert.match(expanded, /id: tabs[\s\S]*?onChanged: function\(value\) \{ root\.switchTab\(value\) \}/)
 
   // Installed is master/detail; Browse is the popup's card grid.
@@ -5486,14 +5487,16 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(panel, /if \(!opened\) \{ placementRefreshStarted = false; detailsEntry = null; settingsOpen = false; arrangeOpen = false; barBoard\.cancelDrag\(\); revokeReleaseNavigation\(\); return \}/)
 })
 
-test("the expanded panel opens as a tiled window when the setting says so, and as the overlay otherwise", () => {
+test("the expanded panel opens as a tiled window when openAs says so, and as the overlay otherwise", () => {
   const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
   const store = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
   const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 
-  // The store owns the value and writes it like the other two settings.
-  assert.match(store, /readonly property bool tiledExpandedPanel: Model\.tiledExpandedPanel\(selfSettings\)/)
-  assert.match(store, /function setTiledExpandedPanel\(value\) \{\s*return writeSelfSetting\("tiledExpandedPanel", value, tiledExpandedPanel\)\s*\}/)
+  // The store owns the value and writes it through the same guarded path as
+  // the switches, as one of three modes rather than a boolean.
+  assert.match(store, /readonly property string openAs: Model\.openAs\(selfSettings\)/)
+  assert.match(store, /function setOpenAs\(mode\) \{[\s\S]*?var next = Model\.withOpenAs\(selfEntry, mode\)[\s\S]*?shell\.updateEntryInline\(selfId, next\)/)
+  assert.doesNotMatch(store, /setTiledExpandedPanel/)
 
   // The window type cannot wait for that store: the panel is built again on
   // every summon and its first load is a second away, so open() reads the file
@@ -5505,9 +5508,14 @@ test("the expanded panel opens as a tiled window when the setting says so, and a
   assert.match(view, /path: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json"/)
   assert.match(view, /blockLoading: true/)
   assert.match(view, /printErrors: false/)
-  assert.match(expanded, /tiled = Model\.tiledExpandedPanel\(Model\.parseSelfSettings\(\s*Model\.selfEntryFromShellConfig\(configView\.text\(\), pluginId\)\)\)/)
+  // A mode in the summon (from a button that has just written it) wins over
+  // the file, which the write may not have reached yet.
+  assert.match(expanded, /var mode = Model\.expandedModeFromPayload\(payloadJson\)/)
+  assert.match(expanded, /mode = Model\.openAs\(Model\.parseSelfSettings\(\s*Model\.selfEntryFromShellConfig\(configView\.text\(\), pluginId\)\)\)/)
   const open = expanded.slice(expanded.indexOf("function open(payloadJson)"), expanded.indexOf("function loadEverything()"))
-  assert.ok(open.indexOf("tiled = Model.tiledExpandedPanel") < open.indexOf("opened = true"), "decided before the window shows")
+  assert.ok(open.indexOf('tiled = mode === "window"') < open.indexOf("opened = true"), "decided before the window shows")
+  // Summoned again while it is a window, it goes to that window instead.
+  assert.match(open, /if \(opened && tiled\) \{\s*focusTiledWindow\(\)\s*return\s*\}/)
 
   // Two hosts: the overlay keeps its scrim, the tiled window has no outside
   // to click, and Hyprland's own close goes back through dismiss().
@@ -5535,25 +5543,22 @@ test("the expanded panel opens as a tiled window when the setting says so, and a
   assert.match(card, /radius: root\.tiled \? 0 : Style\.cornerRadius/)
   assert.match(card, /borderSpec: root\.tiled \? Border\.none\(\)/)
 
-  // The row sits under the two opt-ins and above Restart Shell, in both panes,
-  // and both panes say the same thing.
-  for (const [surface, source, fg] of [["Expanded.qml", expanded, "root.foreground"], ["Panel.qml", panel, "root.contentForeground"]]) {
+  // No switch for it in either settings pane: the corner button is the
+  // control, in the same slot on every surface, and it moves to the next form.
+  for (const [surface, source] of [["Expanded.qml", expanded], ["Panel.qml", panel]]) {
     const pane = source.slice(source.indexOf("id: settingsPane"), source.indexOf("id: restartShellButton"))
-    assert.match(pane, /text: "Open expanded panel as a tiled window"/, surface)
-    assert.match(pane, /Off: the expanded panel is an overlay above everything, closed by Esc or a click outside\. /, surface)
-    assert.match(pane, /Takes effect on the next open\./, surface)
-    assert.match(pane, new RegExp(`id: tiledPanelSwitch[\\s\\S]*?checked: store\\.tiledExpandedPanel[\\s\\S]*?foreground: ${fg.replace(".", "\\.")}[\\s\\S]*?onToggled: store\\.setTiledExpandedPanel\\(!store\\.tiledExpandedPanel\\)`), surface)
-    assert.match(pane, /text: store\.tiledExpandedPanel \? "The expanded panel opens as a tiled window" : "The expanded panel opens as an overlay"/, surface)
-    assert.ok(pane.indexOf("id: unverifiedInstallSwitch") < pane.indexOf("id: tiledPanelSwitch"), surface + ": after the install opt-in")
-    // Every Text on the new row is plain text, like the rows above it.
-    const row = pane.slice(pane.indexOf('text: "Open expanded panel as a tiled window"') - 400, pane.indexOf("id: tiledPanelSwitch"))
-    for (const text of row.split(/\bText \{/).slice(1)) assert.match(text.slice(0, 200), /textFormat: Text\.PlainText/, surface)
+    assert.doesNotMatch(pane, /Open expanded panel as a tiled window/, surface)
+    assert.doesNotMatch(pane, /tiledPanelSwitch/, surface)
   }
-  const caption = /text: "Off: the expanded panel is an overlay above everything, closed by Esc or a click outside\. "\s*\+ "([^"]+)"/
-  assert.equal(panel.match(caption)[1], expanded.match(caption)[1], "same caption in both windows")
+  assert.match(panel, /id: expandButton[\s\S]*?onClicked: root\.advanceOpenAs\(\)/)
+  assert.match(panel, /function advanceOpenAs\(\) \{\s*store\.setOpenAs\("overlay"\)\s*expand\("", "overlay"\)\s*\}/)
+  assert.match(expanded, /id: collapseButton[\s\S]*?onClicked: root\.advanceOpenAs\(\)/)
+  const advance = expanded.slice(expanded.indexOf("function advanceOpenAs()"), expanded.indexOf("function focusTiledWindow()"))
+  assert.match(advance, /store\.setOpenAs\("popup"\)\s*collapse\(\)/)
+  assert.match(advance, /store\.setOpenAs\("window"\)\s*tiled = true\s*showRetainedWindow\(\)/)
 
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
-  assert.match(readme, /\*\*Open expanded panel as a tiled window\*\*/)
+  assert.match(readme, /popup → overlay → window/)
   assert.match(readme, /windowrule = float, title:\^\(Plugin Manager\)\$/)
 })
 
@@ -5749,4 +5754,40 @@ test("the popup row hides its update button unless an update is installable or r
   const details = readFileSync(new URL("../InstalledDetails.qml", import.meta.url), "utf8")
   const detailsButton = details.slice(details.indexOf("id: updateButton"), details.indexOf("id: updateButton") + 400)
   assert.match(detailsButton, /visible: root\.row \? root\.row\.updatable === true : false/)
+})
+
+test("openAs reads one of three modes, and an old tiled switch as window", () => {
+  for (const mode of ["popup", "overlay", "window"])
+    assert.equal(Model.openAs({ openAs: mode }), mode)
+  assert.equal(Model.openAs({}), "popup")
+  assert.equal(Model.openAs(null), "popup")
+  assert.equal(Model.openAs({ openAs: "tiled" }), "popup", "unknown values fall back")
+  assert.equal(Model.openAs({ openAs: true }), "popup")
+  assert.equal(Model.openAs({ tiledExpandedPanel: true }), "window", "the old switch carries over")
+  assert.equal(Model.openAs({ tiledExpandedPanel: true, openAs: "overlay" }), "overlay", "the new value wins")
+  assert.equal(Model.openAs(Object.create({ openAs: "window" })), "popup", "own key only")
+})
+
+test("nextOpenAs cycles popup, overlay, window and back", () => {
+  assert.equal(Model.nextOpenAs("popup"), "overlay")
+  assert.equal(Model.nextOpenAs("overlay"), "window")
+  assert.equal(Model.nextOpenAs("window"), "popup")
+  assert.equal(Model.nextOpenAs("nonsense"), "overlay")
+})
+
+test("withOpenAs stores the mode and drops the switch it replaces", () => {
+  const entry = { id: "manager", tiledExpandedPanel: true, allowUnverifiedUpdates: true }
+  assert.deepEqual(Model.withOpenAs(entry, "overlay"), { allowUnverifiedUpdates: true, openAs: "overlay" })
+  assert.deepEqual(Model.withOpenAs({}, "bogus"), { openAs: "popup" })
+  assert.equal(entry.tiledExpandedPanel, true, "the loaded entry is not mutated")
+  assert.equal(Model.openAs(Model.parseSelfSettings(JSON.stringify(Model.withOpenAs(entry, "window")))), "window")
+})
+
+test("expandedModeFromPayload accepts only overlay or window", () => {
+  assert.equal(Model.expandedModeFromPayload('{"mode":"window"}'), "window")
+  assert.equal(Model.expandedModeFromPayload('{"mode":"overlay","tab":"browse"}'), "overlay")
+  assert.equal(Model.expandedModeFromPayload('{"mode":"popup"}'), "")
+  assert.equal(Model.expandedModeFromPayload('{}'), "")
+  assert.equal(Model.expandedModeFromPayload("not json"), "")
+  assert.equal(Model.expandedModeFromPayload('["window"]'), "")
 })

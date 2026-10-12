@@ -142,10 +142,11 @@ Item {
   readonly property bool allowUnverifiedInstalls: Model.allowUnverifiedInstalls(selfSettings)
   onAllowUnverifiedInstallsChanged: restampCatalog()
 
-  // Which window the expanded panel opens as. Held here so both settings panes
-  // can show and flip it; the expanded window does not read it from here,
-  // because it has to know before this store's first load has run.
-  readonly property bool tiledExpandedPanel: Model.tiledExpandedPanel(selfSettings)
+  // How the manager opens: popup, overlay or window. Held here so the corner
+  // buttons can show and advance it; the bar click and the expanded window
+  // read it from shell.json instead, because they need it before this store's
+  // first load has run.
+  readonly property string openAs: Model.openAs(selfSettings)
 
   // Persist one setting through the host, merged over the entry as it was
   // loaded. The local copies move only when the host accepted the write; the
@@ -181,8 +182,26 @@ Item {
     return writeSelfSetting("allowUnverifiedInstalls", value, allowUnverifiedInstalls)
   }
 
-  function setTiledExpandedPanel(value) {
-    return writeSelfSetting("tiledExpandedPanel", value, tiledExpandedPanel)
+  // Same guards as a switch, for the one setting that is not a boolean.
+  function setOpenAs(mode) {
+    if (busy) return false
+    if (mode === openAs) return true
+    if (!selfEntryLoaded || !selfEntry) {
+      setStatus("Settings unavailable until the plugin list loads", true)
+      return false
+    }
+    if (!shell || typeof shell.updateEntryInline !== "function" || selfId === "") {
+      setStatus("Could not save the setting: no shell connection", true)
+      return false
+    }
+    var next = Model.withOpenAs(selfEntry, mode)
+    if (shell.updateEntryInline(selfId, next) !== true) {
+      setStatus("Could not save the setting", true)
+      return false
+    }
+    selfEntry = next
+    selfSettings = Model.parseSelfSettings(JSON.stringify(next))
+    return true
   }
 
   property string pendingKind: ""

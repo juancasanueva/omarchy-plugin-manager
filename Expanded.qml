@@ -41,8 +41,8 @@ Item {
     ? String(manifest.id) : "io.github.juancasanueva.plugin-manager"
 
   // Which window hosts this open: the layer-shell overlay, or a plain toplevel
-  // the compositor tiles. Decided once in open() and fixed for the life of that
-  // open, so flipping the switch applies on the next open, as the caption says.
+  // the compositor tiles. Decided in open(), and moved on by the corner button
+  // (overlay to window), which also remembers the choice.
   property bool tiled: false
 
   // One card, two hosts. The card is declared once and reparented into
@@ -94,10 +94,22 @@ Item {
       refreshBarLayout()
       return
     }
-    // Before the window shows, because it decides which window shows.
-    configView.reload()
-    tiled = Model.tiledExpandedPanel(Model.parseSelfSettings(
-      Model.selfEntryFromShellConfig(configView.text(), pluginId)))
+    // Already up as a window, perhaps on another workspace: go to it rather
+    // than reopen, which from the bar would look like nothing happened.
+    if (opened && tiled) {
+      focusTiledWindow()
+      return
+    }
+    // Before the window shows, because it decides which window shows. A mode
+    // in the payload comes from a button that has just written it; otherwise
+    // the setting decides.
+    var mode = Model.expandedModeFromPayload(payloadJson)
+    if (mode === "") {
+      configView.reload()
+      mode = Model.openAs(Model.parseSelfSettings(
+        Model.selfEntryFromShellConfig(configView.text(), pluginId)))
+    }
+    tiled = mode === "window"
     activeTab = Model.expandedTabFromPayload(payloadJson)
     targetScreenName = Model.expandedScreenFromPayload(payloadJson)
     selectedIndex = -1
@@ -173,6 +185,28 @@ Item {
     var screenName = targetScreenName
     dismiss()
     PopupBridge.openPopup(screenName)
+  }
+
+  // The corner button: overlay, then window, then back to the popup. Each step
+  // is remembered, so the bar opens the manager the way it was last left. The
+  // overlay becomes a window in place: the card moves host, nothing reloads.
+  function advanceOpenAs() {
+    if (barMovePending) return
+    if (tiled) {
+      store.setOpenAs("popup")
+      collapse()
+      return
+    }
+    store.setOpenAs("window")
+    tiled = true
+    showRetainedWindow()
+  }
+
+  // The toplevel's class is the shell's own, so it is found by its title.
+  function focusTiledWindow() {
+    Quickshell.execDetached(["sh", "-c",
+      'a=$(hyprctl clients -j | jq -r \'.[]|select(.class == "org.quickshell" and .title == "Plugin Manager")|.address\' | head -n1); '
+      + '[ -n "$a" ] && hyprctl dispatch "hl.dsp.focus({ window = \\"address:$a\\" })" >/dev/null'])
   }
 
   // ---- Shared state, mirrored from the store ---------------------------------
@@ -980,20 +1014,22 @@ Item {
           onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
         }
 
-        // The way back. Same slot the popup's expand icon sits in, so the
-        // eye finds the pair of them in the same corner on both surfaces.
+        // The next form: window from the overlay, popup from the window. Same
+        // slot the popup's expand icon sits in, so the eye finds the one button
+        // that changes how the manager opens in the same corner on every surface.
         PanelActionButton {
           id: collapseButton
           enabled: !root.barMovePending
           anchors.right: refreshButton.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
-          iconText: "󰊔"
+          iconText: root.tiled ? "󰊔" : "\uf2d0"
           fontSize: Style.font.display
-          tooltipText: "Back to the popup"
+          tooltipText: root.tiled ? "Back to the popup (it opens that way from now on)"
+            : "Open as a window that tiles beside your apps (it opens that way from now on)"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.collapse()
+          onClicked: root.advanceOpenAs()
         }
 
         PanelActionButton {
@@ -1946,68 +1982,6 @@ Item {
               PanelToolTip {
                 visible: unverifiedInstallSwitch.containsMouse
                 text: store.allowUnverifiedInstalls ? "Unverified listings can be installed" : "Only verified listings can be installed"
-                fontFamily: root.fontFamily
-              }
-            }
-          }
-
-          // Which window this panel opens as. The window is chosen at open
-          // time, so the switch is a decision about the next one.
-          Rectangle {
-            width: parent.width
-            height: Math.max(tiledPanelText.implicitHeight, tiledPanelSwitch.implicitHeight) + Style.space(12) * 2
-            radius: Style.cornerRadius
-            color: Style.normalFill
-            border.width: 1
-            border.color: Qt.alpha(root.secondaryForeground, 0.35)
-
-            Column {
-              id: tiledPanelText
-              anchors.left: parent.left
-              anchors.leftMargin: Style.space(12)
-              anchors.right: tiledPanelSwitch.left
-              anchors.rightMargin: Style.space(16)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(4)
-
-              Text {
-                // Never rich text: AutoText would fetch what a crafted string points at.
-                textFormat: Text.PlainText
-                width: parent.width
-                text: "Open expanded panel as a tiled window"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                wrapMode: Text.WordWrap
-              }
-
-              Text {
-                // Never rich text: AutoText would fetch what a crafted string points at.
-                textFormat: Text.PlainText
-                width: parent.width
-                text: "Off: the expanded panel is an overlay above everything, closed by Esc or a click outside. "
-                  + "On: it opens as a regular window that Hyprland tiles in the current workspace, so it can sit beside a terminal. Takes effect on the next open."
-                color: root.secondaryForeground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
-              }
-            }
-
-            ToggleSwitch {
-              id: tiledPanelSwitch
-              anchors.right: parent.right
-              anchors.rightMargin: Style.space(12)
-              anchors.verticalCenter: parent.verticalCenter
-              checked: store.tiledExpandedPanel
-              interactive: true
-              busy: root.busy
-              foreground: root.foreground
-              onToggled: store.setTiledExpandedPanel(!store.tiledExpandedPanel)
-
-              PanelToolTip {
-                visible: tiledPanelSwitch.containsMouse
-                text: store.tiledExpandedPanel ? "The expanded panel opens as a tiled window" : "The expanded panel opens as an overlay"
                 fontFamily: root.fontFamily
               }
             }
