@@ -16,7 +16,7 @@ function binding(source, name, state, fallback = "false") {
   const expression = source.match(new RegExp(`^\\s*(?:(?:readonly )?property (?:bool|alias) )?${name}: ([^\\n]+)`, "m"))?.[1] || fallback
   return Function("state", `with (state) { return (${expression}) }`)(state)
 }
-function actionStore(owner = null) {
+function actionStore(owner = null, shellJson = JSON.stringify({ plugins: [{ id: "manager" }] })) {
   const effects = []
   const state = { popupMoveOwner: owner, busyKind: "", barMovePending: null, cleanupProcess: null,
     actionProc: { running: false }, pinnedProc: { running: false }, barMoveProc: { running: false },
@@ -27,7 +27,8 @@ function actionStore(owner = null) {
     shell: { updateEntryInline(id, entry) { effects.push([id, entry]); return true },
       barConfig: { layout: { left: ["a"], center: [], right: [] } } },
     Quickshell: { execDetached(argv) { effects.push(argv) }, env() { return "" } },
-    Model: Function(read("Model.js") + "; return { withSelfSetting, withOpenAs, parseSelfSettings, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove }")(),
+    openAsConfig: { reload() {}, text() { return shellJson } },
+    Model: Function(read("Model.js") + "; return { withSelfSetting, withOpenAs, parseSelfSettings, parseSelfEntry, selfEntryFromShellConfig, openAs, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove }")(),
     loadProcessSettled: () => true, updateProcessSettled: () => true }
   state.root = state
   for (const name of ["setStatus", "writeSelfSetting", "setAllowUnverifiedUpdates", "setAllowUnverifiedInstalls", "setOpenAs",
@@ -69,6 +70,35 @@ for (const lock of ["owner", "local"]) {
     }
   })
 }
+
+// The popup's store loads late and never watches shell.json, so how it opens
+// is written over the entry as the file has it at the click, not as the store
+// last saw it.
+test("setOpenAs writes over shell.json as it is now, not the store's copy", () => {
+  const file = JSON.stringify({ plugins: [{ id: "manager", position: "right", openAs: "window" }] })
+  // Not loaded yet: still writes, keeping the entry's other keys.
+  const early = actionStore(null, file)
+  early.state.selfEntryLoaded = false; early.state.selfEntry = {}
+  assert.equal(early.state.setOpenAs("overlay"), true)
+  assert.deepEqual(early.effects, [["manager", { position: "right", openAs: "overlay" }]])
+  // Stale: the store still thinks overlay after the window wrote window.
+  const stale = actionStore(null, file)
+  stale.state.openAs = "overlay"; stale.state.selfSettings = { openAs: "overlay" }
+  assert.equal(stale.state.setOpenAs("overlay"), true)
+  assert.equal(stale.effects.length, 1, "the file says window, so overlay is written")
+  // The file can trail the host by a write, so the write always goes and the
+  // host decides; its "nothing changed" is still a saved setting.
+  const same = actionStore(null, file)
+  same.state.shell.updateEntryInline = (id, entry) => { same.effects.push([id, entry]); return false }
+  assert.equal(same.state.setOpenAs("window"), true)
+  assert.equal(same.effects.length, 1)
+  // Unreadable, or no entry: refuse rather than rewrite the entry from nothing.
+  for (const text of ["", "{", JSON.stringify({ plugins: [] })]) {
+    const broken = actionStore(null, text)
+    assert.equal(broken.state.setOpenAs("overlay"), false, text)
+    assert.equal(broken.effects.length, 0, text)
+  }
+})
 
 test("owner unlock and removal restore popup actions; local busy and owner-free Expanded stay independent", () => {
   const owner = { busy: true }, { state, effects } = actionStore(owner)

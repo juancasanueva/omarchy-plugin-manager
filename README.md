@@ -32,14 +32,13 @@ row actions on the right](preview.png)
 ## The expanded panel
 
 The popup is built for a glance. When you want room, the icon left of the
-refresh button (`󰊓`) hands the same manager to a full-size panel; in the
-overlay the same corner turns it into a window (``), and in the window
-(`󰊔`) brings the popup back. The header, the tabs, the
+refresh button (`󰊓`) hands the same manager to a full-size panel, and the
+same corner (`󰊔`) brings the popup back. The button beside it goes straight to
+a window (``), or from the window back to the overlay (`󰊓`). The header, the tabs, the
 summary counts, the opening animation and the card flip between tabs are the
 ones the popup has; what changes is how much each tab can show. It opens as an
-overlay above everything, or as a window Hyprland tiles: the corner button
-moves the manager popup → overlay → window → popup, and the bar opens it the
-way it was last left (below).
+overlay above everything, or as a window Hyprland tiles, and the bar opens it
+the way it was last left (below).
 
 **Installed** becomes a list beside a details pane. The rows are summaries:
 a mark leads the name — a green check when the checkout is up to date, a
@@ -287,10 +286,12 @@ the setting off, a checkout whose only difference is an unreviewed upstream
 commit carries neither the arrow nor the green check: the panel does not claim
 it is current, it says **No verified update available**.
 
-**How it opens** is the button in the corner, the same slot on every
-surface, rather than a switch in this pane. It moves the manager popup →
-overlay → window → popup, and the bar opens it the way it was last left; the
-popup is the default. The overlay floats above everything, takes the keyboard
+**How it opens** is the buttons in the header rather than a switch in this
+pane, and every form has a direct way to the other two. The corner slot is the
+same on every surface: in the popup it expands to the overlay, and in the
+overlay or the window it goes back to the popup. The button beside it opens
+the window from the popup or the overlay, and the overlay from the window. The bar opens the
+manager the way it was last left; the popup is the default. The overlay floats above everything, takes the keyboard
 while it is up, and closes on Esc or a click outside. The window is an ordinary
 one, which Hyprland tiles into the current workspace like any app, so the
 manager can sit beside the terminal you are editing a plugin in. There is no
@@ -301,7 +302,7 @@ window is open on another workspace goes to it. The choice is stored as
 `openAs` (`popup`, `overlay` or `window`) in this plugin's entry and read
 straight out of `shell.json` when the bar is clicked, ahead of everything else
 it loads. An entry that still has the old `tiledExpandedPanel: true` opens as
-a window, and the key is dropped the next time the button writes.
+a window, and the key is dropped the next time one of the buttons writes.
 
 One Hyprland note: the window carries the shell's own app id rather than one of
 its own, so a per-window rule has to match its title:

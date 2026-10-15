@@ -401,9 +401,17 @@ Panel {
   // The corner button: the next form after the popup is the overlay, and
   // choosing it is also how it is remembered. The mode rides in the summon
   // because the write may not have reached shell.json when the panel reads it.
+  // A setting that could not be written opens nothing, so what shows and what
+  // is saved never part.
   function advanceOpenAs() {
-    store.setOpenAs("overlay")
+    if (!store.setOpenAs("overlay")) return
     expand("", "overlay")
+  }
+
+  // Straight to the window, without passing through the overlay.
+  function openAsWindow() {
+    if (!store.setOpenAs("window")) return
+    expand("", "window")
   }
 
   // A click on the bar opens whichever form was chosen last. Read from
@@ -422,7 +430,7 @@ Panel {
     id: configView
     path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
     preload: false
-    blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
 
@@ -1018,7 +1026,7 @@ Panel {
           // same switch the expanded window shows, reached from here too.
           PanelActionButton {
             id: settingsButton
-            anchors.right: expandButton.left
+            anchors.right: windowButton.left
             anchors.rightMargin: Style.space(6)
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰒓"
@@ -1031,6 +1039,21 @@ Panel {
             onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
           }
 
+          PanelActionButton {
+            id: windowButton
+            anchors.right: expandButton.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "\uf2d0"
+            fontSize: Style.font.display
+            tooltipText: "Open as a window"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.openAsWindow()
+          }
+
           // Icon only, like the refresh beside it: the popup's header has no
           // room for a labelled button, and the tooltip says the rest.
           PanelActionButton {
@@ -1040,7 +1063,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰊓"
             fontSize: Style.font.display
-            tooltipText: "Open as an overlay (it opens that way from now on)"
+            tooltipText: "Expand into a full panel"
             foreground: root.contentForeground
             fontFamily: root.contentFontFamily
             enabled: !root.busy

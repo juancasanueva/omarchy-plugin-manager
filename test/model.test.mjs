@@ -4930,11 +4930,11 @@ test("the popup's expand button hands the current tab to the shell panel", () =>
   assert.match(button, /anchors\.rightMargin: Style\.space\(6\)/)
   assert.match(button, /iconText: "󰊓"/)
   assert.match(button, /fontSize: Style\.font\.display/)
-  assert.match(button, /tooltipText: "Open as an overlay \(it opens that way from now on\)"/)
+  assert.match(button, /tooltipText: "Expand into a full panel"/)
   assert.match(button, /onClicked: root\.advanceOpenAs\(\)/)
   // Arrange sits beside Settings without moving the tabs between pages.
   assert.match(panel, /id: tabs\s*anchors\.right: arrangeButton\.left/)
-  assert.match(panel, /id: settingsButton\s*anchors\.right: expandButton\.left/)
+  assert.match(panel, /id: settingsButton\s*anchors\.right: windowButton\.left/)
   // The count line lives on its own row now, so nothing yields to the tabs.
   assert.doesNotMatch(panel, /id: subtitle[\s\S]{0,400}anchors\.right: marketplaceLink/)
   // Close first, then summon: the popup and the panel are never up together,
@@ -4975,9 +4975,7 @@ test("the expanded window is a layer-shell overlay that the shell summons and hi
   assert.doesNotMatch(expanded, /summonBarWidget/)
 
   // Chrome: title, tabs, refresh, and the way back to the popup.
-  assert.match(expanded, /iconText: root\.tiled \? "󰊔" : "\\uf2d0"/)
-  assert.match(expanded, /tooltipText: root\.tiled \? "Back to the popup \(it opens that way from now on\)"/)
-  assert.match(expanded, /onClicked: root\.advanceOpenAs\(\)/)
+  assert.match(expanded, /id: collapseButton[\s\S]*?iconText: "󰊔"[\s\S]*?tooltipText: "Back to the popup"[\s\S]*?onClicked: root\.backToPopup\(\)/)
   assert.match(expanded, /id: tabs[\s\S]*?onChanged: function\(value\) \{ root\.switchTab\(value\) \}/)
 
   // Installed is master/detail; Browse is the popup's card grid.
@@ -5441,7 +5439,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
 
   // The gear sits between the tabs and the expand icon, and toggles the pane.
   const button = panel.slice(panel.indexOf("id: settingsButton"), panel.indexOf("id: settingsButton") + 700)
-  assert.match(button, /anchors\.right: expandButton\.left/)
+  assert.match(button, /anchors\.right: windowButton\.left/)
   assert.match(button, /iconText: "󰒓"/)
   assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
   assert.match(button, /foreground: root\.settingsOpen \? Color\.accent : root\.contentForeground/)
@@ -5495,7 +5493,10 @@ test("the expanded panel opens as a tiled window when openAs says so, and as the
   // The store owns the value and writes it through the same guarded path as
   // the switches, as one of three modes rather than a boolean.
   assert.match(store, /readonly property string openAs: Model\.openAs\(selfSettings\)/)
-  assert.match(store, /function setOpenAs\(mode\) \{[\s\S]*?var next = Model\.withOpenAs\(selfEntry, mode\)[\s\S]*?shell\.updateEntryInline\(selfId, next\)/)
+  assert.match(store, /function setOpenAs\(mode\) \{[\s\S]*?openAsConfig\.reload\(\)[\s\S]*?var next = Model\.withOpenAs\(current, mode\)[\s\S]*?shell\.updateEntryInline\(selfId, next\)/)
+  const openAsView = store.slice(store.indexOf("id: openAsConfig"), store.indexOf("id: openAsConfig") + 300)
+  assert.match(openAsView, /blockAllReads: true/)
+  assert.doesNotMatch(openAsView, /watchChanges/)
   assert.doesNotMatch(store, /setTiledExpandedPanel/)
 
   // The window type cannot wait for that store: the panel is built again on
@@ -5506,7 +5507,11 @@ test("the expanded panel opens as a tiled window when openAs says so, and as the
   const view = expanded.slice(expanded.indexOf("FileView {"), expanded.indexOf("FileView {") + 400)
   assert.match(view, /id: configView/)
   assert.match(view, /path: Quickshell\.env\("HOME"\) \+ "\/\.config\/omarchy\/shell\.json"/)
-  assert.match(view, /blockLoading: true/)
+  assert.match(view, /blockAllReads: true/)
+  // Every read of the setting waits for the file as it is now: blockLoading
+  // waits only for the first load and then answers one click behind.
+  for (const [surface, source] of [["Expanded.qml", expanded], ["Panel.qml", panel], ["PluginStore.qml", store]])
+    assert.doesNotMatch(source, /blockLoading: true/, surface)
   assert.match(view, /printErrors: false/)
   // A mode in the summon (from a button that has just written it) wins over
   // the file, which the write may not have reached yet.
@@ -5514,8 +5519,10 @@ test("the expanded panel opens as a tiled window when openAs says so, and as the
   assert.match(expanded, /mode = Model\.openAs\(Model\.parseSelfSettings\(\s*Model\.selfEntryFromShellConfig\(configView\.text\(\), pluginId\)\)\)/)
   const open = expanded.slice(expanded.indexOf("function open(payloadJson)"), expanded.indexOf("function loadEverything()"))
   assert.ok(open.indexOf('tiled = mode === "window"') < open.indexOf("opened = true"), "decided before the window shows")
-  // Summoned again while it is a window, it goes to that window instead.
-  assert.match(open, /if \(opened && tiled\) \{\s*focusTiledWindow\(\)\s*return\s*\}/)
+  // Summoned again for the window while it is one, it goes to that window
+  // instead; asked for the overlay, it moves host like any open.
+  assert.match(open, /if \(opened && tiled && mode === "window"\) \{\s*focusTiledWindow\(\)\s*return\s*\}/)
+  assert.ok(open.indexOf("var mode =") < open.indexOf("focusTiledWindow()"), "the mode is known before it decides")
 
   // Two hosts: the overlay keeps its scrim, the tiled window has no outside
   // to click, and Hyprland's own close goes back through dismiss().
@@ -5543,22 +5550,47 @@ test("the expanded panel opens as a tiled window when openAs says so, and as the
   assert.match(card, /radius: root\.tiled \? 0 : Style\.cornerRadius/)
   assert.match(card, /borderSpec: root\.tiled \? Border\.none\(\)/)
 
-  // No switch for it in either settings pane: the corner button is the
-  // control, in the same slot on every surface, and it moves to the next form.
+  // No switch for it in either settings pane: the corner button is the way
+  // between popup and full size, in the same slot on every surface, and the
+  // button beside it goes straight to the other forms.
   for (const [surface, source] of [["Expanded.qml", expanded], ["Panel.qml", panel]]) {
     const pane = source.slice(source.indexOf("id: settingsPane"), source.indexOf("id: restartShellButton"))
     assert.doesNotMatch(pane, /Open expanded panel as a tiled window/, surface)
     assert.doesNotMatch(pane, /tiledPanelSwitch/, surface)
   }
   assert.match(panel, /id: expandButton[\s\S]*?onClicked: root\.advanceOpenAs\(\)/)
-  assert.match(panel, /function advanceOpenAs\(\) \{\s*store\.setOpenAs\("overlay"\)\s*expand\("", "overlay"\)\s*\}/)
-  assert.match(expanded, /id: collapseButton[\s\S]*?onClicked: root\.advanceOpenAs\(\)/)
-  const advance = expanded.slice(expanded.indexOf("function advanceOpenAs()"), expanded.indexOf("function focusTiledWindow()"))
-  assert.match(advance, /store\.setOpenAs\("popup"\)\s*collapse\(\)/)
-  assert.match(advance, /store\.setOpenAs\("window"\)\s*tiled = true\s*showRetainedWindow\(\)/)
+  // A setting that could not be written (the store busy, say) switches
+  // nothing, so the form on screen and the saved one never part.
+  assert.match(panel, /function advanceOpenAs\(\) \{\s*if \(!store\.setOpenAs\("overlay"\)\) return\s*expand\("", "overlay"\)\s*\}/)
+  assert.match(expanded, /function backToPopup\(\) \{\s*if \(barMovePending \|\| !store\.setOpenAs\("popup"\)\) return\s*collapse\(\)\s*\}/)
+  assert.match(panel, /function openAsWindow\(\) \{\s*if \(!store\.setOpenAs\("window"\)\) return\s*expand\("", "window"\)\s*\}/)
+  assert.match(expanded, /function switchFullForm\(\) \{\s*if \(barMovePending \|\| !store\.setOpenAs\(tiled \? "overlay" : "window"\)\) return\s*tiled = !tiled\s*showRetainedWindow\(\)\s*\}/)
+  assert.doesNotMatch(expanded, /advanceOpenAs/)
+  for (const id of ["collapseButton", "formButton"]) {
+    const button = expanded.slice(expanded.indexOf("id: " + id), expanded.indexOf("onClicked", expanded.indexOf("id: " + id)))
+    assert.match(button, /enabled: !root\.barMovePending && !root\.busy/, id)
+  }
+  // Every form reaches the other two directly: the popup has a window button
+  // beside its expand, and the full-size forms swap with each other.
+  const windowButton = panel.slice(panel.indexOf("id: windowButton"), panel.indexOf("id: expandButton"))
+  assert.match(windowButton, /iconText: "\\uf2d0"/)
+  assert.match(windowButton, /tooltipText: "Open as a window"/)
+  assert.match(windowButton, /enabled: !root\.busy/)
+  assert.match(windowButton, /onClicked: root\.openAsWindow\(\)/)
+  assert.match(panel, /id: settingsButton\s*anchors\.right: windowButton\.left/)
+  const form = expanded.slice(expanded.indexOf("id: formButton"), expanded.indexOf("id: collapseButton"))
+  assert.doesNotMatch(form, /visible:/)
+  assert.match(form, /iconText: root\.tiled \? "󰊓" : "\\uf2d0"/)
+  assert.match(form, /tooltipText: root\.tiled \? "Open as an overlay" : "Open as a window"/)
+  assert.match(form, /onClicked: root\.switchFullForm\(\)/)
+  assert.match(expanded, /id: settingsButton[\s\S]*?anchors\.right: formButton\.left/)
+  // Focus falls back to the older dispatcher, as omarchy-launch-or-focus does.
+  const focus = expanded.slice(expanded.indexOf("function focusTiledWindow()"), expanded.indexOf("// ---- Shared state"))
+  assert.match(focus, /hl\.dsp\.focus\(\{ window = [^]*?\|\| hyprctl dispatch focuswindow "address:\$a"/)
 
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
-  assert.match(readme, /popup → overlay → window/)
+  assert.doesNotMatch(readme, /popup → overlay → window/)
+  assert.match(readme, /direct way to the other two/)
   assert.match(readme, /windowrule = float, title:\^\(Plugin Manager\)\$/)
 })
 

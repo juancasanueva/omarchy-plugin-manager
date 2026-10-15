@@ -41,8 +41,8 @@ Item {
     ? String(manifest.id) : "io.github.juancasanueva.plugin-manager"
 
   // Which window hosts this open: the layer-shell overlay, or a plain toplevel
-  // the compositor tiles. Decided in open(), and moved on by the corner button
-  // (overlay to window), which also remembers the choice.
+  // the compositor tiles. Decided in open(), and moved on by the pop-out
+  // button (overlay to window), which also remembers the choice.
   property bool tiled: false
 
   // One card, two hosts. The card is declared once and reparented into
@@ -62,7 +62,7 @@ Item {
     id: configView
     path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
     preload: false
-    blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
 
@@ -94,12 +94,6 @@ Item {
       refreshBarLayout()
       return
     }
-    // Already up as a window, perhaps on another workspace: go to it rather
-    // than reopen, which from the bar would look like nothing happened.
-    if (opened && tiled) {
-      focusTiledWindow()
-      return
-    }
     // Before the window shows, because it decides which window shows. A mode
     // in the payload comes from a button that has just written it; otherwise
     // the setting decides.
@@ -108,6 +102,13 @@ Item {
       configView.reload()
       mode = Model.openAs(Model.parseSelfSettings(
         Model.selfEntryFromShellConfig(configView.text(), pluginId)))
+    }
+    // Already up as a window, perhaps on another workspace: go to it rather
+    // than reopen, which from the bar would look like nothing happened. Asked
+    // for the overlay instead, the card moves host below like any open.
+    if (opened && tiled && mode === "window") {
+      focusTiledWindow()
+      return
     }
     tiled = mode === "window"
     activeTab = Model.expandedTabFromPayload(payloadJson)
@@ -187,26 +188,29 @@ Item {
     PopupBridge.openPopup(screenName)
   }
 
-  // The corner button: overlay, then window, then back to the popup. Each step
-  // is remembered, so the bar opens the manager the way it was last left. The
-  // overlay becomes a window in place: the card moves host, nothing reloads.
-  function advanceOpenAs() {
-    if (barMovePending) return
-    if (tiled) {
-      store.setOpenAs("popup")
-      collapse()
-      return
-    }
-    store.setOpenAs("window")
-    tiled = true
+  // The corner button, from the overlay or the window. Each form is
+  // remembered, so the bar opens the manager the way it was last left; a
+  // setting that could not be written leaves the form as it is, so what shows
+  // and what is saved never part.
+  function backToPopup() {
+    if (barMovePending || !store.setOpenAs("popup")) return
+    collapse()
+  }
+
+  // The other full-size form, in place: the card moves host, nothing reloads.
+  function switchFullForm() {
+    if (barMovePending || !store.setOpenAs(tiled ? "overlay" : "window")) return
+    tiled = !tiled
     showRetainedWindow()
   }
 
-  // The toplevel's class is the shell's own, so it is found by its title.
+  // The toplevel's class is the shell's own, so it is found by its title. The
+  // older dispatcher is the fallback, as in omarchy-launch-or-focus.
   function focusTiledWindow() {
     Quickshell.execDetached(["sh", "-c",
       'a=$(hyprctl clients -j | jq -r \'.[]|select(.class == "org.quickshell" and .title == "Plugin Manager")|.address\' | head -n1); '
-      + '[ -n "$a" ] && hyprctl dispatch "hl.dsp.focus({ window = \\"address:$a\\" })" >/dev/null'])
+      + '[ -n "$a" ] && { hyprctl dispatch "hl.dsp.focus({ window = \\"address:$a\\" })" >/dev/null 2>&1 '
+      + '|| hyprctl dispatch focuswindow "address:$a" >/dev/null; }'])
   }
 
   // ---- Shared state, mirrored from the store ---------------------------------
@@ -1003,7 +1007,7 @@ Item {
         PanelActionButton {
           id: settingsButton
           enabled: !root.barMovePending
-          anchors.right: collapseButton.left
+          anchors.right: formButton.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
           iconText: "󰒓"
@@ -1014,22 +1018,37 @@ Item {
           onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
         }
 
-        // The next form: window from the overlay, popup from the window. Same
-        // slot the popup's expand icon sits in, so the eye finds the one button
-        // that changes how the manager opens in the same corner on every surface.
+        // Overlay to window and back, beside the way to the popup.
+        PanelActionButton {
+          id: formButton
+          enabled: !root.barMovePending && !root.busy
+          opacity: enabled ? 1 : 0.4
+          anchors.right: collapseButton.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.tiled ? "󰊓" : "\uf2d0"
+          fontSize: Style.font.display
+          tooltipText: root.tiled ? "Open as an overlay" : "Open as a window"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.switchFullForm()
+        }
+
+        // The way back. Same slot the popup's expand icon sits in, so the
+        // eye finds the pair of them in the same corner on every surface.
         PanelActionButton {
           id: collapseButton
-          enabled: !root.barMovePending
+          enabled: !root.barMovePending && !root.busy
+          opacity: enabled ? 1 : 0.4
           anchors.right: refreshButton.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
-          iconText: root.tiled ? "󰊔" : "\uf2d0"
+          iconText: "󰊔"
           fontSize: Style.font.display
-          tooltipText: root.tiled ? "Back to the popup (it opens that way from now on)"
-            : "Open as a window that tiles beside your apps (it opens that way from now on)"
+          tooltipText: "Back to the popup"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.advanceOpenAs()
+          onClicked: root.backToPopup()
         }
 
         PanelActionButton {
