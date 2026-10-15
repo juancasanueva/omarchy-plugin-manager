@@ -217,11 +217,6 @@ function openAs(settings) {
   return tiledExpandedPanel(settings) ? "window" : "popup"
 }
 
-function nextOpenAs(mode) {
-  var index = OPEN_AS_MODES.indexOf(mode)
-  return OPEN_AS_MODES[((index < 0 ? 0 : index) + 1) % OPEN_AS_MODES.length]
-}
-
 // The entry to write back with the mode set. The tiled switch it replaces is
 // dropped, so the file never says two things about the same choice.
 function withOpenAs(entry, mode) {

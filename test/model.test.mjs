@@ -33,7 +33,7 @@ const Model = new Function(
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, installRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
-    tiledExpandedPanel, openAs, nextOpenAs, withOpenAs, expandedModeFromPayload, selfEntryFromShellConfig,
+    tiledExpandedPanel, openAs, withOpenAs, expandedModeFromPayload, selfEntryFromShellConfig,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
     trustedGithubReleaseApiUrl, trustedGithubReleaseUrl, trustedGithubRepoUrl, trustedGithubWebUrl,
@@ -5798,13 +5798,6 @@ test("openAs reads one of three modes, and an old tiled switch as window", () =>
   assert.equal(Model.openAs({ tiledExpandedPanel: true }), "window", "the old switch carries over")
   assert.equal(Model.openAs({ tiledExpandedPanel: true, openAs: "overlay" }), "overlay", "the new value wins")
   assert.equal(Model.openAs(Object.create({ openAs: "window" })), "popup", "own key only")
-})
-
-test("nextOpenAs cycles popup, overlay, window and back", () => {
-  assert.equal(Model.nextOpenAs("popup"), "overlay")
-  assert.equal(Model.nextOpenAs("overlay"), "window")
-  assert.equal(Model.nextOpenAs("window"), "popup")
-  assert.equal(Model.nextOpenAs("nonsense"), "overlay")
 })
 
 test("withOpenAs stores the mode and drops the switch it replaces", () => {
