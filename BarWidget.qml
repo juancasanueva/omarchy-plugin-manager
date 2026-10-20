@@ -60,6 +60,14 @@ BarWidget {
   // Project its confirmed count instead of starting another check for the bar.
   readonly property int updateCount: panelLoader.item ? panelLoader.item.behindCount : 0
 
+  // The settings switch hides this icon without uninstalling anything. The
+  // bar collapses an invisible widget's slot to zero width, so the layout
+  // entry keeps its place and can bring the icon back. Everything below the
+  // root keeps running while hidden — the panel loader is active regardless,
+  // so update checks, IPC and shell summons still work, which is what makes
+  // the hidden state recoverable from the pane itself.
+  readonly property bool hiddenFromBar: setting("hideBarWidget", false) === true
+
   // The output this bar instance draws on, so the expanded window can hand
   // back to the popup on the same monitor (see PopupBridge.js).
   readonly property string screenName: root.QsWindow.window && root.QsWindow.window.screen
@@ -104,6 +112,7 @@ BarWidget {
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
+  visible: !hiddenFromBar
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()

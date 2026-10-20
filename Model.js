@@ -234,6 +234,15 @@ function openAs(settings) {
   return tiledExpandedPanel(settings) ? "window" : "popup"
 }
 
+// Whether this plugin's own bar icon is hidden. The widget stays installed
+// and keeps its place in the layout — the bar collapses an invisible
+// widget's slot to zero width — so this is a presentation call, read as
+// strictly as the switches above: only the boolean true hides anything.
+function hideBarWidget(settings) {
+  return !!settings && hasOwnKey(settings, "hideBarWidget")
+    && settings.hideBarWidget === true
+}
+
 // The entry to write back with the mode set. The tiled switch it replaces is
 // dropped, so the file never says two things about the same choice.
 function withOpenAs(entry, mode) {

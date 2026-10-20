@@ -2361,6 +2361,71 @@ Panel {
             }
           }
 
+          // The bar collapses an invisible widget's slot to zero width, so
+          // hiding the icon never leaves the layout — and never locks the
+          // user out: this pane and the IPC stay alive behind the hidden
+          // icon, which is what makes the switch reversible.
+          Rectangle {
+            width: parent.width
+            height: Math.max(hideWidgetText.implicitHeight, hideWidgetSwitch.implicitHeight) + Style.space(12) * 2
+            radius: Style.cornerRadius
+            color: Style.normalFill
+            border.width: 1
+            border.color: Qt.alpha(root.secondaryForeground, 0.35)
+
+            Column {
+              id: hideWidgetText
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
+              anchors.right: hideWidgetSwitch.left
+              anchors.rightMargin: Style.space(16)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Hide the widget on the bar"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                // Never rich text: AutoText would fetch what a crafted string points at.
+                textFormat: Text.PlainText
+                width: parent.width
+                text: "Off: the plugin icon shows in its bar section. "
+                  + "On: the icon collapses out of the bar. The plugin stays installed and keeps checking for updates; "
+                  + "open it with omarchy-shell io.github.juancasanueva.plugin-manager open."
+                color: root.secondaryForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: hideWidgetSwitch
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(12)
+              anchors.verticalCenter: parent.verticalCenter
+              checked: store.hideBarWidget
+              interactive: true
+              busy: root.busy
+              foreground: root.contentForeground
+              onToggled: store.setHideBarWidget(!store.hideBarWidget)
+
+              PanelToolTip {
+                visible: hideWidgetSwitch.containsMouse
+                text: store.hideBarWidget ? "Icon hidden from the bar" : "Icon shown on the bar"
+                fontFamily: root.contentFontFamily
+              }
+            }
+          }
+
           // Restarting the shell is how every plugin, this one included, is
           // read again from disk: Quickshell keeps compiled QML in a cache
           // that a restart alone can go on serving.

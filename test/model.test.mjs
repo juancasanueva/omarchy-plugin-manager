@@ -35,6 +35,7 @@ const Model = new Function(
     repoPreviewUrl, previewCandidates, installedPreviewCandidates, rowInitials,
     parseUpdateReport, applyUpdateReport, applyPinnedUpdates, pinnedRequest, installRequest, pinnedUpdateTooltip, updateStatus, updateCompareLabel,
     unverifiedRequest, updateUnverifiedConfirmMessage, parseSelfSettings, parseSelfEntry, withSelfSetting, allowUnverifiedUpdates,
+    hideBarWidget,
     tiledExpandedPanel, openAs, withOpenAs, expandedModeFromPayload, selfEntryFromShellConfig,
     updateBadge, updateCompareUrl,
     updateReleaseCandidates, versionLabel, countBehind,
@@ -4581,6 +4582,25 @@ test("bar update dot projects the panel's confirmed count without changing butto
     /if \(b === Qt\.MiddleButton\) root\.refresh\(\)\s+else root\.openFromBar\(\)/)
 })
 
+test("the bar icon can be hidden by the plugin's own setting without unloading anything", () => {
+  const barWidget = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
+
+  // Strict boolean-true read of the inline entry the host injects as the
+  // widget's settings; anything else leaves the icon on the bar.
+  assert.match(barWidget,
+    /readonly property bool hiddenFromBar: setting\("hideBarWidget", false\) === true/)
+  // The bar collapses an invisible widget's slot to zero width, so making
+  // the root invisible is the whole mechanism: no layout mutation, no entry
+  // removed, and the switch can bring the icon back.
+  assert.match(barWidget,
+    /implicitWidth: button\.implicitWidth\s+implicitHeight: button\.implicitHeight\s+visible: !hiddenFromBar/)
+  // Everything that makes the hidden state recoverable stays alive: the
+  // panel loads regardless of visibility, and the IPC handlers answer.
+  assert.match(barWidget, /Loader \{\s*id: panelLoader\s*active: true/)
+  assert.match(barWidget, /IpcHandler \{\s*target: "io\.github\.juancasanueva\.plugin-manager"/)
+  assert.match(barWidget, /function open\(\): void \{ root\.open\(\) \}/)
+})
+
 // ---- Expanded panel --------------------------------------------------------
 
 test("expanded page admits only Arrange and otherwise defaults to the list", () => {
@@ -5706,6 +5726,17 @@ test("the plugin's own shell.json entry is read strictly and the setting is the 
   assert.equal(Model.allowUnverifiedInstalls({ allowUnverifiedUpdates: true }), false, "separate keys")
   assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedInstalls: true }), false, "separate keys")
 
+  // Hiding the bar icon is presentation only, under its own key: the same
+  // strict boolean-true read, never borrowed from the other settings.
+  assert.equal(Model.hideBarWidget({ hideBarWidget: true }), true)
+  for (const value of ["true", 1, "yes", null, undefined, {}, []])
+    assert.equal(Model.hideBarWidget({ hideBarWidget: value }), false, String(value))
+  assert.equal(Model.hideBarWidget({}), false)
+  assert.equal(Model.hideBarWidget(null), false)
+  assert.equal(Model.hideBarWidget(Object.create({ hideBarWidget: true })), false, "own key only")
+  assert.equal(Model.hideBarWidget({ allowUnverifiedUpdates: true }), false, "separate keys")
+  assert.equal(Model.allowUnverifiedUpdates({ hideBarWidget: true }), false, "separate keys")
+
   // The settings section rides ahead of the four fixed ones and is optional.
   const four = "===list===\n[]\n===catalog===\n[]\n===git===\n\n===manifest===\n"
   assert.equal(Model.splitSections(four).settings, "")
@@ -5845,6 +5876,10 @@ test("the expanded window's settings face owns the one switch and reads back thr
   assert.match(pane, /pinned to that exact commit, after a confirmation\./)
   assert.match(pane, /id: unverifiedInstallSwitch[\s\S]*?checked: store\.allowUnverifiedInstalls[\s\S]*?onToggled: store\.setAllowUnverifiedInstalls\(!store\.allowUnverifiedInstalls\)/)
   assert.ok(pane.indexOf("id: unverifiedSwitch") < pane.indexOf("id: unverifiedInstallSwitch"))
+  // The bar-icon switch sits below the history limit, under its own key.
+  assert.match(pane, /text: "Hide the widget on the bar"/)
+  assert.match(pane, /id: hideWidgetSwitch[\s\S]*?checked: store\.hideBarWidget[\s\S]*?onToggled: store\.setHideBarWidget\(!store\.hideBarWidget\)/)
+  assert.ok(pane.indexOf("id: unverifiedInstallSwitch") < pane.indexOf("id: hideWidgetSwitch"))
   // Every Text on the face is plain text.
   const texts = pane.split(/\bText \{/).slice(1)
   assert.ok(texts.length >= 3)
@@ -5867,6 +5902,10 @@ test("the expanded window's settings face owns the one switch and reads back thr
   // it re-stamps the cards already on screen rather than refetching them.
   assert.match(store, /readonly property bool allowUnverifiedInstalls: Model\.allowUnverifiedInstalls\(selfSettings\)/)
   assert.match(store, /onAllowUnverifiedInstallsChanged: restampCatalog\(\)/)
+  // Hiding the bar icon is the same read-and-write under its own key; the
+  // bar widget collapses out of the bar, so nothing else has to react.
+  assert.match(store, /readonly property bool hideBarWidget: Model\.hideBarWidget\(selfSettings\)/)
+  assert.match(store, /function setHideBarWidget\(value\) \{\s*return writeSelfSetting\("hideBarWidget", value, hideBarWidget\)\s*\}/)
   assert.equal(store.split("Model.applyPinnedUpdates(").length - 1,
     (store.match(/Model\.applyPinnedUpdates\([^\n]*, allowUnverifiedUpdates\)/g) || []).length,
     "every projection carries the setting")
@@ -5970,6 +6009,9 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(pane, /text: "Allow installing unverified plugins"/)
   assert.match(pane, /id: unverifiedInstallSwitch[\s\S]*?checked: store\.allowUnverifiedInstalls[\s\S]*?onToggled: store\.setAllowUnverifiedInstalls\(!store\.allowUnverifiedInstalls\)/)
   assert.ok(pane.indexOf("id: unverifiedSwitch") < pane.indexOf("id: unverifiedInstallSwitch"))
+  // The bar-icon switch is here too, wired to the same store value.
+  assert.match(pane, /text: "Hide the widget on the bar"/)
+  assert.match(pane, /id: hideWidgetSwitch[\s\S]*?checked: store\.hideBarWidget[\s\S]*?onToggled: store\.setHideBarWidget\(!store\.hideBarWidget\)/)
   // Every Text on the pane is plain text; the copy is the expanded window's.
   const texts = pane.split(/\bText \{/).slice(1)
   assert.ok(texts.length >= 3)
@@ -5979,6 +6021,9 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   const installCaption = /text: "Off: only listings with a marketplace-verified snapshot can be installed\. "\s*\+ "([^"]+)"/
   assert.equal(pane.match(installCaption)[1], expanded.match(installCaption)[1],
     "same install caption in both windows")
+  const hideCaption = /text: "Off: the plugin icon shows in its bar section\. "\s*\+ "([^"]+)"/
+  assert.equal(pane.match(hideCaption)[1], expanded.match(hideCaption)[1],
+    "same hide caption in both windows")
 
   // While the pane is up the key catcher hands keys to it, the list never
   // steals focus back, a tab switch drops it, and closing the popup resets it.

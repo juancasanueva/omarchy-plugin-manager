@@ -149,6 +149,12 @@ Item {
   // first load has run.
   readonly property string openAs: Model.openAs(selfSettings)
 
+  // Whether this plugin's own bar icon is hidden. The bar widget reads the
+  // same entry through the host and collapses out of the bar; the panel and
+  // its IPC stay alive behind it, so hiding the icon never locks the user
+  // out of the pane that brings it back.
+  readonly property bool hideBarWidget: Model.hideBarWidget(selfSettings)
+
   // Active-transaction history capacity. The helper reads the same shell.json
   // entry and enforces the same bounds, so this only moves the threshold at
   // which archival and refusal happen, never what counts as proven success.
@@ -191,6 +197,10 @@ Item {
 
   function setAllowUnverifiedInstalls(value) {
     return writeSelfSetting("allowUnverifiedInstalls", value, allowUnverifiedInstalls)
+  }
+
+  function setHideBarWidget(value) {
+    return writeSelfSetting("hideBarWidget", value, hideBarWidget)
   }
 
   // Same guards as a switch, for the one setting that is not a boolean, but
