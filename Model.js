@@ -939,6 +939,47 @@ function restartShellCommand() {
   return ["bash", "-c", RESTART_SHELL_SCRIPT, "restart-shell"]
 }
 
+// Run a command, then say what happened where the answer will still exist:
+// $1 summary, $2 detail, and everything after that is the command itself,
+// passed as separate arguments so none of it is ever parsed as shell.
+var NOTICE_SCRIPT = ""
+  + "set -u -o pipefail; "
+  + "summary=\"$1\"; detail=\"$2\"; shift 2; "
+  + "if ! err=$(\"$@\" 2>&1 >/dev/null | tail -1); then "
+  + "  notify-send -a 'Plugin Manager' \"$summary failed\" \"$err\"; exit 1; "
+  + "fi; "
+  + "notify-send -a 'Plugin Manager' \"$summary\" \"$detail\""
+
+// The host's remove disables the plugin before it deletes the folder, and
+// disabling reloads every plugin — this one too. A command owned by the
+// panel's Process died in that reload, leaving the plugin off but on disk.
+// So the command runs in a session of its own with no panel-owned stdio,
+// announcing itself like a detached action, while the Process only waits on
+// it: a panel that survives still gets the exit code and reloads its rows.
+var OBSERVED_SCRIPT = ""
+  + "set -u; "
+  + "setsid bash -c \"$1\" notice \"${@:2}\" </dev/null >/dev/null 2>&1 & "
+  + "wait \"$!\""
+
+function observedCommand(summary, detail, command) {
+  if (!command || command.length === 0) return []
+  return ["bash", "-c", OBSERVED_SCRIPT, "observed", NOTICE_SCRIPT, String(summary), String(detail)]
+    .concat(command)
+}
+
+// The host's IPC wrapper gives the shell two seconds, and the disable lands
+// while every plugin reloads, which can outlast that. The remove stops at the
+// first failed call, before the folder goes, so it gets the time it needs:
+// nothing is waiting on it now but its own notification.
+var REMOVE_IPC_TIMEOUT = "30s"
+
+function removeCommand(id, label) {
+  if (String(id || "") === "") return []
+  return observedCommand(successMessage("remove", label), "Its folder is deleted.",
+                         ["env", "OMARCHY_SHELL_IPC_TIMEOUT=" + REMOVE_IPC_TIMEOUT,
+                          "omarchy", "plugin", "remove", String(id), "--yes"])
+}
+
 // Moving is enabling with a section: `omarchy plugin enable <id> <section>`
 // hands the placement to the shell, which moves a widget that is already in
 // the bar rather than adding it a second time. Only a widget that takes a

@@ -703,7 +703,7 @@ Item {
   // destroyed surface is not a safe place for the command itself either.
   function runDetached(summary, detail, command, source) {
     if (busy || command.length === 0) return
-    Quickshell.execDetached(["bash", "-c", noticeScript, "notice", summary, detail].concat(command))
+    Quickshell.execDetached(["bash", "-c", Model.NOTICE_SCRIPT, "notice", summary, detail].concat(command))
     setStatus(summary, false, source)
   }
 
@@ -725,17 +725,6 @@ Item {
                 "The QML cache was cleared and every plugin reloaded.",
                 Model.restartShellCommand())
   }
-
-  // Run a command, then say what happened where the answer will still exist:
-  // $1 summary, $2 detail, and everything after that is the command itself,
-  // passed as separate arguments so none of it is ever parsed as shell.
-  readonly property string noticeScript: ""
-    + "set -u -o pipefail; "
-    + "summary=\"$1\"; detail=\"$2\"; shift 2; "
-    + "if ! err=$(\"$@\" 2>&1 >/dev/null | tail -1); then "
-    + "  notify-send -a 'Plugin Manager' \"$summary failed\" \"$err\"; exit 1; "
-    + "fi; "
-    + "notify-send -a 'Plugin Manager' \"$summary\" \"$detail\""
 
   // ---- GitHub stars ---------------------------------------------------------
   property bool starBusy: false
@@ -1074,7 +1063,7 @@ Item {
       }
       startAdd("")
     } else if (pendingKind === "remove") {
-      runAction("remove", pendingLabel, ["omarchy", "plugin", "remove", pendingId, "--yes"])
+      runAction("remove", pendingLabel, Model.removeCommand(pendingId, pendingLabel))
       cancelPending()
     }
   }
@@ -1451,7 +1440,7 @@ Item {
   }
 
   function runAction(kind, label, command) {
-    if (kind === "update" || busy || actionProc.running) return
+    if (kind === "update" || busy || actionProc.running || command.length === 0) return
     busyKind = kind
     busyId = label
     setStatus("", false)

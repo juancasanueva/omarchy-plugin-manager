@@ -1,7 +1,7 @@
 // Model.js is loaded by QML, so it has no module system of its own. Reading
 // and evaluating the source keeps the shipped file free of node-isms while
 // still letting the parsing rules be tested outside a running shell.
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -50,7 +50,7 @@ const Model = new Function(
     actionVerb, actionGerund, successMessage, failureMessage,
     needsPlacement, canEnable, placementOptions, enableCommand, findRow,
     parseLayoutSections, canMove, moveOptions, moveCommand, moveNote,
-    canDisable, disableCommand, enableNote, disableNote, restartShellCommand,
+    canDisable, disableCommand, enableNote, disableNote, restartShellCommand, removeCommand,
     catalogNeedsPlacement, browseModalFocusOwner, catalogPlacementConfirmationNote
   }`
 )()
@@ -704,6 +704,64 @@ test("restartShellCommand honours XDG_CACHE_HOME and restarts even when there is
     assert.equal(runRestartShell.called, "restart shell\n")
   } finally {
     rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("removeCommand names the plugin as one argv element and nothing without an id", () => {
+  const cmd = Model.removeCommand("a.b; rm -rf ~", "A B")
+  assert.deepEqual(cmd.slice(0, 2), ["bash", "-c"])
+  assert.deepEqual(cmd.slice(-7), ["env", "OMARCHY_SHELL_IPC_TIMEOUT=30s",
+                                   "omarchy", "plugin", "remove", "a.b; rm -rf ~", "--yes"])
+  assert.deepEqual(Model.removeCommand("", "A B"), [])
+})
+
+// Stub `omarchy` and `notify-send` on PATH; the stub remove takes a moment,
+// like the host's does while the shell reloads, then records that it finished.
+function startRemove(bin, exitCode) {
+  writeFileSync(join(bin, "omarchy"), "#!/bin/bash\nsleep 0.4\n"
+    + "printf '%s %s\\n' \"$OMARCHY_SHELL_IPC_TIMEOUT\" \"$*\" > \"$BIN/removed\"\n"
+    + (exitCode ? "echo 'remove broke' >&2\nexit " + exitCode + "\n" : ""))
+  writeFileSync(join(bin, "notify-send"), "#!/bin/bash\nprintf '%s\\n' \"$*\" > \"$BIN/notified\"\n")
+  chmodSync(join(bin, "omarchy"), 0o755)
+  chmodSync(join(bin, "notify-send"), 0o755)
+  const cmd = Model.removeCommand("acme.radio", "Radio")
+  return spawn(cmd[0], cmd.slice(1), { env: { PATH: bin + ":/usr/bin:/bin", BIN: bin } })
+}
+
+function exited(child) {
+  return new Promise(resolve => child.on("exit", code => resolve(code)))
+}
+
+async function waitFor(path) {
+  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise(r => setTimeout(r, 50))
+}
+
+test("removeCommand finishes the remove after the panel that started it is killed", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "pm-remove-bin-"))
+  try {
+    const child = startRemove(bin, 0)
+    await new Promise(r => setTimeout(r, 100))
+    child.kill("SIGKILL")
+    await exited(child)
+    assert.equal(existsSync(join(bin, "removed")), false)
+    await waitFor(join(bin, "notified"))
+    assert.equal(readFileSync(join(bin, "removed"), "utf8"), "30s plugin remove acme.radio --yes\n")
+    assert.equal(readFileSync(join(bin, "notified"), "utf8"),
+                 "-a Plugin Manager Removed Radio Its folder is deleted.\n")
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+test("removeCommand reports the remove's own exit code to a panel that survives", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "pm-remove-bin-"))
+  try {
+    assert.equal(await exited(startRemove(bin, 0)), 0)
+    assert.equal(await exited(startRemove(bin, 3)), 1)
+    assert.equal(readFileSync(join(bin, "notified"), "utf8"),
+                 "-a Plugin Manager Removed Radio failed remove broke\n")
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
   }
 })
 
@@ -4167,10 +4225,11 @@ test("Panel delegates data, processes and actions to PluginStore", () => {
   // shared by the popup and the expanded panel.
   assert.doesNotMatch(panel, /Process \{\s*id: releaseProbe/)
   assert.match(panel, /ReleaseNavigator \{ id: releaseNavigator \}/)
-  for (const script of ["updateScript", "noticeScript"]) {
-    assert.match(store, new RegExp(`readonly property string ${script}:`), script)
-    assert.doesNotMatch(panel, new RegExp(`property string ${script}`), script)
-  }
+  assert.match(store, /readonly property string updateScript:/)
+  assert.doesNotMatch(panel, /property string updateScript/)
+  // The notice wrapper is shared with removeCommand, so it lives in Model.js.
+  assert.match(store, /Model\.NOTICE_SCRIPT/)
+  assert.doesNotMatch(panel, /NOTICE_SCRIPT|noticeScript/)
   // Installing is the pinned helper's third shape now, not a bash script that
   // hands a url to the host command.
   assert.doesNotMatch(store, /installScript/)
@@ -5403,7 +5462,7 @@ test("the store owns the pending confirmation flow for both windows", () => {
   assert.match(store, /function askEnable\(row\) \{[\s\S]*?if \(!Model\.needsPlacement\(row\)\) \{[\s\S]*?startEnable\(row, ""\)\s*return true/)
   assert.match(store, /function askDisable\(row\) \{[\s\S]*?startDisable\(row\)\s*return true/)
   assert.match(store, /function confirmPending\(\) \{[\s\S]*?if \(pendingId !== "" && pendingPlacementNeeded\) \{\s*pendingKind = "place"/)
-  assert.match(store, /runAction\("remove", pendingLabel, \["omarchy", "plugin", "remove", pendingId, "--yes"\]\)/)
+  assert.match(store, /runAction\("remove", pendingLabel, Model\.removeCommand\(pendingId, pendingLabel\)\)/)
 
   // The popup keeps its bindings through aliases and thin wrappers.
   assert.match(panel, /PluginStore \{\s*id: store\s*externalBusy: !!root\.popupMoveOwner && root\.popupMoveOwner\.busy\s*selfId: root\.moduleName(?:\s*\/\/[^\n]*)*\s*shell: root\.bar \? root\.bar\.shell : null\s*\}/)
