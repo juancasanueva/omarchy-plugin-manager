@@ -1584,25 +1584,34 @@ class Updater:
         """
         require(section in SECTIONS, "Invalid bar section")
         env = {**self.session_env(), "HOME": self.home, "OMARCHY_PATH": OMARCHY}
-        for _ in range(40):
-            self.checkpoint("enable")
-            try:
-                listed = document(self.run(["/usr/bin/omarchy-plugin-list", "--json"],
-                                           cap=MAX_PLUGINS, extra_env=env), MAX_PLUGINS)
-            except Refused:
-                listed = None
-            if type(listed) is list and any(type(entry) is dict and entry.get("id") == plugin_id
-                                            for entry in listed):
-                break
-            time.sleep(0.05)
-        else:
-            raise Refused("Shell did not discover the plugin")
+
+        def wait_for(found):
+            for _ in range(40):
+                self.checkpoint("enable")
+                try:
+                    listed = document(self.run(["/usr/bin/omarchy-plugin-list", "--json"],
+                                               cap=MAX_PLUGINS, extra_env=env), MAX_PLUGINS)
+                except Refused:
+                    listed = None
+                if type(listed) is list and any(type(entry) is dict and entry.get("id") == plugin_id
+                                                and found(entry) for entry in listed):
+                    return True
+                time.sleep(0.05)
+            return False
+
+        require(wait_for(lambda entry: True), "Shell did not discover the plugin")
         # Only a plugin that takes a place in the bar gets one. The host
         # refuses a placement for a plugin that replaces the whole bar, so an
         # empty section is a bare enable rather than an empty argument.
         placement = ["--section", section] if section else []
-        self.run(["/usr/bin/omarchy-plugin-enable", plugin_id, *placement],
-                 cap=16384, extra_env=env)
+        try:
+            self.run(["/usr/bin/omarchy-plugin-enable", plugin_id, *placement],
+                     cap=16384, extra_env=env)
+        except Refused:
+            # The host's IPC wrapper gives up after two seconds, but the shell
+            # finishes the enable regardless; a fresh plugin's first load can
+            # outlast that wait. Only the shell's own state says it failed.
+            require(wait_for(lambda entry: entry.get("enabled") is True), "Enable failed")
 
     def notify(self, request, result):
         self.deadline = time.monotonic() + 5

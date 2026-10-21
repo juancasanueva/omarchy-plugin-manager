@@ -1082,6 +1082,30 @@ class TransactionTests(unittest.TestCase):
         for _, options in calls:
             self.assertEqual(options["env"]["LC_ALL"], "C.UTF-8")
 
+    def test_enable_that_outlasts_the_ipc_timeout_counts_once_the_shell_shows_it(self):
+        # The shell's IPC wrapper reports "not responding" after two seconds
+        # even though the enable still lands; only the shell's state decides.
+        updater = u.Updater(home=str(self.home))
+        real_popen = subprocess.Popen
+
+        def host(enabled):
+            def run(argv, **kwargs):
+                if argv[0].endswith("plugin-enable"):
+                    script = "import os, sys; os.write(2, b'omarchy-shell is not responding\\n'); sys.exit(1)"
+                else:
+                    out = json.dumps([{"id": NEW_ID, "enabled": enabled}]).encode()
+                    script = "import os; os.write(1, " + repr(out) + ")"
+                return real_popen(["/usr/bin/python3", "-I", "-S", "-c", script], **kwargs)
+            return run
+
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-1"}), \
+                patch.object(u.time, "sleep"):
+            with patch.object(subprocess, "Popen", side_effect=host(True)):
+                updater.enable(NEW_ID, "right")
+            with patch.object(subprocess, "Popen", side_effect=host(False)), \
+                    self.assertRaises(u.Refused):
+                updater.enable(NEW_ID, "right")
+
     def test_packed_nested_head_without_loose_parent_updates(self):
         self.git("-C", str(self.plugin), "branch", "-m", "feature/example")
         self.git("-C", str(self.plugin), "pack-refs", "--all", "--prune")
