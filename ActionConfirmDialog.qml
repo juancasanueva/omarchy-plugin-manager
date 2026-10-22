@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 
 // ChoiceDialog's modal idiom, with yes/no answers and an optional action that
@@ -15,11 +16,11 @@ Item {
   property bool actionVisible: false
   property int selectedIndex: 1
 
-  property color background: Color.background
-  property color foreground: Color.foreground
-  property color scrim: Util.alpha(Color.background, 0.7)
-  property color selectedBackground: Util.alpha(Color.foreground, 0.08)
-  property color selectedText: Color.accent
+  property color background: OmarchyTheme.Color.background
+  property color foreground: OmarchyTheme.Color.foreground
+  property color scrim: Util.alpha(OmarchyTheme.Color.background, 0.7)
+  property color selectedBackground: Util.alpha(OmarchyTheme.Color.foreground, 0.08)
+  property color selectedText: OmarchyTheme.Color.accent
   property string fontFamily: Style.font.family
   property int cornerRadius: Style.cornerRadius
 
@@ -126,7 +127,7 @@ Item {
               required property string modelData
               readonly property bool selected: root.selectedIndex === index
               readonly property bool urgent: index === 1
-              readonly property color highlight: urgent ? Color.urgent : root.selectedText
+              readonly property color highlight: urgent ? OmarchyTheme.Color.urgent : root.selectedText
 
               // The action occupies its own bounded row above the two answers.
               visible: index !== 2 || root.actionVisible
@@ -135,9 +136,9 @@ Item {
               x: buttons.width - width - (index === 0 ? width + Style.space(10) : 0)
               y: index === 2 ? 0 : buttons.height - height
               color: !selected ? "transparent"
-                : urgent ? Util.alpha(Color.urgent, 0.22) : root.selectedBackground
+                : urgent ? Util.alpha(OmarchyTheme.Color.urgent, 0.22) : root.selectedBackground
               borderSpec: Border.flat(selected ? highlight
-                : urgent ? Util.alpha(Color.urgent, 0.56) : Util.alpha(root.foreground, 0.38), Style.normalBorderWidth)
+                : urgent ? Util.alpha(OmarchyTheme.Color.urgent, 0.56) : Util.alpha(root.foreground, 0.38), Style.normalBorderWidth)
               radius: 0
 
               Text {

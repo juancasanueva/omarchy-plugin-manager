@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 
 // A modal that asks which one, rather than whether.
@@ -22,11 +23,11 @@ Item {
   // [{ value, label }] — Cancel is appended by the dialog, never by callers.
   property var choices: []
 
-  property color background: Color.background
-  property color foreground: Color.foreground
-  property color scrim: Util.alpha(Color.background, 0.7)
-  property color selectedBackground: Util.alpha(Color.foreground, 0.08)
-  property color selectedText: Color.accent
+  property color background: OmarchyTheme.Color.background
+  property color foreground: OmarchyTheme.Color.foreground
+  property color scrim: Util.alpha(OmarchyTheme.Color.background, 0.7)
+  property color selectedBackground: Util.alpha(OmarchyTheme.Color.foreground, 0.08)
+  property color selectedText: OmarchyTheme.Color.accent
   property string fontFamily: Style.font.family
   property int cornerRadius: Style.cornerRadius
 

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -18,7 +19,7 @@ Rectangle {
   property var entry: null
   property bool selected: false
   property bool actionsEnabled: true
-  property color foreground: Color.foreground
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
@@ -136,7 +137,7 @@ Rectangle {
         // panel, not as a coloured mat around the photo. The theme's base
         // background rather than the card's fill: the fill and the panel are
         // both translucent, and a see-through gutter shows the desktop.
-        color: thumbnail.status === Image.Ready ? Color.background : "transparent"
+        color: thumbnail.status === Image.Ready ? OmarchyTheme.Color.background : "transparent"
         gradient: thumbnail.status === Image.Ready ? null : previewTileGradient
 
         Gradient {
@@ -193,7 +194,7 @@ Rectangle {
         width: installedLabel.implicitWidth + Style.space(10)
         height: installedLabel.implicitHeight + Style.space(4)
         radius: height / 2
-        color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
+        color: Qt.rgba(OmarchyTheme.Color.background.r, OmarchyTheme.Color.background.g, OmarchyTheme.Color.background.b, 0.75)
 
         Text {
           id: installedLabel
@@ -203,7 +204,7 @@ Rectangle {
           // A ringed check, not the bare one verified wears: two identical
           // glyphs on the same preview would read as one badge repeated.
           text: "󰗠 installed"
-          color: Model.installedTint(Color.background)
+          color: Model.installedTint(OmarchyTheme.Color.background)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
@@ -220,7 +221,7 @@ Rectangle {
         width: verifiedLabel.implicitWidth + Style.space(10)
         height: verifiedLabel.implicitHeight + Style.space(4)
         radius: height / 2
-        color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
+        color: Qt.rgba(OmarchyTheme.Color.background.r, OmarchyTheme.Color.background.g, OmarchyTheme.Color.background.b, 0.75)
 
         Text {
           id: verifiedLabel
@@ -228,7 +229,7 @@ Rectangle {
           textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰄬 verified"
-          color: Color.accent
+          color: OmarchyTheme.Color.accent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }

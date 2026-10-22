@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -20,7 +21,7 @@ Rectangle {
   // The Marketplace heart count, formatted the same way; empty when unknown.
   property string hearts: ""
   property bool showSeparator: false
-  property color foreground: Color.foreground
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
@@ -49,7 +50,7 @@ Rectangle {
     anchors.bottomMargin: Style.space(6)
     width: Style.space(5)
     radius: width / 2
-    color: root.row && root.row.enabled ? Color.accent : Color.muted
+    color: root.row && root.row.enabled ? OmarchyTheme.Color.accent : OmarchyTheme.Color.muted
     opacity: root.row && root.row.enabled ? 1 : 0.5
   }
 
@@ -124,7 +125,7 @@ Rectangle {
           width: verifiedLabel.implicitWidth + Style.space(10)
           height: verifiedLabel.implicitHeight + Style.space(4)
           radius: height / 2
-          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+          color: Qt.rgba(OmarchyTheme.Color.accent.r, OmarchyTheme.Color.accent.g, OmarchyTheme.Color.accent.b, 0.16)
 
           Text {
             id: verifiedLabel
@@ -132,7 +133,7 @@ Rectangle {
             textFormat: Text.PlainText
             anchors.centerIn: parent
             text: "󰄬 verified"
-            color: Color.accent
+            color: OmarchyTheme.Color.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
@@ -261,7 +262,7 @@ Rectangle {
     anchors.bottom: parent.bottom
     height: 1
     visible: root.showSeparator
-    color: Color.muted
+    color: OmarchyTheme.Color.muted
     opacity: 0.35
   }
 }

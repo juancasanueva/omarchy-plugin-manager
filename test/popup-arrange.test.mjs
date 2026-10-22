@@ -343,7 +343,7 @@ test("popup overlay projects owner status, blocks background focus, and injects 
   assert.match(panelSource, /focusTarget: root\.arrangeOpen \? settingsPane : keyCatcher/)
   assert.match(panelSource, /arrangeBusy: !popupMoveOwner \|\| popupMoveOwner\.busy \|\| barMovePending/)
   for (const property of ["fill", "rowFill", "foreground", "mutedForeground", "borderColor", "accent", "fontFamily", "fontPixelSize", "spacing", "radius", "rowHeight"])
-    assert.match(pane.split("BarLayoutPane {")[1], new RegExp(`${property}: (root\\.|Color\\.|Style\\.)`))
+    assert.match(pane.split("BarLayoutPane {")[1], new RegExp(`${property}: (root\\.|OmarchyTheme\\.Color\\.|Style\\.)`))
 })
 
 test("hidden owner dispatches raw positional move once, globally locking expanded and popup", () => {

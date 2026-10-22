@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -46,7 +47,7 @@ Panel {
 
   // Guarded so the panel renders before the bar is injected (the bar-widget
   // contract instantiates it bare).
-  readonly property color contentForeground: bar ? bar.foreground : Color.foreground
+  readonly property color contentForeground: bar ? bar.foreground : OmarchyTheme.Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
   // Secondary copy follows the panel's own text role instead of the palette's
   // much darker generic muted swatch. At 54% over the current popup surface it
@@ -1035,7 +1036,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             visible: root.browsing
             text: "󰖟  Marketplace"
-            color: marketplaceMouse.containsMouse ? Color.accent : root.secondaryForeground
+            color: marketplaceMouse.containsMouse ? OmarchyTheme.Color.accent : root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             font.underline: marketplaceMouse.containsMouse
@@ -1080,7 +1081,7 @@ Panel {
             iconText: "󰒓"
             fontSize: Style.font.display
             tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
-            foreground: root.settingsOpen ? Color.accent : root.contentForeground
+            foreground: root.settingsOpen ? OmarchyTheme.Color.accent : root.contentForeground
             fontFamily: root.contentFontFamily
             enabled: !root.busy
             opacity: enabled ? 1 : 0.4
@@ -1589,7 +1590,7 @@ Panel {
             return root.status
           }
           color: root.statusIsError || (root.barMovePending && root.popupMoveOwner.statusIsError)
-            || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
+            || root.loadError !== "" || root.catalogError !== "" ? OmarchyTheme.Color.urgent : root.secondaryForeground
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -1657,7 +1658,7 @@ Panel {
               // Never rich text: AutoText would fetch what a crafted string points at.
               textFormat: Text.PlainText
               text: "[" + hint.modelData.key.toUpperCase() + "]"
-              color: Color.accent
+              color: OmarchyTheme.Color.accent
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -1982,7 +1983,7 @@ Panel {
         anchors.fill: parent
         z: 10
         visible: root.settingsOpen || root.arrangeOpen
-        color: Color.popups.background
+        color: OmarchyTheme.Color.popups.background
 
         // Nothing underneath reacts to a click while the pane is up.
         MouseArea { anchors.fill: parent }
@@ -2032,7 +2033,7 @@ Panel {
               : root.barMovePending ? root.popupMoveOwner.status
               : !root.barSnapshot ? "Bar layout unavailable; waiting for host configuration."
               : root.popupMoveOwner.status
-            color: root.popupMoveOwner && root.popupMoveOwner.statusIsError ? Color.urgent : root.secondaryForeground
+            color: root.popupMoveOwner && root.popupMoveOwner.statusIsError ? OmarchyTheme.Color.urgent : root.secondaryForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -2091,12 +2092,12 @@ Panel {
           onMoveRequested: function(snapshot, fromSection, rawIndex, targetSection, preRemovalGap) {
             root.requestBarMove(snapshot, fromSection, rawIndex, targetSection, preRemovalGap)
           }
-          fill: Color.menu.background
+          fill: OmarchyTheme.Color.menu.background
           rowFill: Style.normalFill
           foreground: root.contentForeground
           mutedForeground: root.secondaryForeground
-          borderColor: Color.menu.border
-          accent: Color.accent
+          borderColor: OmarchyTheme.Color.menu.border
+          accent: OmarchyTheme.Color.accent
           fontFamily: root.contentFontFamily
           fontPixelSize: Style.font.caption
           spacing: Style.space(8)
@@ -2417,7 +2418,7 @@ Panel {
         opened: root.detailsOpen
         entry: root.detailsEntry
         previewsEnabled: root.previewsSupported
-        background: Color.popups.background
+        background: OmarchyTheme.Color.popups.background
         foreground: root.contentForeground
         secondaryForeground: root.secondaryForeground
         fontFamily: root.contentFontFamily
@@ -2459,7 +2460,7 @@ Panel {
         confirmText: root.pendingKind === "cleanup" ? "Delete" : Model.actionVerb(root.pendingKind) === "Action"
           ? "Confirm"
           : Model.actionVerb(root.pendingKind)
-        background: Color.popups.background
+        background: OmarchyTheme.Color.popups.background
         foreground: root.contentForeground
         fontFamily: root.contentFontFamily
 
@@ -2483,7 +2484,7 @@ Panel {
         opened: root.placing
         message: root.placementMessage
         choices: root.placementChoices
-        background: Color.popups.background
+        background: OmarchyTheme.Color.popups.background
         foreground: root.contentForeground
         fontFamily: root.contentFontFamily
 

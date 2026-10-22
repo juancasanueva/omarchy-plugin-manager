@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "PopupBridge.js" as PopupBridge
 
@@ -157,6 +158,6 @@ BarWidget {
     width: Style.space(6)
     height: width
     radius: width / 2
-    color: Color.accent
+    color: OmarchyTheme.Color.accent
   }
 }

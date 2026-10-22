@@ -104,7 +104,7 @@ test("Arrange wires a themed board to guarded persistence with inventory labels"
   assert.match(board, /busy: root\.busy/)
   assert.match(board, /onMoveRequested:[\s\S]*?root\.requestBarMove\(/)
   for (const property of ["fill", "rowFill", "foreground", "mutedForeground", "borderColor", "accent", "fontFamily", "fontPixelSize", "spacing", "radius", "rowHeight"])
-    assert.match(board, new RegExp(`${property}: (root\\.|Color\\.|Style\\.)`))
+    assert.match(board, new RegExp(`${property}: (root\\.|OmarchyTheme\\.Color\\.|Style\\.)`))
 })
 
 test("Arrange status exposes pending outcomes and refused IDs instead of generic busy or inventory errors", () => {

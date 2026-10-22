@@ -991,6 +991,7 @@ file under `~/.config/omarchy/plugins/` hot-reloads the plugin code.
 ```bash
 omarchy plugin validate ~/.config/omarchy/plugins/io.github.juancasanueva.plugin-manager
 qmllint -I /usr/share/omarchy/shell BarWidget.qml Panel.qml Expanded.qml
+python3 test/check_theme_colors.py # actual palette bindings; run in an isolated Wayland session
 
 omarchy-shell shell rescanPlugins
 omarchy-shell shell toggle io.github.juancasanueva.plugin-manager '{}'

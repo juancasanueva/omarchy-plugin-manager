@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -67,7 +68,7 @@ Column {
       width: parent.width
       textFormat: Text.PlainText
       text: root.displayPath(entry.path)
-      color: Color.accent
+      color: OmarchyTheme.Color.accent
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
       font.bold: true

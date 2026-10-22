@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -31,7 +32,7 @@ Rectangle {
   // Stamped by the panel from the marketplace catalog; the row itself has no
   // way to know, and a missing catalog simply means no pill.
   property bool verified: false
-  property color foreground: Color.foreground
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
@@ -117,7 +118,7 @@ Rectangle {
     anchors.bottomMargin: Style.space(6)
     width: Style.space(5)
     radius: width / 2
-    color: root.row && root.row.enabled ? Color.accent : Color.muted
+    color: root.row && root.row.enabled ? OmarchyTheme.Color.accent : OmarchyTheme.Color.muted
     opacity: root.row && root.row.enabled ? 1 : 0.5
   }
 
@@ -184,7 +185,7 @@ Rectangle {
         width: verifiedLabel.implicitWidth + Style.space(10)
         height: verifiedLabel.implicitHeight + Style.space(4)
         radius: height / 2
-        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+        color: Qt.rgba(OmarchyTheme.Color.accent.r, OmarchyTheme.Color.accent.g, OmarchyTheme.Color.accent.b, 0.16)
 
         Text {
           id: verifiedLabel
@@ -192,7 +193,7 @@ Rectangle {
           textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰄬 verified"
-          color: Color.accent
+          color: OmarchyTheme.Color.accent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
@@ -206,8 +207,8 @@ Rectangle {
         height: updateBadge.implicitHeight + Style.space(4)
         radius: height / 2
         color: root.installable
-          ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
-          : Qt.rgba(Color.muted.r, Color.muted.g, Color.muted.b, 0.16)
+          ? Qt.rgba(OmarchyTheme.Color.accent.r, OmarchyTheme.Color.accent.g, OmarchyTheme.Color.accent.b, 0.16)
+          : Qt.rgba(OmarchyTheme.Color.muted.r, OmarchyTheme.Color.muted.g, OmarchyTheme.Color.muted.b, 0.16)
 
         Text {
           id: updateBadge
@@ -215,7 +216,7 @@ Rectangle {
           textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰚰 " + Model.updateBadge(root.row)
-          color: root.installable ? Color.accent : root.secondaryForeground
+          color: root.installable ? OmarchyTheme.Color.accent : root.secondaryForeground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           font.underline: updateBadgeMouse.containsMouse
@@ -254,7 +255,7 @@ Rectangle {
       textFormat: Text.PlainText
       width: parent.width
       text: Model.descriptionLine(root.row)
-      // The panel foreground, dimmed a little — not Color.muted. The author
+      // The panel foreground, dimmed a little — not OmarchyTheme.Color.muted. The author
       // and kinds above are glanceable metadata and can afford to recede; the
       // description is the line you are actually here to read, and muted
       // renders too close to the background on darker themes.
@@ -331,7 +332,7 @@ Rectangle {
         textFormat: Text.PlainText
         visible: root.versionText !== ""
         text: root.versionText
-        color: versionMouse.containsMouse ? Color.accent : root.secondaryForeground
+        color: versionMouse.containsMouse ? OmarchyTheme.Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: versionMouse.containsMouse
@@ -371,7 +372,7 @@ Rectangle {
         textFormat: Text.PlainText
         width: parent.width
         text: "󰊤  " + root.repoLabel
-        color: repoMouse.containsMouse ? Color.accent : root.secondaryForeground
+        color: repoMouse.containsMouse ? OmarchyTheme.Color.accent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.underline: repoMouse.containsMouse
@@ -478,7 +479,7 @@ Rectangle {
       iconText: root.updating ? "" : "󰑐"
       fontSize: Style.font.iconLarge
       tooltipText: Model.pinnedUpdateTooltip(root.row)
-      foreground: root.installable ? Color.accent : root.foreground
+      foreground: root.installable ? OmarchyTheme.Color.accent : root.foreground
       fontFamily: root.fontFamily
       // Nothing to pull is nothing to click: a confirmed up-to-date checkout
       // gets no button to press and therefore no spin to watch.
@@ -515,7 +516,7 @@ Rectangle {
       fontSize: Style.font.iconLarge
       tooltipText: "Remove this plugin"
       foreground: root.foreground
-      hoverColor: Color.urgent
+      hoverColor: OmarchyTheme.Color.urgent
       fontFamily: root.fontFamily
       enabled: root.actionsEnabled
       opacity: enabled ? 1 : 0.4
@@ -530,7 +531,7 @@ Rectangle {
     anchors.bottom: parent.bottom
     height: 1
     visible: root.showSeparator
-    color: Color.muted
+    color: OmarchyTheme.Color.muted
     opacity: 0.35
   }
 }

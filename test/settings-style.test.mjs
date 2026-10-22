@@ -55,7 +55,7 @@ test("SettingsInfo shares safe, content-sized Info and About cards", () => {
   const path = byId(all, "pathValue")
   assert.equal(label.parent, path.parent)
   assert.match(label.body, /color: root\.secondaryForeground/)
-  assert.match(path.body, /color: Color\.accent/)
+  assert.match(path.body, /color: OmarchyTheme\.Color\.accent/)
   assert.match(path.body, /text: root\.displayPath\(entry\.path\)/)
   assert.match(path.body, /font\.bold: true/)
   for (const text of [label, path]) assert.match(text.body, /width: parent\.width/)

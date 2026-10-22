@@ -3702,7 +3702,7 @@ test("Marketplace is drawn as a link, in the same idiom as the repository links"
   assert.doesNotMatch(link, /bordered: true/)
   assert.match(link, /textFormat: Text\.PlainText/)
   assert.match(link, /text: "󰖟  Marketplace"/)
-  assert.match(link, /color: marketplaceMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+  assert.match(link, /color: marketplaceMouse\.containsMouse \? OmarchyTheme\.Color\.accent : root\.secondaryForeground/)
   assert.match(link, /font\.underline: marketplaceMouse\.containsMouse/)
   assert.match(link, /cursorShape: Qt\.PointingHandCursor/)
   assert.match(link, /PanelToolTip \{\s+visible: marketplaceMouse\.containsMouse/)
@@ -3817,7 +3817,7 @@ test("Installed rows wear the marketplace's verified pill beside the name", () =
   const pill = row.slice(row.indexOf("id: verifiedPill"), row.indexOf("id: verifiedPill") + 900)
   assert.match(pill, /visible: root\.verified/)
   assert.match(pill, /text: "󰄬 verified"/)
-  assert.match(pill, /color: Color\.accent/)
+  assert.match(pill, /color: OmarchyTheme\.Color\.accent/)
   assert.match(pill, /textFormat: Text\.PlainText/)
   // The name yields to the pill instead of eliding it off the row.
   assert.match(row, /id: name[\s\S]*?width: Math\.max\(0, Math\.min\(implicitWidth,[\s\S]*?verifiedPill\.visible \? verifiedPill\.width \+ nameLine\.spacing : 0/)
@@ -4027,7 +4027,7 @@ test("one hint bar on both tabs: filter hints left, action hints right, keys cyc
   assert.match(bar, /model: Model\.actionHints\(root\.browsing, root\.bulkUpdatableCount > 0\)/)
   // One delegate for both groups, keys shown uppercase in the accent.
   assert.equal(bar.split("delegate: hintDelegate").length - 1, 2)
-  assert.match(bar, /text: "\[" \+ hint\.modelData\.key\.toUpperCase\(\) \+ "\]"\s+color: Color\.accent/)
+  assert.match(bar, /text: "\[" \+ hint\.modelData\.key\.toUpperCase\(\) \+ "\]"\s+color: OmarchyTheme\.Color\.accent/)
   assert.match(bar, /color: hint\.modelData\.active \? root\.contentForeground : root\.secondaryForeground/)
   assert.doesNotMatch(bar, /Text\.RichText|Text\.AutoText|StyledText/)
 
@@ -4166,7 +4166,7 @@ test("Browse details and filters wire keyboard interaction through guarded modal
   assert.match(details, /Qt\.Key_Escape/)
   assert.match(details, /Qt\.Key_Tab/)
   assert.match(details, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
-  assert.match(details, /selected \? Color\.accent/)
+  assert.match(details, /selected \? OmarchyTheme\.Color\.accent/)
   assert.match(choice, /Qt\.Key_Escape/)
   assert.match(choice, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
 
@@ -4535,12 +4535,12 @@ test("secondary text uses one panel-derived foreground without brightening disab
 
   assert.match(pluginRow, /required property color secondaryForeground/)
   assert.match(pluginRow,
-    /color: versionMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+    /color: versionMouse\.containsMouse \? OmarchyTheme\.Color\.accent : root\.secondaryForeground/)
   assert.match(pluginRow,
-    /color: repoMouse\.containsMouse \? Color\.accent : root\.secondaryForeground/)
+    /color: repoMouse\.containsMouse \? OmarchyTheme\.Color\.accent : root\.secondaryForeground/)
   assert.match(pluginRow,
     /color: Model\.hasDescription\(root\.row\) \? root\.foreground : root\.secondaryForeground/)
-  assert.match(pluginRow, /color: Color\.muted\s+opacity: 0\.35/)
+  assert.match(pluginRow, /color: OmarchyTheme\.Color\.muted\s+opacity: 0\.35/)
   assert.match(pluginRow, /opacity: root\.canToggle \? 1 : 0\.4/)
 
   assert.match(catalogCard, /required property color secondaryForeground/)
@@ -4621,7 +4621,7 @@ test("bar update dot projects the panel's confirmed count without changing butto
   assert.match(barWidget,
     /anchors\.right: button\.right\s+anchors\.rightMargin: Style\.space\(3\)\s+anchors\.top: button\.top\s+anchors\.topMargin: Style\.space\(5\)/)
   assert.match(barWidget,
-    /width: Style\.space\(6\)\s+height: width\s+radius: width \/ 2\s+color: Color\.accent/)
+    /width: Style\.space\(6\)\s+height: width\s+radius: width \/ 2\s+color: OmarchyTheme\.Color\.accent/)
   assert.doesNotMatch(barWidget, /id: badgeLabel|String\(root\.updateCount\)/)
   assert.match(barWidget, /enabled: false/)
   const tooltipExpression = /tooltipText:\s*(.+)/.exec(barWidget)?.[1]
@@ -4821,7 +4821,7 @@ test("the expanded list row carries no actions or metadata lines", () => {
   // Nothing actionable and no metadata: no toggle, icons, author line or link.
   for (const gone of ["ToggleSwitch", "PanelActionButton", "metaLine", "repoShortLabel", "updateBadge", "󰩹", "󰑐"])
     assert.doesNotMatch(row, new RegExp(gone), gone)
-  assert.match(row, /id: stateBar[\s\S]*?color: root\.row && root\.row\.enabled \? Color\.accent : Color\.muted/)
+  assert.match(row, /id: stateBar[\s\S]*?color: root\.row && root\.row\.enabled \? OmarchyTheme\.Color\.accent : OmarchyTheme\.Color\.muted/)
   assert.match(row, /id: verifiedPill[\s\S]*?visible: root\.verified[\s\S]*?text: "󰄬 verified"/)
   // The state bar already says on or off; a pill saying it again is noise.
   assert.doesNotMatch(row, /id: statePill|"On"|"Off"/)
@@ -4950,8 +4950,8 @@ test("the popup comparison chip follows verification on the title line, not the 
   assert.match(chip, /anchors\.verticalCenter: parent\.verticalCenter/)
   assert.match(chip, /text: "󰚰 " \+ Model\.updateBadge\(root\.row\)/)
   assert.match(chip, /textFormat: Text\.PlainText/)
-  assert.match(chip, /color: root\.installable\s*\? Qt\.rgba\(Color\.accent\.r, Color\.accent\.g, Color\.accent\.b, 0\.16\)\s*: Qt\.rgba\(Color\.muted\.r, Color\.muted\.g, Color\.muted\.b, 0\.16\)/)
-  assert.match(chip, /color: root\.installable \? Color\.accent : root\.secondaryForeground/)
+  assert.match(chip, /color: root\.installable\s*\? Qt\.rgba\(OmarchyTheme\.Color\.accent\.r, OmarchyTheme\.Color\.accent\.g, OmarchyTheme\.Color\.accent\.b, 0\.16\)\s*: Qt\.rgba\(OmarchyTheme\.Color\.muted\.r, OmarchyTheme\.Color\.muted\.g, OmarchyTheme\.Color\.muted\.b, 0\.16\)/)
+  assert.match(chip, /color: root\.installable \? OmarchyTheme\.Color\.accent : root\.secondaryForeground/)
   assert.match(chip, /font\.underline: updateBadgeMouse\.containsMouse/)
   assert.match(chip, /enabled: root\.compareUrl !== ""/)
   assert.match(chip, /onClicked: root\.openComparison\(\)/)
@@ -5210,7 +5210,7 @@ test("CatalogDetailsPane shows the cover on the left and the listing on the righ
   const pane = readFileSync(new URL("../CatalogDetailsPane.qml", import.meta.url), "utf8")
   for (const decl of [
     "property var entry: null", "property bool previewsEnabled: true", "property bool actionsEnabled: true",
-    "property color background: Color.menu.background", "required property color secondaryForeground",
+    "property color background: OmarchyTheme.Color.menu.background", "required property color secondaryForeground",
     "signal backRequested()", "signal installRequested()", "signal previewUndecodable()",
     "signal githubNavigationRequested(var candidates, string fallbackUrl)", "signal repositoryNavigationRequested(string url)"
   ]) assert.ok(pane.includes(decl), decl)
@@ -5238,7 +5238,7 @@ test("CatalogDetailsPane shows the cover on the left and the listing on the righ
   assert.match(right, /text: Model\.catalogMetaLine\(root\.entry\)/)
   assert.match(right, /id: verifiedPill[\s\S]*?visible: root\.verified[\s\S]*?text: "󰄬 verified"/)
   assert.match(right, /model: root\.fieldRows/)
-  assert.match(right, /text: root\.blockedReason[\s\S]*?color: Color\.urgent/)
+  assert.match(right, /text: root\.blockedReason[\s\S]*?color: OmarchyTheme\.Color\.urgent/)
   const actions = right.slice(right.indexOf("id: actionRow"))
   assert.match(right, /Flow \{\s*id: actionRow/)
   assert.match(actions, /id: installButton[\s\S]*?visible: root\.entry \? root\.entry\.installable === true : false[\s\S]*?iconText: "󰐕"[\s\S]*?enabled: root\.actionsEnabled[\s\S]*?onClicked: root\.installRequested\(\)/)
@@ -5329,7 +5329,7 @@ test("card previews fit inside the frame instead of cropping", () => {
   const preview = card.slice(card.indexOf("id: preview"), card.indexOf("id: preview") + 2600)
   // Opaque gutters: the card fill and the panel are both translucent, so a
   // transparent tile let the desktop show through beside the picture.
-  assert.match(preview, /id: previewTile[\s\S]*?color: thumbnail\.status === Image\.Ready \? Color\.background : "transparent"[\s\S]*?gradient: thumbnail\.status === Image\.Ready \? null : previewTileGradient/)
+  assert.match(preview, /id: previewTile[\s\S]*?color: thumbnail\.status === Image\.Ready \? OmarchyTheme\.Color\.background : "transparent"[\s\S]*?gradient: thumbnail\.status === Image\.Ready \? null : previewTileGradient/)
   assert.match(preview, /id: thumbnail[\s\S]*?fillMode: Image\.PreserveAspectFit/)
   assert.doesNotMatch(preview, /PreserveAspectCrop/)
 })
@@ -5604,7 +5604,7 @@ test("InstalledDetails shows a row's facts and the same four actions as its row"
   assert.match(details, /readonly property bool upToDate: Model\.upToDate\(row\)/)
   assert.match(details, /readonly property bool canEnable: Model\.canEnable\(row\)/)
   assert.match(details, /readonly property bool canDisable: Model\.canDisable\(row\)/)
-  assert.match(details, /text: "Remove"[\s\S]*?accent: Color\.urgent/)
+  assert.match(details, /text: "Remove"[\s\S]*?accent: OmarchyTheme\.Color\.urgent/)
 })
 
 
@@ -6000,7 +6000,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(button, /anchors\.right: windowButton\.left/)
   assert.match(button, /iconText: "󰒓"/)
   assert.match(button, /tooltipText: root\.settingsOpen \? "Back to the list" : "Settings"/)
-  assert.match(button, /foreground: root\.settingsOpen \? Color\.accent : root\.contentForeground/)
+  assert.match(button, /foreground: root\.settingsOpen \? OmarchyTheme\.Color\.accent : root\.contentForeground/)
   assert.match(button, /onClicked: root\.settingsOpen \? root\.closeSettings\(\) : root\.openSettings\(\)/)
   assert.match(panel, /id: tabs\s*anchors\.right: arrangeButton\.left/)
 
@@ -6010,7 +6010,7 @@ test("the popup's settings pane owns the same switch and writes through the bar'
   assert.match(panel, /function closeSettings\(\) \{\s*if \(!settingsOpen\) return\s*revokeReleaseNavigation\(\)\s*settingsOpen = false\s*\}/)
   const pane = panel.slice(panel.indexOf("id: settingsPane"), panel.indexOf("PluginDetails {"))
   assert.match(pane, /anchors\.fill: parent\s*z: 10\s*visible: root\.settingsOpen/)
-  assert.match(pane, /color: Color\.popups\.background/)
+  assert.match(pane, /color: OmarchyTheme\.Color\.popups\.background/)
   assert.match(pane, /MouseArea \{ anchors\.fill: parent \}/)
   assert.match(pane, /onVisibleChanged: \{\s*if \(visible\) forceActiveFocus\(\)\s*else root\.returnFocusToList\(\)\s*\}/)
   assert.match(pane, /if \(event\.key !== Qt\.Key_Escape && event\.key !== Qt\.Key_Backspace\) return\s*root\.closeSettings\(\)\s*event\.accepted = true/)
@@ -6086,12 +6086,12 @@ test("the expanded panel opens as a tiled window when openAs says so, and as the
   // to click, and Hyprland's own close goes back through dismiss().
   const overlay = expanded.slice(expanded.indexOf("PanelWindow {"), expanded.indexOf("FloatingWindow {"))
   assert.match(overlay, /id: window\s*visible: root\.opened && !root\.tiled/)
-  assert.match(overlay, /color: Color\.menu\.scrim[\s\S]*?onClicked: root\.dismiss\(\)/)
+  assert.match(overlay, /color: OmarchyTheme\.Color\.menu\.scrim[\s\S]*?onClicked: root\.dismiss\(\)/)
   const tiled = expanded.slice(expanded.indexOf("FloatingWindow {"), expanded.indexOf("BorderSurface {"))
   assert.match(tiled, /id: tiledWindow/)
   assert.match(tiled, /visible: root\.opened && root\.tiled/)
   assert.match(tiled, /title: "Plugin Manager"/)
-  assert.match(tiled, /color: Color\.menu\.background/)
+  assert.match(tiled, /color: OmarchyTheme\.Color\.menu\.background/)
   assert.match(tiled, /minimumSize: Qt\.size\(640, 480\)/)
   assert.doesNotMatch(tiled, /scrim/)
   assert.match(tiled, /onClosed: root\.dismiss\(\)/)

@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -17,7 +18,7 @@ Item {
   property bool actionsEnabled: true
   property bool updateEnabled: true
   property bool updating: false
-  property color foreground: Color.foreground
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
@@ -41,14 +42,14 @@ Item {
   // preview.png still applies.
   property var catalogEntry: null
   property bool previewsEnabled: true
-  property color background: Color.menu.background
+  property color background: OmarchyTheme.Color.menu.background
   signal previewUndecodable()
   property int previewIndex: 0
   onRowChanged: previewIndex = 0
   readonly property var previewSources: Model.installedPreviewCandidates(row, catalogEntry, previewsEnabled)
   readonly property string previewSource: previewIndex < previewSources.length
     ? previewSources[previewIndex] : ""
-  readonly property color accent: catalogEntry ? Model.accentColor(catalogEntry.accent) : Color.accent
+  readonly property color accent: catalogEntry ? Model.accentColor(catalogEntry.accent) : OmarchyTheme.Color.accent
 
   readonly property string repoUrl: Model.rowRepoUrl(row)
   // The version is a link to its Release, resolved at click time like the
@@ -137,7 +138,7 @@ Item {
           width: verifiedLabel.implicitWidth + Style.space(10)
           height: verifiedLabel.implicitHeight + Style.space(4)
           radius: height / 2
-          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+          color: Qt.rgba(OmarchyTheme.Color.accent.r, OmarchyTheme.Color.accent.g, OmarchyTheme.Color.accent.b, 0.16)
 
           Text {
             id: verifiedLabel
@@ -145,7 +146,7 @@ Item {
             textFormat: Text.PlainText
             anchors.centerIn: parent
             text: "󰄬 verified"
-            color: Color.accent
+            color: OmarchyTheme.Color.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
@@ -236,7 +237,7 @@ Item {
           iconSpinning: root.updating
           tooltipText: Model.pinnedUpdateTooltip(root.row)
           bordered: true
-          foreground: root.installable ? Color.accent : root.foreground
+          foreground: root.installable ? OmarchyTheme.Color.accent : root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           enabled: root.actionsEnabled && root.updateEnabled && !root.upToDate && !!root.row && (root.row.pinnedEligible === true || root.row.unverifiedEligible === true)
@@ -253,7 +254,7 @@ Item {
           foreground: root.foreground
           // The kit's Button paints its hover state from `accent`; urgent is
           // the same warning the row's trash icon gives on hover.
-          accent: Color.urgent
+          accent: OmarchyTheme.Color.urgent
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           enabled: root.actionsEnabled
@@ -378,7 +379,7 @@ Item {
               anchors.right: parent.right
               anchors.top: parent.top
               text: field.modelData.value
-              color: field.isLink && linkMouse.containsMouse ? Color.accent : root.foreground
+              color: field.isLink && linkMouse.containsMouse ? OmarchyTheme.Color.accent : root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.underline: field.isLink && linkMouse.containsMouse

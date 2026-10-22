@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -21,8 +22,8 @@ Item {
   property bool actionsEnabled: true
   readonly property string starSlug: Model.starSlugFor(entry)
   readonly property bool starActionable: starSlug !== ""
-  property color background: Color.menu.background
-  property color foreground: Color.foreground
+  property color background: OmarchyTheme.Color.menu.background
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
   property string fontFamily: Style.font.family
 
@@ -308,7 +309,7 @@ Item {
             width: verifiedLabel.implicitWidth + Style.space(10)
             height: verifiedLabel.implicitHeight + Style.space(4)
             radius: height / 2
-            color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+            color: Qt.rgba(OmarchyTheme.Color.accent.r, OmarchyTheme.Color.accent.g, OmarchyTheme.Color.accent.b, 0.16)
 
             Text {
               id: verifiedLabel
@@ -316,7 +317,7 @@ Item {
               textFormat: Text.PlainText
               anchors.centerIn: parent
               text: "󰄬 verified"
-              color: Color.accent
+              color: OmarchyTheme.Color.accent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
@@ -410,7 +411,7 @@ Item {
           width: parent.width
           visible: root.blockedReason !== ""
           text: root.blockedReason
-          color: Color.urgent
+          color: OmarchyTheme.Color.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap

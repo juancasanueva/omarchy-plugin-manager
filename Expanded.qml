@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 import "PopupBridge.js" as PopupBridge
@@ -66,7 +67,7 @@ Item {
     printErrors: false
   }
 
-  readonly property color foreground: Color.menu.text
+  readonly property color foreground: OmarchyTheme.Color.menu.text
   readonly property color secondaryForeground: Util.alpha(foreground, 0.54)
   readonly property string fontFamily: Style.font.family
 
@@ -755,7 +756,7 @@ Item {
 
     Rectangle {
       anchors.fill: parent
-      color: Color.menu.scrim
+      color: OmarchyTheme.Color.menu.scrim
 
       MouseArea {
         anchors.fill: parent
@@ -771,7 +772,7 @@ Item {
     id: tiledWindow
     visible: root.opened && root.tiled
     title: "Plugin Manager"
-    color: Color.menu.background
+    color: OmarchyTheme.Color.menu.background
     minimumSize: Qt.size(640, 480)
     implicitWidth: Style.space(1180)
     implicitHeight: Style.space(820)
@@ -793,9 +794,9 @@ Item {
     height: root.tiled ? root.cardHost.height
       : Math.min(Style.space(820), window.height - Style.gapsOut * 4)
     radius: root.tiled ? 0 : Style.cornerRadius
-    color: Color.menu.background
+    color: OmarchyTheme.Color.menu.background
     borderSpec: root.tiled ? Border.none()
-      : Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+      : Border.surfaceSpec("menu", "border", OmarchyTheme.Color.menu.border, Math.max(1, Style.space(2)))
     padding: Style.spacing.panelPadding
 
     MouseArea { anchors.fill: parent; onClicked: {} }
@@ -1001,7 +1002,7 @@ Item {
           anchors.verticalCenter: parent.verticalCenter
           visible: root.browsing
           text: "󰖟  Marketplace"
-          color: marketplaceMouse.containsMouse ? Color.accent : root.secondaryForeground
+          color: marketplaceMouse.containsMouse ? OmarchyTheme.Color.accent : root.secondaryForeground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           font.underline: marketplaceMouse.containsMouse
@@ -1045,7 +1046,7 @@ Item {
           iconText: "󰕮"
           fontSize: Style.font.display
           tooltipText: "Arrange"
-          foreground: root.arrangeOpen ? Color.accent : root.foreground
+          foreground: root.arrangeOpen ? OmarchyTheme.Color.accent : root.foreground
           fontFamily: root.fontFamily
           onClicked: root.arrangeOpen ? root.closeArrange() : root.openArrange()
         }
@@ -1061,7 +1062,7 @@ Item {
           iconText: "󰒓"
           fontSize: Style.font.display
           tooltipText: root.settingsOpen ? "Back to the list" : "Settings"
-          foreground: root.settingsOpen ? Color.accent : root.foreground
+          foreground: root.settingsOpen ? OmarchyTheme.Color.accent : root.foreground
           fontFamily: root.fontFamily
           onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
         }
@@ -1396,7 +1397,7 @@ Item {
           if (!root.browsing && root.loadError !== "") return root.loadError
           return root.statusSource === "layout" ? "" : root.status
         }
-        color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? Color.urgent : root.secondaryForeground
+        color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? OmarchyTheme.Color.urgent : root.secondaryForeground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
@@ -1462,7 +1463,7 @@ Item {
               // Never rich text: AutoText would fetch what a crafted string points at.
               textFormat: Text.PlainText
               text: "[" + hint.modelData.key.toUpperCase() + "]"
-              color: Color.accent
+              color: OmarchyTheme.Color.accent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -1808,7 +1809,7 @@ Item {
         entry: root.detailsEntry
         previewsEnabled: root.previewsSupported
         actionsEnabled: !root.busy
-        background: Color.menu.background
+        background: OmarchyTheme.Color.menu.background
         foreground: root.foreground
         secondaryForeground: root.secondaryForeground
         fontFamily: root.fontFamily
@@ -1941,12 +1942,12 @@ Item {
           onMoveRequested: function(snapshot, fromSection, fromIndex, section, gap) {
             root.requestBarMove(snapshot, fromSection, fromIndex, section, gap)
           }
-          fill: Color.menu.background
+          fill: OmarchyTheme.Color.menu.background
           rowFill: Style.normalFill
           foreground: root.foreground
           mutedForeground: root.secondaryForeground
-          borderColor: Color.menu.border
-          accent: Color.accent
+          borderColor: OmarchyTheme.Color.menu.border
+          accent: OmarchyTheme.Color.accent
           fontFamily: root.fontFamily
           fontPixelSize: Style.font.caption
           spacing: Style.space(8)
@@ -2272,7 +2273,7 @@ Item {
         confirmText: root.pendingKind === "cleanup" ? "Delete" : Model.actionVerb(root.pendingKind) === "Action"
           ? "Confirm"
           : Model.actionVerb(root.pendingKind)
-        background: Color.menu.background
+        background: OmarchyTheme.Color.menu.background
         foreground: root.foreground
         fontFamily: root.fontFamily
 
@@ -2296,7 +2297,7 @@ Item {
         opened: root.placing
         message: root.placementMessage
         choices: root.placementChoices
-        background: Color.menu.background
+        background: OmarchyTheme.Color.menu.background
         foreground: root.foreground
         fontFamily: root.fontFamily
 

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as OmarchyTheme
 import qs.Ui
 import "Model.js" as Model
 
@@ -11,10 +12,10 @@ Item {
 
   property bool opened: false
   property var entry: null
-  property color background: Color.background
-  property color foreground: Color.foreground
+  property color background: OmarchyTheme.Color.background
+  property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
-  property color scrim: Util.alpha(Color.background, 0.7)
+  property color scrim: Util.alpha(OmarchyTheme.Color.background, 0.7)
   property string fontFamily: Style.font.family
   property int selectedAction: 0
 
@@ -144,7 +145,7 @@ Item {
       height: Math.min(parent.height - Style.space(32), Style.space(600))
       anchors.centerIn: parent
       color: root.background
-      borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+      borderSpec: Border.flat(OmarchyTheme.Color.accent, Style.normalBorderWidth)
       padding: Style.space(18)
       radius: Style.cornerRadius
 
@@ -334,7 +335,7 @@ Item {
                     anchors.right: parent.right
                     anchors.top: parent.top
                     text: modelData.value
-                    color: field.isAction && actionMouse.containsMouse ? Color.accent : root.foreground
+                    color: field.isAction && actionMouse.containsMouse ? OmarchyTheme.Color.accent : root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     font.underline: field.isAction && actionMouse.containsMouse
@@ -359,7 +360,7 @@ Item {
               visible: root.blockedReason !== ""
               height: visible ? blockedText.implicitHeight + Style.space(12) : 0
               radius: Style.cornerRadius
-              color: Util.alpha(Color.urgent, 0.10)
+              color: Util.alpha(OmarchyTheme.Color.urgent, 0.10)
 
               Text {
                 id: blockedText
@@ -401,7 +402,7 @@ Item {
                   height: Style.space(34)
                   color: selected ? Util.alpha(root.foreground, 0.08) : "transparent"
                   borderSpec: Border.flat(
-                    selected ? Color.accent : Util.alpha(root.foreground, 0.38),
+                    selected ? OmarchyTheme.Color.accent : Util.alpha(root.foreground, 0.38),
                     Style.normalBorderWidth)
                   radius: 0
 
@@ -409,7 +410,7 @@ Item {
                     textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: modelData.label
-                    color: selected ? Color.accent : root.foreground
+                    color: selected ? OmarchyTheme.Color.accent : root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                   }
