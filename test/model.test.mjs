@@ -2353,7 +2353,7 @@ test("Browse options are derived from catalog kinds and keep fixed policy labels
     { value: "all", label: "All" },
     { value: "panel", label: "Panel" }
   ])
-  assert.deepEqual(Model.catalogAvailabilityOptions().map(o => o.label), ["All", "Available", "Installed"])
+  assert.deepEqual(Model.catalogAvailabilityOptions().map(o => o.label), ["All", "Available", "Installed", "Watching"])
 })
 
 test("details name an unreviewed offer as unreviewed, in both windows", () => {
@@ -3759,6 +3759,7 @@ test("installedFilterHints mirrors the Browse row for Source, Kind, and Status",
 test("actionHints puts Update All first and lights it only when a bulk update is available", () => {
   assert.deepEqual(Model.actionHints(true), [
     { key: "↵", text: "DETAILS", active: false },
+    { key: "w", text: "WATCH", active: false },
     { key: "/", text: "SEARCH", active: false }
   ])
   assert.deepEqual(Model.actionHints(false, false), [
@@ -4162,7 +4163,7 @@ test("Browse details and filters wire keyboard interaction through guarded modal
   assert.match(panel, /onDetailsRequested:[\s\S]*root\.openDetails\(modelData\)/)
   assert.match(panel, /text: "Clear filters"[\s\S]*onClicked: root\.clearCatalogFilters\(\)/)
   assert.match(panel, /readonly property var sortedCatalog: Model\.sortCatalog\(catalog, catalogSort\)/)
-  assert.match(panel, /Model\.filterCatalog\(\s*sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery\)/)
+  assert.match(panel, /Model\.filterCatalog\(\s*sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery,[\s\S]*?store\.watchedIds : null\)/)
   assert.match(details, /Qt\.Key_Escape/)
   assert.match(details, /Qt\.Key_Tab/)
   assert.match(details, /Qt\.Key_Return \|\| event\.key === Qt\.Key_Enter/)
@@ -5740,7 +5741,7 @@ test("the plugin's own shell.json entry is read strictly and the setting is the 
   assert.deepEqual(Model.parseSelfSettings(JSON.stringify({ id: "x", allowUnverifiedUpdates: true, n: 2, s: "a",
     nested: { a: 1 }, list: [1], big: "x".repeat(300), __proto__: { polluted: true } })),
     { allowUnverifiedUpdates: true, n: 2, s: "a" })
-  assert.deepEqual(Model.parseSelfSettings(`{"allowUnverifiedUpdates": true, "pad": "${"x".repeat(5000)}"}`), {}, "bounded")
+  assert.deepEqual(Model.parseSelfSettings(`{"allowUnverifiedUpdates": true, "pad": "${"x".repeat(33000)}"}`), {}, "bounded")
   for (const value of [true]) assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedUpdates: value }), true)
   for (const value of ["true", 1, "yes", null, undefined, {}, []])
     assert.equal(Model.allowUnverifiedUpdates({ allowUnverifiedUpdates: value }), false, String(value))
@@ -5793,7 +5794,7 @@ test("the plugin's own entry is kept whole for writing and null when it could no
   assert.deepEqual(Model.parseSelfEntry("  \n"), {})
   assert.equal(Model.parseSelfEntry("nonsense"), null)
   assert.equal(Model.parseSelfEntry("[1]"), null)
-  assert.equal(Model.parseSelfEntry(`{"pad":"${"x".repeat(5000)}"}`), null, "oversized is unknown, not empty")
+  assert.equal(Model.parseSelfEntry(`{"pad":"${"x".repeat(33000)}"}`), null, "oversized is unknown, not empty")
   const raw = JSON.stringify({ id: "x", pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), n: 2, allowUnverifiedUpdates: true })
   assert.deepEqual(Model.parseSelfEntry(raw), { pinned: ["a", "b"], nested: { k: 1 }, big: "y".repeat(300), n: 2, allowUnverifiedUpdates: true })
   assert.deepEqual(Model.parseSelfSettings(raw), { n: 2, allowUnverifiedUpdates: true }, "the strict view drops what it cannot vouch for")

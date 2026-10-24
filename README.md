@@ -710,12 +710,31 @@ to accent tiles — see below.</sub>
 The second tab is the [omarchyplugins.com](https://omarchyplugins.com)
 marketplace. Search matches name, id, author, and description. Category and
 kind options come from the current catalog, while Availability narrows to
-plugins that can be installed here or plugins already installed. All four
+plugins that can be installed here, plugins already installed, or the plugins
+you are watching (see below). All four
 filters compose, and an empty result offers **Clear filters** rather than
 leaving you at a dead end. The hint bar under the grid shows the filters on
 the left — `[C] CATEGORY  [F] KIND  [A] AVAILABILITY  [S] RECENTLY ADDED`,
 each naming its dropdown while neutral and its value, brighter, once it
-narrows — and `[↵] DETAILS  [/] SEARCH` on the right.
+narrows — and `[↵] DETAILS  [W] WATCH  [/] SEARCH` on the right.
+
+### Watching plugins
+
+The marketplace is large, so you can keep a short list of plugins you might
+want. Press `w` on a selected card, or use **Watch** in its details, to add it;
+do it again (the button then reads **Watching**, or **Stop watching** in the
+popup) to take it off. Watched cards carry a `watching` badge on the preview.
+Set Availability to **Watching** to see only that list: it is the same grid,
+with the same cards, search, sort and details. Installing a plugin does not
+take it off the list, and a watched plugin that leaves the marketplace simply
+stops showing.
+
+The list is stored in this plugin's own entry in
+`~/.config/omarchy/shell.json` as `watching`, an array of plugin ids in the
+order you added them, written through the host like the settings below. Each
+change merges over the entry as the file holds it at that moment, so the
+popup and the expanded panel never overwrite each other's list. It holds at
+most 200 plugins, and only well-formed ids are read back.
 
 Sort explicitly by **Recently added** (newest first, the default), **Recent
 activity**, **Most starred**, **Most viewed**, **Most copied**, **Most
@@ -895,6 +914,7 @@ url cannot become a command. Urls are also validated against `https://`,
 | `s` | Cycle Source (Installed) or Sort (Browse) |
 | `t` | Installed: cycle the Status dropdown |
 | `c` `a` | Browse: cycle the Category and Availability dropdowns |
+| `w` | Browse: watch or stop watching the selected card |
 | `1` `2` | Switch to the Installed / Browse tab |
 | `r` | Refresh the plugin list or re-fetch the active Browse catalog |
 | `Esc` | Clear the search, then leave the field, then close the panel |

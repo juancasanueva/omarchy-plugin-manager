@@ -27,6 +27,8 @@ Rectangle {
   // the other seven hundred cards never attempt a format this Qt cannot read —
   // one warning in the log instead of one per visible card.
   property bool previewsEnabled: true
+  // On the watch list (see PluginStore.watchedIds): the surface says so.
+  property bool watched: false
 
   signal detailsRequested()
   signal installRequested()
@@ -230,6 +232,30 @@ Rectangle {
           anchors.centerIn: parent
           text: "󰄬 verified"
           color: OmarchyTheme.Color.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      // On your watch list. Bottom-left, below installed, so all three
+      // badges can share one preview.
+      Rectangle {
+        id: watchedBadge
+        visible: root.watched
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.margins: Style.space(6)
+        width: watchedLabel.implicitWidth + Style.space(10)
+        height: watchedLabel.implicitHeight + Style.space(4)
+        radius: height / 2
+        color: Qt.rgba(OmarchyTheme.Color.background.r, OmarchyTheme.Color.background.g, OmarchyTheme.Color.background.b, 0.75)
+
+        Text {
+          id: watchedLabel
+          textFormat: Text.PlainText
+          anchors.centerIn: parent
+          text: "󰈈 watching"
+          color: OmarchyTheme.Color.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }

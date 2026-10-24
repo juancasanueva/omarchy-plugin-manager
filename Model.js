@@ -103,7 +103,9 @@ function parseArray(raw) {
 // plain-typed values, and the settings it acts on are then decided one key
 // at a time (see allowUnverifiedUpdates). A hostile or malformed entry can
 // at most switch a feature off, and (see splitSections) cannot touch the rows.
-var MAX_SETTINGS_BYTES = 4096
+// The bound leaves room for a full watch list (see MAX_WATCHING) of the
+// longest ids beside every other setting.
+var MAX_SETTINGS_BYTES = 32768
 
 function parseSelfEntry(raw) {
   var text = String(raw || "").trim()
@@ -166,6 +168,60 @@ function parseSelfSettings(raw) {
     if (type === "boolean" || (type === "number" && isFinite(item))) out[key] = item
     else if (type === "string" && item.length <= 256) out[key] = item
   }
+  return out
+}
+
+// The Browse watch list: plugin ids kept in this plugin's own entry as
+// `watching`, in the order they were added. It is read as strictly as every
+// other setting — only well-formed ids, no duplicates, at most MAX_WATCHING —
+// so a hand edit can at most hide a plugin from the list. The map has no
+// prototype because its keys are ids from a file.
+var MAX_WATCHING = 200
+
+function watchingIds(entry) {
+  var out = Object.create(null)
+  var list = entry && hasOwnKey(entry, "watching") ? entry.watching : null
+  if (!Array.isArray(list)) return out
+  var count = 0
+  for (var i = 0; i < list.length && count < MAX_WATCHING; i++) {
+    var id = list[i]
+    if (typeof id !== "string" || !LAYOUT_ID_PATTERN.test(id) || id.indexOf("..") >= 0 || id in out) continue
+    out[id] = true
+    count++
+  }
+  return out
+}
+
+function isWatched(entry, ids) {
+  return !!entry && typeof entry.id === "string" && !!ids && ids[entry.id] === true
+}
+
+// The entry to write back with one id watched or not. Null when the id is
+// not one, when the list is full, or when the entry would no longer read back
+// whole (room is kept for the id the host adds), so the store never writes an
+// entry that would switch every setting off on the next load.
+function withWatching(entry, id, watch) {
+  if (typeof id !== "string" || !LAYOUT_ID_PATTERN.test(id) || id.indexOf("..") >= 0) return null
+  var out = {}
+  for (var name in entry || {}) {
+    if (!hasOwnKey(entry, name) || name === "id" || name === "__proto__" || name === "watching") continue
+    out[name] = entry[name]
+  }
+  var current = Object.keys(watchingIds(entry))
+  var list = []
+  for (var i = 0; i < current.length; i++) if (current[i] !== id) list.push(current[i])
+  if (watch === true) {
+    if (list.length === current.length && list.length >= MAX_WATCHING) return null
+    list.splice(current.indexOf(id) >= 0 ? current.indexOf(id) : list.length, 0, id)
+  }
+  if (list.length > 0) out.watching = list
+  var text
+  try {
+    text = JSON.stringify(out)
+  } catch (error) {
+    return null
+  }
+  if (text.length > MAX_SETTINGS_BYTES - 256) return null
   return out
 }
 
@@ -1212,6 +1268,7 @@ var ALL_CATALOG_KINDS = "all"
 var CATALOG_AVAILABILITY_ALL = "all"
 var CATALOG_AVAILABILITY_AVAILABLE = "available"
 var CATALOG_AVAILABILITY_INSTALLED = "installed"
+var CATALOG_AVAILABILITY_WATCHING = "watching"
 var CATALOG_SORT_STARS = "stars"
 var CATALOG_SORT_HEARTS = "hearts"
 var CATALOG_SORT_RECENTLY_ADDED = "recently-added"
@@ -1760,7 +1817,8 @@ function catalogAvailabilityOptions() {
   return [
     { value: CATALOG_AVAILABILITY_ALL, label: "All" },
     { value: CATALOG_AVAILABILITY_AVAILABLE, label: "Available" },
-    { value: CATALOG_AVAILABILITY_INSTALLED, label: "Installed" }
+    { value: CATALOG_AVAILABILITY_INSTALLED, label: "Installed" },
+    { value: CATALOG_AVAILABILITY_WATCHING, label: "Watching" }
   ]
 }
 
@@ -1803,8 +1861,9 @@ function matchesCatalogQuery(entry, query) {
 
 // Order-preserving: filtering a sorted list leaves it sorted, which is what
 // lets a surface sort the whole catalog once per sort mode and only filter
-// on each keystroke.
-function filterCatalog(entries, category, kind, availability, query) {
+// on each keystroke. `watched` is the watch list (see watchingIds), read only
+// when Availability is Watching.
+function filterCatalog(entries, category, kind, availability, query, watched) {
   var out = []
   var needle = String(query || "").trim().toLowerCase()
   var wantedKind = kind && kind !== ALL_CATALOG_KINDS ? catalogKindKey(kind) : ""
@@ -1815,6 +1874,7 @@ function filterCatalog(entries, category, kind, availability, query) {
     if (wantedKind !== "" && catalogKindKey(entry.kind) !== wantedKind) continue
     if (availability === CATALOG_AVAILABILITY_AVAILABLE && !entry.installable) continue
     if (availability === CATALOG_AVAILABILITY_INSTALLED && !entry.installed) continue
+    if (availability === CATALOG_AVAILABILITY_WATCHING && !isWatched(entry, watched)) continue
     if (needle !== "" && !matchesCatalogQuery(entry, needle)) continue
     out.push(entry)
   }
@@ -1826,6 +1886,7 @@ function catalogIsFiltering(category, kind, availability, query) {
     || !!(kind && kind !== ALL_CATALOG_KINDS)
     || availability === CATALOG_AVAILABILITY_AVAILABLE
     || availability === CATALOG_AVAILABILITY_INSTALLED
+    || availability === CATALOG_AVAILABILITY_WATCHING
     || String(query || "").trim() !== ""
 }
 
@@ -1889,6 +1950,7 @@ function installedFilterHints(filters, options) {
 function actionHints(browsing, bulkUpdateAvailable) {
   if (browsing) return [
     { key: "↵", text: "DETAILS", active: false },
+    { key: "w", text: "WATCH", active: false },
     { key: "/", text: "SEARCH", active: false }
   ]
   return [
@@ -1912,6 +1974,9 @@ function catalogEmptyMessage(category, kind, availability, query) {
   var needle = String(query || "").trim()
   var narrowed = catalogIsFiltering(category, kind, availability, "")
 
+  if (needle === "" && availability === CATALOG_AVAILABILITY_WATCHING
+      && catalogIsFiltering(category, kind, CATALOG_AVAILABILITY_ALL, "") === false)
+    return "You are not watching any plugins. Press w on a card, or Watch in its details, to add one."
   if (needle !== "" && narrowed) return "No plugins match “" + needle + "” and the selected filters."
   if (needle !== "") return "No plugins match “" + needle + "”."
   if (narrowed) return "No plugins match the selected filters."

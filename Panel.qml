@@ -228,7 +228,10 @@ Panel {
   // walks the entries once instead of re-sorting two thousand of them.
   readonly property var sortedCatalog: Model.sortCatalog(catalog, catalogSort)
   readonly property var visibleCatalog: Model.filterCatalog(
-    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
+    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery,
+    // Read only while it narrows the grid, so a watch toggle elsewhere does
+    // not rebuild the model and drop the scroll offset.
+    availabilityFilter === "watching" ? store.watchedIds : null)
   readonly property var browseFilterHints: Model.browseFilterHints(
     { category: categoryFilter, kind: catalogKindFilter, availability: availabilityFilter, sort: catalogSort },
     { category: categoryOptions, kind: catalogKindOptions, availability: availabilityOptions, sort: catalogSortOptions })
@@ -884,6 +887,7 @@ Panel {
         else if (t === "s" || t === "S") root.browsing ? root.cycleCatalogSort() : root.cycleGroupFilter()
         else if ((t === "c" || t === "C") && root.browsing) root.cycleCategoryFilter()
         else if ((t === "a" || t === "A") && root.browsing) root.cycleAvailabilityFilter()
+        else if ((t === "w" || t === "W") && root.browsing) store.toggleWatching(root.selectedEntry)
         else if ((t === "t" || t === "T") && !root.browsing) root.cycleStatusFilter()
         else if ((t === "u" || t === "U") && !root.browsing) root.askBulkUpdate()
         else if (t === "j") root.moveSelection(0, 1)
@@ -1909,6 +1913,7 @@ Panel {
             anchors.margins: Style.space(4)
             entry: modelData
             selected: root.selectedIndex === index
+            watched: Model.isWatched(modelData, store.watchedIds)
             actionsEnabled: !root.busy
             previewsEnabled: root.previewsSupported
             foreground: root.contentForeground
@@ -2417,6 +2422,7 @@ Panel {
         z: 10
         opened: root.detailsOpen
         entry: root.detailsEntry
+        watched: Model.isWatched(root.detailsEntry, store.watchedIds)
         previewsEnabled: root.previewsSupported
         background: OmarchyTheme.Color.popups.background
         foreground: root.contentForeground
@@ -2440,6 +2446,7 @@ Panel {
           root.requestGithubNavigation(candidates, fallbackUrl)
         }
         onInstallRequested: root.askInstall(root.detailsEntry)
+        onWatchRequested: store.toggleWatching(root.detailsEntry)
         onStarRequested: {
           if (store.toggleStar(root.detailsEntry)) {
             root.pendingBrowseY = catalogGrid.contentY

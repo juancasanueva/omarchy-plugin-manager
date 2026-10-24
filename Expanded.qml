@@ -489,7 +489,10 @@ Item {
   // walks the entries once instead of re-sorting two thousand of them.
   readonly property var sortedCatalog: Model.sortCatalog(catalog, catalogSort)
   readonly property var visibleCatalog: Model.filterCatalog(
-    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery)
+    sortedCatalog, categoryFilter, catalogKindFilter, availabilityFilter, searchQuery,
+    // Read only while it narrows the grid, so a watch toggle elsewhere does
+    // not rebuild the model and drop the scroll offset.
+    availabilityFilter === "watching" ? store.watchedIds : null)
   readonly property var selectedEntry: browsing && selectedIndex >= 0 && selectedIndex < visibleCatalog.length
     ? visibleCatalog[selectedIndex]
     : null
@@ -853,6 +856,7 @@ Item {
         else if ((text === "u" || text === "U") && !root.browsing) { store.askBulkUpdate(); event.accepted = true }
         else if ((text === "c" || text === "C") && root.browsing) root.cycleCategoryFilter()
         else if ((text === "a" || text === "A") && root.browsing) root.cycleAvailabilityFilter()
+        else if ((text === "w" || text === "W") && root.browsing) { store.toggleWatching(root.selectedEntry); event.accepted = true }
         else if (text === "/") { root.focusSearchField(); event.accepted = true }
         else if (text === "r" || text === "R") {
           if (root.browsing) store.loadCatalog(true)
@@ -1720,6 +1724,7 @@ Item {
             anchors.margins: Style.space(4)
             entry: modelData
             selected: root.selectedIndex === index
+            watched: Model.isWatched(modelData, store.watchedIds)
             actionsEnabled: !root.busy
             previewsEnabled: root.previewsSupported
             showActions: false
@@ -1807,6 +1812,7 @@ Item {
         scale: root.contentFlipScale
         layer.enabled: root.contentFlipping
         entry: root.detailsEntry
+        watched: Model.isWatched(root.detailsEntry, store.watchedIds)
         previewsEnabled: root.previewsSupported
         actionsEnabled: !root.busy
         background: OmarchyTheme.Color.menu.background
@@ -1816,6 +1822,7 @@ Item {
 
         onBackRequested: root.closeDetails()
         onInstallRequested: root.askInstall(root.detailsEntry)
+        onWatchRequested: store.toggleWatching(root.detailsEntry)
         onStarRequested: {
           if (store.toggleStar(root.detailsEntry)) {
             root.pendingBrowseY = catalogGrid.contentY

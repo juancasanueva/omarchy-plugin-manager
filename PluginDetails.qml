@@ -12,6 +12,7 @@ Item {
 
   property bool opened: false
   property var entry: null
+  property bool watched: false
   property color background: OmarchyTheme.Color.background
   property color foreground: OmarchyTheme.Color.foreground
   required property color secondaryForeground
@@ -25,6 +26,7 @@ Item {
 
   signal closed()
   signal installRequested()
+  signal watchRequested()
   signal starRequested()
   signal previewUndecodable()
   signal githubNavigationRequested(var candidates, string fallbackUrl)
@@ -81,6 +83,7 @@ Item {
     if (repoUrl !== "") values.push({ kind: "repository", label: "Open repository" })
     if (versionFallbackUrl !== "") values.push({ kind: "release", label: "Open " + versionText + " on GitHub" })
     if (entry && entry.installable) values.push({ kind: "install", label: "Install " + entry.name })
+    if (entry) values.push({ kind: "watch", label: watched ? "Stop watching" : "Watch" })
     values.push({ kind: "close", label: "Close details" })
     return values
   }
@@ -92,6 +95,7 @@ Item {
     else if (kind === "release")
       githubNavigationRequested(versionReleaseCandidates, versionFallbackUrl)
     else if (kind === "install") installRequested()
+    else if (kind === "watch") watchRequested()
     else closed()
   }
 

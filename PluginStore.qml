@@ -149,6 +149,10 @@ Item {
   // first load has run.
   readonly property string openAs: Model.openAs(selfSettings)
 
+  // The Browse watch list, as ids. Read from the whole entry, not the strict
+  // settings view: it is the one value that is a list.
+  readonly property var watchedIds: Model.watchingIds(selfEntry)
+
   // Active-transaction history capacity. The helper reads the same shell.json
   // entry and enforces the same bounds, so this only moves the threshold at
   // which archival and refusal happen, never what counts as proven success.
@@ -224,6 +228,45 @@ Item {
     selfEntry = next
     selfSettings = Model.parseSelfSettings(JSON.stringify(next))
     return true
+  }
+
+  // Watch or stop watching one catalog entry. Like setOpenAs it merges over
+  // the entry as shell.json has it now, because the popup's store does not
+  // watch the file and the other surface may have changed the list since. A
+  // false from the host counts as saved only when the file already agrees.
+  function setWatching(entry, watch) {
+    if (busy || !entry) return false
+    if (!shell || typeof shell.updateEntryInline !== "function" || selfId === "") {
+      setStatus("Could not save the watch list: no shell connection", true)
+      return false
+    }
+    openAsConfig.reload()
+    var raw = Model.selfEntryFromShellConfig(openAsConfig.text(), selfId)
+    var current = raw === "" ? null : Model.parseSelfEntry(raw)
+    if (!current) {
+      setStatus("Could not read the watch list from shell.json", true)
+      return false
+    }
+    var next = Model.withWatching(current, entry.id, watch)
+    if (!next) {
+      setStatus(watch === true && Object.keys(Model.watchingIds(current)).length >= Model.MAX_WATCHING
+        ? "The watch list is full (" + Model.MAX_WATCHING + " plugins). Stop watching one first."
+        : "Could not add " + entry.name + " to the watch list", true)
+      return false
+    }
+    if (shell.updateEntryInline(selfId, next) !== true
+        && Model.isWatched(entry, Model.watchingIds(current)) !== (watch === true)) {
+      setStatus("Could not save the watch list", true)
+      return false
+    }
+    selfEntry = next
+    selfSettings = Model.parseSelfSettings(JSON.stringify(next))
+    flashStatus(watch === true ? "Watching " + entry.name : "Stopped watching " + entry.name, false)
+    return true
+  }
+
+  function toggleWatching(entry) {
+    return !!entry && setWatching(entry, !Model.isWatched(entry, watchedIds))
   }
 
   // Persist a bounded integer setting through the host, merged over the entry

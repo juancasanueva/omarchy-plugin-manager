@@ -20,6 +20,7 @@ Item {
   readonly property bool installed: entry ? entry.installed === true : false
   property bool previewsEnabled: true
   property bool actionsEnabled: true
+  property bool watched: false
   readonly property string starSlug: Model.starSlugFor(entry)
   readonly property bool starActionable: starSlug !== ""
   property color background: OmarchyTheme.Color.menu.background
@@ -30,6 +31,7 @@ Item {
   signal backRequested()
   signal installRequested()
   signal starRequested()
+  signal watchRequested()
   signal previewUndecodable()
   signal githubNavigationRequested(var candidates, string fallbackUrl)
   signal repositoryNavigationRequested(string url)
@@ -447,6 +449,21 @@ Item {
             enabled: root.actionsEnabled
             opacity: enabled ? 1 : 0.4
             onClicked: root.installRequested()
+          }
+
+          Button {
+            id: watchButton
+            visible: root.entry !== null
+            text: root.watched ? "Watching" : "Watch"
+            iconText: root.watched ? "󰈈" : "󰈉"
+            tooltipText: root.watched ? "Stop watching this plugin" : "Add this plugin to your watch list"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            enabled: root.actionsEnabled
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.watchRequested()
           }
 
           Button {
