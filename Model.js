@@ -150,7 +150,7 @@ function parseLayoutSections(raw) {
     var id = typeof item.id === "string" ? item.id : ""
     var section = typeof item.section === "string" ? item.section : ""
     if (!LAYOUT_ID_PATTERN.test(id) || id.indexOf("..") >= 0) continue
-    if (BAR_SECTIONS.indexOf(section) < 0) continue
+    if (BAR_LAYOUT_SECTIONS.indexOf(section) < 0) continue
     // The first placement wins: one widget, one section.
     if (!(id in out)) out[id] = section
   }
@@ -488,7 +488,7 @@ function mergePlugins(listEntries, catalogEntries, gitMap, manifestMeta, layoutS
       enabled: item.enabled === true,
       // Which section of the bar the widget sits in, as shell.json says, or
       // "" when it is not in the layout or the layout could not be read.
-      barSection: typeof layout[id] === "string" && BAR_SECTIONS.indexOf(layout[id]) >= 0 ? layout[id] : "",
+      barSection: typeof layout[id] === "string" && BAR_LAYOUT_SECTIONS.indexOf(layout[id]) >= 0 ? layout[id] : "",
       // A bar has no off, only a successor — the shell says so per plugin
       // rather than making every caller work it out from kinds again.
       canDisable: item.canDisable === true,
@@ -987,10 +987,11 @@ function removeCommand(id, label) {
 // hands the placement to the shell, which moves a widget that is already in
 // the bar rather than adding it a second time. Only a widget that takes a
 // place in a section can move, and only one whose current section the loader
-// could read: the control names where it is, so it has to know.
+// could read: the control names where it is, so it has to know. It may sit in
+// any section the host layout has; the choices are still the three bar ones.
 function canMove(row) {
   return !!row && String(row.id || "") !== "" && row.enabled === true
-    && needsPlacement(row) && BAR_SECTIONS.indexOf(String(row.barSection || "")) >= 0
+    && needsPlacement(row) && BAR_LAYOUT_SECTIONS.indexOf(String(row.barSection || "")) >= 0
 }
 
 // The choices for a widget already in the bar: everywhere but where it is.
@@ -1125,7 +1126,7 @@ function barSectionMovePlan(row, raw, section) {
   for (var i = 0; i < snapshot.rows.length; i++) {
     if (snapshot.rows[i].id === String(row.id)) { source = snapshot.rows[i]; break }
   }
-  // Legacy ID moves select the first occurrence across left/center/right.
+  // Legacy ID moves select the first occurrence across the layout's sections.
   // A stale row must not silently move a different section's duplicate.
   if (!source || source.section !== row.barSection) return null
   var anchors = { left: "omarchy.workspaces", center: "omarchy.weather", right: "omarchy.tray" }

@@ -206,6 +206,25 @@ test("section choices append without anchors, including empty destinations and f
   }
 })
 
+test("section choices move a widget out of centerBegin, centerEnd and the tray drawer", () => {
+  const { barSectionMovePlan, barLayoutMove } = sectionModel()
+  const host = () => ({ left: ["omarchy.menu", "omarchy.workspaces", "tail"], centerBegin: ["begin"],
+    center: ["omarchy.clock"], centerEnd: ["end"], right: ["omarchy.tray", "omarchy.audio"], tray: ["drawer"] })
+  for (const [id, fromSection] of [["begin", "centerBegin"], ["end", "centerEnd"], ["drawer", "tray"]]) {
+    const raw = host()
+    const plan = barSectionMovePlan(enabledRow(id, fromSection), raw, "left")
+    assert.deepEqual([plan.fromSection, plan.fromIndex, plan.section, plan.gap], [fromSection, 0, "left", 2])
+    const move = barLayoutMove(plan.snapshot, raw, plan.fromSection, plan.fromIndex, plan.section, plan.gap)
+    assert.deepEqual(move.command, ["omarchy-bar", "move", id, "--from-section", fromSection,
+      "--from-index", "0", "--section", "left", "--index", "2"])
+    assert.deepEqual(move.expected.layout[fromSection], [])
+    assert.deepEqual(raw, host())
+  }
+  // The choices themselves stay the three bar sections.
+  assert.equal(barSectionMovePlan(enabledRow("omarchy.clock", "center"), host(), "centerEnd"), null)
+  assert.equal(barSectionMovePlan(enabledRow("omarchy.audio", "right"), host(), "tray"), null)
+})
+
 test("section choices refuse no-op, stale, missing, invalid and ineligible rows", () => {
   const { barSectionMovePlan } = sectionModel()
   const raw = { left: ["same"], center: ["same"], right: ["same"] }

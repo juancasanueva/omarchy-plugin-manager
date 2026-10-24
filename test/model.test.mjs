@@ -6178,6 +6178,23 @@ test("parseLayoutSections keeps only well-formed placements and the first one pe
   assert.equal(Object.keys(Model.parseLayoutSections(many)).length, 512, "bounded entry count")
 })
 
+test("a widget in centerBegin, centerEnd or the tray drawer knows its section and can move", () => {
+  const layout = Model.parseLayoutSections(JSON.stringify([
+    { id: "acme.begin", section: "centerBegin" }, { id: "acme.end", section: "centerEnd" },
+    { id: "acme.drawer", section: "tray" }, { id: "acme.anchor", section: "centerAnchor" }]))
+  assert.deepEqual({ ...layout }, { "acme.begin": "centerBegin", "acme.end": "centerEnd", "acme.drawer": "tray" })
+  const rows = Model.mergePlugins([{ id: "acme.begin", name: "Begin", enabled: true, kinds: ["bar-widget"] }],
+    [], {}, {}, layout)
+  assert.equal(rows[0].barSection, "centerBegin")
+  for (const barSection of ["centerBegin", "centerEnd", "tray"]) {
+    const row = { id: "acme.widget", enabled: true, kinds: ["bar-widget"], barSection }
+    assert.equal(Model.canMove(row), true, barSection)
+    assert.deepEqual(Model.moveOptions(barSection).map(o => o.value), ["left", "center", "right"])
+    assert.deepEqual(Model.moveCommand(row, "center"), ["omarchy", "plugin", "enable", "acme.widget", "center"])
+    assert.deepEqual(Model.moveCommand(row, barSection), [], "only the three bar sections are targets")
+  }
+})
+
 test("splitSections carries the layout line ahead of the fixed sections and bounds it to one line", () => {
   const four = "===list===\n[]\n===catalog===\n[]\n===git===\n\n===manifest===\n"
   const layout = JSON.stringify([{ id: "acme.widget", section: "right" }])
