@@ -842,6 +842,9 @@ function lastLine(text) {
 // is unplaced — and why the section has to be asked for rather than guessed.
 
 var BAR_SECTIONS = ["left", "center", "right"]
+// Every section a host bar layout may hold, in the order Arrange shows them:
+// the bar from left to right, then the tray's drawer.
+var BAR_LAYOUT_SECTIONS = ["left", "centerBegin", "center", "centerEnd", "right", "tray"]
 
 // Before an install there is no manifest to read, so the registry's own
 // human-readable kind is all there is to go on: "Bar widget", "Service + Bar
@@ -1046,13 +1049,25 @@ function barLayoutSnapshot(raw) {
     return Object.freeze(result)
   }
   try {
-    if (!raw || Array.isArray(raw) || Object.keys(raw).length !== 3) return null
-    for (var s = 0; s < BAR_SECTIONS.length; s++) {
-      if (!Array.isArray(raw[BAR_SECTIONS[s]]) || raw[BAR_SECTIONS[s]].length > 128) return null
+    if (!raw || Array.isArray(raw)) return null
+    // left/center/right are always there; newer hosts add centerBegin,
+    // centerEnd and the tray drawer. Any other key is not a layout we know.
+    var sections = [], rawKeys = Object.keys(raw)
+    for (var k = 0; k < rawKeys.length; k++) {
+      if (BAR_LAYOUT_SECTIONS.indexOf(rawKeys[k]) < 0) return null
+    }
+    for (var s = 0; s < BAR_LAYOUT_SECTIONS.length; s++) {
+      var name = BAR_LAYOUT_SECTIONS[s]
+      if (!Object.prototype.hasOwnProperty.call(raw, name)) {
+        if (BAR_SECTIONS.indexOf(name) >= 0) return null
+        continue
+      }
+      if (!Array.isArray(raw[name]) || raw[name].length > 128) return null
+      sections.push(name)
     }
     var layout = copy(raw, 0), rows = []
-    for (var sectionIndex = 0; sectionIndex < BAR_SECTIONS.length; sectionIndex++) {
-      var section = BAR_SECTIONS[sectionIndex]
+    for (var sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+      var section = sections[sectionIndex]
       for (var index = 0; index < layout[section].length; index++) {
         var entry = layout[section][index]
         var id = typeof entry === "string" ? entry : entry && !Array.isArray(entry) ? entry.id : null
@@ -1061,7 +1076,8 @@ function barLayoutSnapshot(raw) {
         rows.push(Object.freeze({ id: id, section: section, index: index, entry: entry }))
       }
     }
-    return Object.freeze({ layout: layout, rows: Object.freeze(rows), key: JSON.stringify(layout) })
+    return Object.freeze({ layout: layout, sections: Object.freeze(sections), rows: Object.freeze(rows),
+      key: JSON.stringify(layout) })
   } catch (error) { return null }
 }
 
@@ -1071,7 +1087,7 @@ function barLayoutMove(snapshot, latest, fromSection, fromIndex, section, gap) {
   var before = barLayoutSnapshot(snapshot && snapshot.layout)
   var current = barLayoutSnapshot(latest)
   if (!before || !current || before.key !== current.key
-      || BAR_SECTIONS.indexOf(fromSection) < 0 || BAR_SECTIONS.indexOf(section) < 0
+      || before.sections.indexOf(fromSection) < 0 || before.sections.indexOf(section) < 0
       || typeof fromIndex !== "number" || !isFinite(fromIndex) || Math.floor(fromIndex) !== fromIndex
       || typeof gap !== "number" || !isFinite(gap) || Math.floor(gap) !== gap
       || fromIndex < 0 || fromIndex >= before.layout[fromSection].length
