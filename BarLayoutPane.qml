@@ -30,7 +30,10 @@ Item {
     property int targetColumn: -1
     property int targetGap: -1
     readonly property real pitch: rowHeight + spacing
-    readonly property var sections: ["left", "center", "right"]
+    // The snapshot's own sections: left/center/right, plus centerBegin,
+    // centerEnd and tray on hosts that have them.
+    readonly property var sections: snapshot ? snapshot.sections : ["left", "center", "right"]
+    readonly property real columnWidth: (width - spacing * (sections.length - 1)) / sections.length
     implicitWidth: 630
     implicitHeight: 480
     clip: true
@@ -58,8 +61,10 @@ Item {
             .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
     }
     function columnAt(point) {
-        for (let i = 0; i < 3; ++i) {
-            const view = columns.itemAt(i).view;
+        for (let i = 0; i < sections.length; ++i) {
+            const column = columns.itemAt(i);
+            if (!column) continue;
+            const view = column.view;
             const p = view.mapFromItem(root, point.x, point.y);
             if (p.x >= 0 && p.x < view.width && p.y >= 0 && p.y < view.height)
                 return i;
@@ -129,13 +134,13 @@ Item {
                 required property int index
                 property alias view: viewport
                 readonly property var entries: root.snapshot ? root.snapshot.layout[modelData] : []
-                width: (root.width - root.spacing * 2) / 3
+                width: root.columnWidth
                 height: parent.height
                 Caption {
                     id: heading
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: column.modelData.toUpperCase()
+                    text: column.modelData.replace(/([A-Z])/g, " $1").toUpperCase()
                 }
                 Rectangle {
                     anchors.top: heading.bottom
@@ -253,7 +258,7 @@ Item {
         visible: root.dragging
         x: root.pointer.x + root.spacing
         y: root.pointer.y + root.spacing
-        width: Math.max(0, (root.width - root.spacing * 2) / 3 - root.spacing * 2)
+        width: Math.max(0, root.columnWidth - root.spacing * 2)
         labelText: root.heldLabel
         opacity: 0.85
         border.color: root.accent

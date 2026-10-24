@@ -43,6 +43,37 @@ test("drop gaps become post-removal indexes without changing the original entrie
   assert.deepEqual(raw, layout())
 })
 
+test("current hosts' six-section layouts snapshot and move across every section", () => {
+  const { barLayoutSnapshot, barLayoutMove } = model()
+  const host = () => ({ left: ["omarchy.menu", "omarchy.workspaces"], centerBegin: ["omarchy.indicators"],
+    center: [{ id: "omarchy.clock", format: "HH:mm" }], centerEnd: ["omarchy.weather"],
+    right: ["omarchy.tray", "omarchy.audio"], tray: [] })
+  const raw = host(), snapshot = barLayoutSnapshot(raw)
+  assert.ok(snapshot)
+  assert.deepEqual([...snapshot.sections], ["left", "centerBegin", "center", "centerEnd", "right", "tray"])
+  assert.deepEqual(snapshot.rows.map(row => [row.id, row.section, row.index]),
+    [["omarchy.menu", "left", 0], ["omarchy.workspaces", "left", 1], ["omarchy.indicators", "centerBegin", 0],
+      ["omarchy.clock", "center", 0], ["omarchy.weather", "centerEnd", 0], ["omarchy.tray", "right", 0],
+      ["omarchy.audio", "right", 1]])
+  const toTray = barLayoutMove(snapshot, raw, "right", 1, "tray", 0)
+  assert.deepEqual(toTray.command, ["omarchy-bar", "move", "omarchy.audio", "--from-section", "right",
+    "--from-index", "1", "--section", "tray", "--index", "0"])
+  assert.deepEqual(toTray.expected.layout.tray, ["omarchy.audio"])
+  assert.equal(barLayoutMove(snapshot, raw, "centerEnd", 0, "centerBegin", 1).expected.layout.centerBegin[1],
+    "omarchy.weather")
+  // Sections are taken from the layout itself: a legacy one has no centerEnd to target.
+  const legacy = { left: ["clock"], center: [], right: [] }
+  assert.deepEqual([...barLayoutSnapshot(legacy).sections], ["left", "center", "right"])
+  assert.equal(barLayoutMove(barLayoutSnapshot(legacy), legacy, "left", 0, "centerEnd", 0), null)
+  // Optional sections may be missing; the three core ones may not.
+  const { tray, ...noTray } = host()
+  assert.deepEqual([...barLayoutSnapshot(noTray).sections], ["left", "centerBegin", "center", "centerEnd", "right"])
+  const { center, ...noCenter } = host()
+  assert.equal(barLayoutSnapshot(noCenter), null)
+  assert.equal(barLayoutSnapshot({ ...host(), tray: "omarchy.audio" }), null)
+  assert.deepEqual(raw, host())
+})
+
 test("malformed or oversized layouts and non-positional inputs fail closed", () => {
   const { barLayoutSnapshot, barLayoutMove } = model()
   const cycle = {}; cycle.self = cycle

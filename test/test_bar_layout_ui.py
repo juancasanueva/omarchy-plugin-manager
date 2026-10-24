@@ -60,7 +60,7 @@ class BarLayoutUI(unittest.TestCase):
     def load(self, layout):
         rows = [{"id": entry, "section": section, "index": index, "entry": entry}
                 for section, entries in layout.items() for index, entry in enumerate(entries)]
-        self.snapshot = {"layout": layout, "rows": rows, "key": json.dumps(layout)}
+        self.snapshot = {"layout": layout, "sections": ["left", "center", "right"], "rows": rows, "key": json.dumps(layout)}
         self.root.setProperty("snapshot", self.snapshot)
         self.app.processEvents()
 
