@@ -6,7 +6,7 @@ const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8")
 const expanded = readFileSync(new URL("../Expanded.qml", import.meta.url), "utf8")
 const storeSource = readFileSync(new URL("../PluginStore.qml", import.meta.url), "utf8")
 const Model = Function(readFileSync(new URL("../Model.js", import.meta.url), "utf8") +
-  "; return { barLayoutSnapshot, barLayoutMove, tiledExpandedPanel, openAs, expandedModeFromPayload, parseSelfSettings, selfEntryFromShellConfig, expandedTabFromPayload, expandedPageFromPayload, expandedScreenFromPayload }")()
+  "; return { barLayoutSnapshot, barLayoutMove, tiledExpandedPanel, openAs, expandedModeFromPayload, parseSelfSettings, selfEntryFromShellConfig, expandedTabFromPayload, expandedPageFromPayload, expandedScreenFromPayload, isStatusNotice }")()
 function call(source, name, state, ...args) {
   const match = source.match(new RegExp(`  function ${name}\\(([^)]*)\\) \\{([\\s\\S]*?)\\n  \\}`))
   assert.ok(match, `${name} exists`)
@@ -211,7 +211,9 @@ test("Expanded Back frames place one collapsible status before recovery, board a
 })
 
 test("status source resets for settings errors and ordinary inventory outcomes", () => {
-  const state = { status: "", statusIsError: false, statusSource: "" }
+  const notices = []
+  const state = { status: "", statusIsError: false, statusSource: "", statusIsNotice: false, busyKind: "", Model,
+    noticePosted: (...args) => notices.push(args) }
   state.setStatus = (...args) => call(storeSource, "setStatus", state, ...args)
   state.setStatus("Move outcome", true, "layout")
   assert.equal(state.statusSource, "layout")
@@ -222,6 +224,9 @@ test("status source resets for settings errors and ordinary inventory outcomes",
   state.setStatus("Plugin removed", false)
   assert.equal(state.statusSource, "")
   assert.equal(state.statusIsError, false)
+  // Outcomes are notices for the toast; the layout outcome stays a state.
+  assert.equal(state.statusIsNotice, true)
+  assert.deepEqual(notices, [["Settings unavailable until the plugin list loads", true], ["Plugin removed", false]])
 })
 
 test("retained eager load stays hidden and cannot initiate inventory work or dispatch", () => {

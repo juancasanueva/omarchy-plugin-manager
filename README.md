@@ -149,6 +149,14 @@ Layout messages stay with Arrange and popup placement, not Settings or the
 expanded plugin lists. In the expanded Settings and Arrange views, relevant
 status messages appear below **Back**, above the controls they describe.
 
+What just happened — an install, update or removal finishing, a plugin
+enabled, a card watched or starred, a setting saved, and any of those failing
+— rises as a toast at the bottom of the panel, on both surfaces, and leaves on
+its own: after 4 seconds, or 7 for a failure, which also carries a red border.
+Hovering holds it and a click dismisses it. What still holds stays in the line
+under the search box instead: the progress of a running action, a list or
+catalog that could not be read, and a bar move waiting on the host.
+
 A host layout change cancels any stale drag. A client exit alone does not prove
 that the move saved: the manager waits for the expected host layout. After an
 uncertain or mismatched result, inspect the current board and click **Use current

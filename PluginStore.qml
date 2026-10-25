@@ -101,6 +101,10 @@ Item {
   property bool statusIsError: false
   // Presentation scope only; move ownership stays in barMovePending.
   property string statusSource: ""
+  // Whether the status is a notice (see Model.isStatusNotice): surfaces show
+  // notices in a toast and keep them out of the status line.
+  property bool statusIsNotice: false
+  signal noticePosted(string text, bool isError)
 
   // ---- Pending confirmation -----------------------------------------------
   //
@@ -730,6 +734,8 @@ Item {
     status = text
     statusIsError = isError === true
     statusSource = source || ""
+    statusIsNotice = Model.isStatusNotice(text, statusSource, busyKind)
+    if (statusIsNotice) noticePosted(text, statusIsError)
   }
 
   function startDisable(row) {

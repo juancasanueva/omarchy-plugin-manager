@@ -28,8 +28,8 @@ function actionStore(owner = null, shellJson = JSON.stringify({ plugins: [{ id: 
       barConfig: { layout: { left: ["a"], center: [], right: [] } } },
     Quickshell: { execDetached(argv) { effects.push(argv) }, env() { return "" } },
     openAsConfig: { reload() {}, text() { return shellJson } },
-    Model: Function(read("Model.js") + "; return { withSelfSetting, withOpenAs, parseSelfSettings, parseSelfEntry, selfEntryFromShellConfig, openAs, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove }")(),
-    loadProcessSettled: () => true, updateProcessSettled: () => true }
+    Model: Function(read("Model.js") + "; return { withSelfSetting, withOpenAs, parseSelfSettings, parseSelfEntry, selfEntryFromShellConfig, openAs, canEnable, canDisable, needsPlacement, canMove, findRow, moveCommand, enableCommand, disableCommand, successMessage, enableNote, disableNote, moveNote, restartShellCommand, barLayoutMove, isStatusNotice }")(),
+    statusIsNotice: false, noticePosted() {}, loadProcessSettled: () => true, updateProcessSettled: () => true }
   state.root = state
   for (const name of ["setStatus", "writeSelfSetting", "setAllowUnverifiedUpdates", "setAllowUnverifiedInstalls", "setOpenAs",
     "runDetached", "startEnable", "startDisable", "startMoveTo", "restartShell", "askRemove", "askInstall", "askEnable", "askDisable", "askMove",

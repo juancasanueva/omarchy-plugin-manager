@@ -83,6 +83,9 @@ Item {
     target: store
     function onRowsLoaded() { root.clampSelection() }
     function onBrowseUrlRequested(url) { root.navigateExternalUrl(url) }
+    function onNoticePosted(text, isError) {
+      if (root.opened) statusToast.show(text, isError)
+    }
   }
 
   // ---- Lifecycle (called by the shell) --------------------------------------
@@ -240,6 +243,7 @@ Item {
   property alias status: store.status
   property alias statusIsError: store.statusIsError
   property alias statusSource: store.statusSource
+  property alias statusIsNotice: store.statusIsNotice
   readonly property alias pendingKind: store.pendingKind
   readonly property alias confirming: store.confirming
   readonly property alias placing: store.placing
@@ -1395,15 +1399,15 @@ Item {
         anchors.topMargin: visible ? Style.space(8) : 0
         height: visible ? implicitHeight : 0
         text: {
-          if (root.settingsOpen) return root.statusSource === "layout" ? "" : root.status
-          if (root.barMovePending) return root.arrangeOpen || root.statusSource !== "layout" ? root.status : ""
-          if (root.arrangeOpen) return root.barSnapshot ? root.status
+          if (root.settingsOpen) return root.statusSource === "layout" || root.statusIsNotice ? "" : root.status
+          if (root.barMovePending) return (root.arrangeOpen || root.statusSource !== "layout") && !root.statusIsNotice ? root.status : ""
+          if (root.arrangeOpen) return root.barSnapshot ? (root.statusIsNotice ? "" : root.status)
             : "Bar layout unavailable; waiting for host configuration."
           if (root.busy) return root.busyKind === "bulk-update" ? root.status
             : Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
           if (root.browsing && root.catalogError !== "") return root.catalogError
           if (!root.browsing && root.loadError !== "") return root.loadError
-          return root.statusSource === "layout" ? "" : root.status
+          return root.statusSource === "layout" || root.statusIsNotice ? "" : root.status
         }
         color: root.statusIsError || root.loadError !== "" || root.catalogError !== "" ? OmarchyTheme.Color.urgent : root.secondaryForeground
         font.family: root.fontFamily
@@ -2270,6 +2274,22 @@ Item {
             onGithubNavigationRequested: function(candidates, fallbackUrl) { root.requestGithubNavigation(candidates, fallbackUrl) }
           }
         }
+      }
+
+      // ---- Notices: what just happened rises as a toast above the key
+      //      hints and leaves on its own; the status line keeps only states
+      //      that still hold. Above the overlays, so a setting saved in the
+      //      settings pane is seen there too.
+      StatusToast {
+        id: statusToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        z: 20
+        active: root.opened
+        maximumWidth: parent.width - Style.space(24)
+        foreground: root.foreground
+        fontFamily: root.fontFamily
       }
 
       ActionConfirmDialog {

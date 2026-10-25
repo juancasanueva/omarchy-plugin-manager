@@ -84,6 +84,9 @@ Panel {
       if (root.placementRefreshStarted) root.placementRowsReady = true
     }
     function onBrowseUrlRequested(url) { root.navigateExternalUrl(url) }
+    function onNoticePosted(text, isError) {
+      if (root.opened) statusToast.show(text, isError)
+    }
   }
 
   property alias rows: store.rows
@@ -538,6 +541,7 @@ Panel {
   property alias status: store.status
   property alias statusIsError: store.statusIsError
   property alias statusSource: store.statusSource
+  property alias statusIsNotice: store.statusIsNotice
 
   // ---- Pending confirmation -----------------------------------------------
   //
@@ -1593,13 +1597,13 @@ Panel {
           width: parent.width
           visible: text !== ""
           text: {
-            if (root.settingsOpen) return root.statusSource === "layout" ? "" : root.status
+            if (root.settingsOpen) return root.statusSource === "layout" || root.statusIsNotice ? "" : root.status
             if (root.barMovePending) return root.popupMoveOwner.status + root.placementNotice
             if (root.busy) return root.busyKind === "bulk-update" ? root.status
               : Model.actionGerund(root.busyKind) + " " + root.busyId + "…"
             if (root.browsing && root.catalogError !== "") return root.catalogError
             if (!root.browsing && root.loadError !== "") return root.loadError
-            return root.status
+            return root.statusIsNotice ? "" : root.status
           }
           color: root.statusIsError || (root.barMovePending && root.popupMoveOwner.statusIsError)
             || root.loadError !== "" || root.catalogError !== "" ? OmarchyTheme.Color.urgent : root.secondaryForeground
@@ -2461,6 +2465,22 @@ Panel {
             root.pendingBrowseFocus = catalogGrid.activeFocus
           }
         }
+      }
+
+      // ---- Notices: what just happened rises as a toast above the key
+      //      hints and leaves on its own; the status line keeps only states
+      //      that still hold. Above the overlays, so a setting saved in the
+      //      settings pane is seen there too.
+      StatusToast {
+        id: statusToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: hintBar.top
+        anchors.bottomMargin: Style.space(10)
+        z: 20
+        active: root.opened
+        maximumWidth: parent.width - Style.space(24)
+        foreground: root.contentForeground
+        fontFamily: root.contentFontFamily
       }
 
       ActionConfirmDialog {

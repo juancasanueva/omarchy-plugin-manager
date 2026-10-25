@@ -1212,6 +1212,20 @@ function actionVerb(kind) {
   return "Action"
 }
 
+// A status that reports something that just happened — an action's outcome,
+// a watch, a star, a saved setting — is a notice: it pops up as a toast and
+// leaves on its own. Progress is posted while its action still runs, and a
+// bar move waits on the host with a Review layout button; both are states,
+// so they stay in the status line for as long as they hold.
+function isStatusNotice(text, source, busyKind) {
+  return typeof text === "string" && text !== "" && source !== "layout" && !busyKind
+}
+
+// Long enough to read a failure, short enough that a success gets out of the way.
+function noticeDuration(isError) {
+  return isError ? 7000 : 4000
+}
+
 function successMessage(kind, label) {
   if (kind === "install") return "Installed " + label
   if (kind === "update") return "Updated " + label
