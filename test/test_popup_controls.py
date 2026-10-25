@@ -207,7 +207,11 @@ QtObject {
                 repo_events, version_events = [], []
                 owner.repositoryNavigationRequested.connect(repo_events.append)
                 owner.githubNavigationRequested.connect(
-                    lambda candidates, fallback: version_events.append((candidates.toVariant(), fallback)))
+                    lambda candidates, fallback: version_events.append((
+                        # PySide6 6.12 converts a var argument to a list; older
+                        # releases hand over a QJSValue.
+                        candidates.toVariant() if hasattr(candidates, "toVariant") else candidates,
+                        fallback)))
                 repo_link = owner.findChild(QQuickItem, "repositoryLink")
                 version_link = owner.findChild(QQuickItem, "versionLink")
                 path_text = owner.findChild(QQuickItem, "installationPath")
