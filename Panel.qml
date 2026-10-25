@@ -876,7 +876,15 @@ Panel {
       onActivateRequested: root.browsing ? root.openDetails(root.selectedEntry) : root.startUpdate(root.selectedRow)
       onDeleteRequested: if (!root.browsing) root.askRemove(root.selectedRow)
       onCloseRequested: { root.closeArrange(); root.revokeReleaseNavigation(); root.close() }
-      onTabRequested: function(direction) { root.closeArrange(); root.revokeReleaseNavigation(); root.switchPanel(direction) }
+      // The list is a stop in the Tab ring, first in tree order, so Tab walks
+      // list, filter dropdowns, search box and back. The catcher takes Tab
+      // itself, so it steps the chain by hand, from wherever inside the list
+      // the focus sat (the Browse grid holds it after a rebuild).
+      activeFocusOnTab: true
+      onTabRequested: function(direction) {
+        var next = keyCatcher.nextItemInFocusChain(direction > 0)
+        if (next) next.forceActiveFocus(direction > 0 ? Qt.TabFocusReason : Qt.BacktabFocusReason)
+      }
       onTextKey: function(t) {
         if (t === "/") root.focusSearchField()
         else if (t === "r" || t === "R") {

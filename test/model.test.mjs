@@ -3560,7 +3560,8 @@ test("repository and Release actions route browser ownership through Panel", () 
     /onGithubNavigationRequested: function\(candidates, fallbackUrl\) \{\s+root\.requestGithubNavigation\(candidates, fallbackUrl\)\s+\}/)
   assert.match(panel, /onClicked: root\.navigateExternalUrl\("https:\/\/omarchyplugins\.com\/"\)/)
   assert.match(panel, /onCloseRequested: \{ root\.closeArrange\(\); root\.revokeReleaseNavigation\(\); root\.close\(\) \}/)
-  assert.match(panel, /onTabRequested: function\(direction\) \{ root\.closeArrange\(\); root\.revokeReleaseNavigation\(\); root\.switchPanel\(direction\) \}/)
+  // Tab only moves focus around the list, filters and search; it navigates nowhere.
+  assert.match(panel, /onTabRequested: function\(direction\) \{\s+var next = keyCatcher\.nextItemInFocusChain\(direction > 0\)/)
 
   for (const name of [
     "switchTab", "reload", "loadCatalog", "askInstall",

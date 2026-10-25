@@ -812,6 +812,10 @@ Item {
       anchors.topMargin: card.contentTopInset
       anchors.bottomMargin: card.contentBottomInset
       focus: true
+      // The list is a stop in the Tab ring, first in tree order, so Tab walks
+      // list, filter dropdowns, search box and back. Tab is left unhandled
+      // below so Qt steps the chain, from here or from inside the list.
+      activeFocusOnTab: true
 
       Keys.onPressed: function(event) {
         if (root.confirming || root.placing) return

@@ -909,6 +909,7 @@ url cannot become a command. Urls are also validated against `https://`,
 | `↑` `↓` / `k` `j` | Move the selection; Browse also supports `←` `→` and `h` `l` |
 | `Enter` | Update the selected Installed plugin; open the selected Browse card's details |
 | `Delete` | Remove the selected plugin |
+| `Tab` `Shift+Tab` | Cycle focus through the plugin list, the filter dropdowns, and the search box |
 | `/` | Focus the search box |
 | `f` | Cycle the Kind dropdown on either tab |
 | `s` | Cycle Source (Installed) or Sort (Browse) |
