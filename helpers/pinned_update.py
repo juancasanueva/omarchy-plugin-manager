@@ -641,7 +641,7 @@ def remove_completed(lock, parent, name, budget):
         directory = stat.S_ISDIR(info.st_mode)
         require(info.st_uid == os.getuid() and not info.st_mode & 0o7022
                 and (directory or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                                   and info.st_size <= 32 * 1024 * 1024)),
+                                   and info.st_size <= MAX_DISK)),
                 "Unsafe cleanup object")
         require(info.st_dev == lock.device and cleanup_mount_id(fd) == lock.mount,
                 "Cleanup object crosses a mount")
@@ -937,7 +937,11 @@ class Updater:
         env = {**self.env, **(extra_env or {})}
 
         def limits():
-            resource.setrlimit(resource.RLIMIT_FSIZE, (32 * 1024 * 1024,) * 2)
+            # The fetched pack holds every revision of the depth-256 history,
+            # so it is held to the checkout's budget rather than a smaller
+            # per-file one: a plugin whose images changed a few times outgrows
+            # 32 MiB while its snapshot is well inside the tree limits.
+            resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_DISK,) * 2)
             resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
         proc = subprocess.Popen(argv, cwd=None if cwd is None else f"/proc/self/fd/{cwd}",
@@ -1440,7 +1444,8 @@ class Updater:
                                 os.close(child)
                         else:
                             require(stat.S_ISREG(info.st_mode), "Symlinks and special files refused")
-                            data, info = read_file(fd, name, 32 * 1024 * 1024, sync=sync)
+                            # .git/objects/pack/*.pack is one file; MAX_DISK bounds it.
+                            data, info = read_file(fd, name, MAX_DISK, sync=sync)
                             total += len(data)
                             require(total <= MAX_DISK, "Checkout exceeds disk limit")
                             digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
