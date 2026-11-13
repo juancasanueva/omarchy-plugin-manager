@@ -470,7 +470,7 @@ switched on reads as one that did not install.
 | Ordinary SHA-1 checkout with one origin and standard core/branch configuration | Includes, other config sections, external object stores/worktrees, symlinks and hardlinks are refused; local Git config is never executed |
 | Clean tracked files and index | Dirty, staged, untracked, ignored files and special index flags are refused; never stash, reset or delete user changes |
 | Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
-| Bounded work | 120-second transaction; 64 MiB raw authorization catalog; 16 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 32 MiB Git file limit and 128 MiB inspected checkout limit |
+| Bounded work | 120-second transaction; 64 MiB raw authorization catalog; 16 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 128 MiB inspected checkout limit, which also bounds each file Git writes (the fetched pack included) |
 | Same filesystem with atomic exchange support | Refuse rather than use two renames |
 | Install target name unused, and its id unknown to the host catalog | Refuse rather than overwrite, merge into, or shadow an existing plugin |
 
@@ -606,7 +606,7 @@ existing-only; only the command opts into missing-active-root creation.
 |---|---|
 | Eligibility | Rechecked `request`, `prepared`, `published` and `result` journals must prove exact success. Only those four journal files, optional `index-before` / `index-final` files and an update's `checkout` directory are accepted at the top level. |
 | Preflight | Two bounded full-tree passes before mutation. Owned, safe-mode real directories and singly linked regular files only; no symlinks, specials or mount crossings. Linux's bounded `/proc/self/fdinfo` mount IDs also reject same-device bind mounts; unavailable checks fail closed. |
-| Tree ceilings | 32 MiB per file, 128 MiB total, 4,096 entries and directory depth 20 relative to the transaction. Descriptor use is depth-bounded, not entry-count-bounded; account paths over 32 components are refused. |
+| Tree ceilings | 128 MiB per file and in total, 4,096 entries and directory depth 20 relative to the transaction. Descriptor use is depth-bounded, not entry-count-bounded; account paths over 32 components are refused. |
 | Shared budget | By default: 200,000 work units, 32,768 visited entries, 4 MiB charged name/record metadata and 512 MiB inspected file sizes across all passes/candidates. A 15-second cooperative deadline and worker cancellation checks apply; these cannot interrupt a blocked kernel I/O call. |
 | Mutation | Descriptor-relative identity rechecks; backup contents first, checkout root and journals later, interruption marker and transaction last. Changes are fsynced; active/archive roots are never removed or replaced. |
 

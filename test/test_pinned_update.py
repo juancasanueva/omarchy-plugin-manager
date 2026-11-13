@@ -1502,6 +1502,39 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(calls[0][3], "Pinned plugin install")
         self.assertEqual(calls[0][4], NEW_ID + ": installed")
 
+    def test_history_whose_pack_outgrows_32_mib_installs_updates_and_cleans_up(self):
+        # A plugin whose preview changed a few times: every revision is in the
+        # depth-256 fetch, so the pack git writes is several times the
+        # snapshot, which still fits every tree limit. Random bytes keep zlib
+        # from shrinking it, and over 100 objects (fetch.unpackLimit) keep the
+        # fetch a pack rather than loose objects, as a real plugin's is.
+        icons = self.new_remote / "icons"
+        icons.mkdir()
+        for n in range(100):
+            (icons / f"{n}.svg").write_text(f"<svg id='{n}'/>")
+
+        def revise(text):
+            (self.new_remote / "preview.png").write_bytes(os.urandom(7 * 1024 * 1024))
+            sha = self.new_commit(text)
+            self.catalog["plugins"][1]["verificationCommit"] = sha
+            return sha
+
+        for revision in range(5):
+            target = revise(f"preview revision {revision}")
+        install = dict(self.install, verifiedCommit=target)
+        self.assertEqual(self.updater().execute(install), {"status": "installed"})
+        packs = list((self.new_plugin / ".git/objects/pack").glob("*.pack"))
+        self.assertGreater(max(p.stat().st_size for p in packs), 32 * 1024 * 1024)
+        # An update reads the installed .git, pack and all, and keeps it as
+        # the backup that cleanup later has to be able to remove.
+        later = revise("preview revision 5")
+        update = dict(schemaVersion=1, id=NEW_ID, repository=NEW_REPO,
+                      verifiedCommit=later, expectedLocalHead=target)
+        self.assertEqual(self.updater().execute(update)["status"], "updated")
+        self.assertEqual(self.git("-C", str(self.new_plugin), "rev-parse", "HEAD"), later)
+        result = u.cleanup_completed(self.updater())
+        self.assertEqual((result["status"], result["removed"], result["preserved"]), ("complete", 2, 0))
+
     def test_install_without_a_section_still_enables_without_placement(self):
         # A service, an overlay or a whole-bar plugin takes no place in the
         # bar, but it is still switched on: the host's own add enabled every

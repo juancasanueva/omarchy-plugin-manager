@@ -550,10 +550,12 @@ class CompletedDeletionTests(unittest.TestCase):
         tx = self.fixture()
         data = tx / "checkout/nested/data"
         with data.open("wb") as stream:
-            stream.truncate(32 * 1024 * 1024 + 1)
+            stream.truncate(128 * 1024 * 1024 + 1)
         self.unchanged(tx)
+        # A retained checkout's pack can be one large file; only the total
+        # bounds it.
         with data.open("wb") as stream:
-            stream.truncate(32 * 1024 * 1024)
+            stream.truncate(64 * 1024 * 1024)
         self.assertEqual(self.remove(tx)["status"], "removed")
         tx = self.fixture(2)
         for number in range(4):
