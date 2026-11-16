@@ -468,7 +468,7 @@ switched on reads as one that did not install.
 |---|---|
 | Actual account home, owned non-symlink directories, no group/other write access | No alternate HOME, worktree, or path fallback |
 | Ordinary SHA-1 checkout with one origin and standard core/branch configuration | Includes, other config sections, external object stores/worktrees, symlinks and hardlinks are refused; local Git config is never executed |
-| Clean tracked files and index | Dirty, staged, untracked, ignored files and special index flags are refused; never stash, reset or delete user changes |
+| Clean tracked files and index | Dirty, staged and untracked files and special index flags are refused; never stash, reset or delete user changes. Files the plugin's own `.gitignore` ignores (a helper it built, say) are carried into the update when the target commit still ignores them and does not track them; otherwise the update refuses |
 | Fast-forward proven within 256 fetched history levels | Divergence, downgrade, missing ancestry, or unavailable target refuses |
 | Bounded work | 120-second transaction; 64 MiB raw authorization catalog; 16 MiB projected catalog/cache; 1,000 source files, depth 20, 16 MiB source tree; 128 MiB inspected checkout limit, which also bounds each file Git writes (the fetched pack included) |
 | Same filesystem with atomic exchange support | Refuse rather than use two renames |
@@ -480,6 +480,9 @@ a fresh `.git`, canonical origin and detached HEAD. It is a shallow clone
 <id>` does not work for that checkout: later updates for it go through this
 panel's pinned update only. To return to the host flow, remove the plugin and
 add it with the host command.
+Ignored files are copied into the new checkout byte for byte, keeping their
+executable bit, and are checked again just before the exchange: one that
+changes or appears mid-update refuses it. The originals stay in the backup.
 Local branches, tags, reflogs, hooks and configuration are **not migrated**;
 for an update they remain in the original checkout at the transaction's
 `checkout/` backup. An install replaces nothing, so it has no backup and reports
