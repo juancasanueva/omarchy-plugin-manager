@@ -389,9 +389,11 @@ def read_file(parent, name, cap, sync=False):
         os.close(fd)
 
 
-def create_file(parent, name, data):
+def create_file(parent, name, data, mode=0o600):
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
     try:
+        if mode != 0o600:
+            os.fchmod(fd, mode)
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
@@ -401,6 +403,11 @@ def create_file(parent, name, data):
     finally:
         os.close(fd)
     os.fsync(parent)
+
+
+def blob_digest(data):
+    """The SHA-1 Git gives these bytes as a blob."""
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
 def update_data_result():
@@ -932,7 +939,7 @@ class Updater:
     def checkpoint(self, phase):
         require(not self.cancelled and time.monotonic() < self.deadline, "Cancelled or deadline exceeded")
 
-    def run(self, argv, cwd=None, cap=1024 * 1024, extra_env=None):
+    def run(self, argv, cwd=None, cap=1024 * 1024, extra_env=None, ok=(0,), stdin=None):
         self.checkpoint("subprocess")
         env = {**self.env, **(extra_env or {})}
 
@@ -945,7 +952,8 @@ class Updater:
             resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
         proc = subprocess.Popen(argv, cwd=None if cwd is None else f"/proc/self/fd/{cwd}",
-            pass_fds=() if cwd is None else (cwd,), env=env, stdin=subprocess.DEVNULL,
+            pass_fds=() if cwd is None else (cwd,), env=env,
+            stdin=subprocess.DEVNULL if stdin is None else stdin,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, preexec_fn=limits)
         out, err = bytearray(), bytearray()
         try:
@@ -973,15 +981,15 @@ class Updater:
             proc.wait()
             proc.stdout.close()
             proc.stderr.close()
-        require(proc.returncode == 0, "Command failed: " + os.path.basename(argv[0]))
+        require(proc.returncode in ok, "Command failed: " + os.path.basename(argv[0]))
         return bytes(out)
 
-    def git(self, stage, *args, extra_env=None):
+    def git(self, stage, *args, extra_env=None, ok=(0,), stdin=None):
         return self.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
             "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
             "-c", "http.followRedirects=false", "-c", "http.proxy=", "-c", "credential.helper=",
             "-c", "fetch.recurseSubmodules=false", "-c", "fetch.unpackLimit=1",
-            "-c", "fetch.fsckObjects=true", *args], cwd=stage, extra_env=extra_env)
+            "-c", "fetch.fsckObjects=true", *args], cwd=stage, extra_env=extra_env, ok=ok, stdin=stdin)
 
     def https_bytes(self, url, cap, max_time):
         raw = self.run(["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error",
@@ -1448,7 +1456,7 @@ class Updater:
                             data, info = read_file(fd, name, MAX_DISK, sync=sync)
                             total += len(data)
                             require(total <= MAX_DISK, "Checkout exceeds disk limit")
-                            digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+                            digest = blob_digest(data)
                             result[path] = ("100755" if info.st_mode & 0o111 else "100644", digest)
             finally:
                 os.close(view)
@@ -1550,7 +1558,84 @@ class Updater:
         require(actual == base_tree, "Index differs from installed HEAD")
         flags = self.git(stage, "ls-files", "-v", "-z", extra_env=env)
         require(all(not line or line.startswith(b"H ") for line in flags.split(b"\0")), "Special index flags refused")
-        require(self.scan(self.original, skip_git=True, sync=True) == base_tree, "Dirty, untracked or ignored files present")
+        scanned = self.scan(self.original, skip_git=True, sync=True)
+        require(all(scanned.get(path) == entry for path, entry in base_tree.items()),
+                "Dirty or untracked files present")
+        # Everything else is a local file. Only files the plugin's own
+        # .gitignore ignores may stay (carry_ignored checks that); they are
+        # returned so the exchange can carry them instead of dropping them.
+        return {path: entry for path, entry in scanned.items() if path not in base_tree}
+
+    def ignored(self, stage, paths):
+        """The paths the stage's checked-out .gitignore files ignore.
+
+        Only the snapshot's own rules apply: the stage has no info/exclude
+        (it was initialised without a template) and no global excludes file
+        (HOME and the Git config are fixed). Git reads each name as a
+        pathspec and check-ignore refuses literal mode, so a leading ":"
+        (pathspec magic) is refused rather than interpreted.
+        """
+        require(all(not path.startswith(":") and not re.search(r"[\x00-\x1f\x7f]", path)
+                    for path in paths), "Unsafe ignored path")
+        listing = os.memfd_create("ignored-paths", os.MFD_CLOEXEC)
+        try:
+            data = b"".join(path.encode("utf-8") + b"\0" for path in sorted(paths))
+            while data:
+                data = data[os.write(listing, data):]
+            os.lseek(listing, 0, os.SEEK_SET)
+            # check-ignore exits 1 when none of the paths is ignored.
+            out = self.git(stage, "check-ignore", "--no-index", "--stdin", "-z",
+                           ok=(0, 1), stdin=listing)
+        finally:
+            os.close(listing)
+        return {path.decode("utf-8") for path in out.split(b"\0") if path}
+
+    def carry_ignored(self, stage, extras, target_tree):
+        """Copy the installed checkout's ignored files into the staged one.
+
+        Each file must be ignored by the target's own rules and must not
+        collide with anything the target tracks, and its bytes must still be
+        the ones scanned before staging. The originals are only read: they
+        stay in the checkout that becomes the transaction backup.
+        """
+        if not extras:
+            return
+        tracked_dirs = {path.rsplit("/", 1)[0] for path in target_tree if "/" in path}
+        for path in list(tracked_dirs):
+            while "/" in path:
+                path = path.rsplit("/", 1)[0]
+                tracked_dirs.add(path)
+        for path in extras:
+            parts = path.split("/")
+            require(path not in target_tree and path not in tracked_dirs
+                    and not any("/".join(parts[:i]) in target_tree for i in range(1, len(parts))),
+                    "Ignored file conflicts with the update")
+        require(self.ignored(stage, extras) >= set(extras), "Local file not ignored by the update")
+        for path, (mode, digest) in sorted(extras.items()):
+            self.checkpoint("carry")
+            parts = path.split("/")
+            opened = []
+            try:
+                source = self.original
+                for name in parts[:-1]:
+                    source = checked_dir(source, name)
+                    opened.append(source)
+                data, info = read_file(source, parts[-1], MAX_DISK)
+                executable = "100755" if info.st_mode & 0o111 else "100644"
+                require(blob_digest(data) == digest and executable == mode,
+                        "Ignored files changed during the update")
+                target = stage
+                for name in parts[:-1]:
+                    try:
+                        os.mkdir(name, 0o755, dir_fd=target)
+                    except FileExistsError:
+                        pass
+                    target = checked_dir(target, name)
+                    opened.append(target)
+                create_file(target, parts[-1], data, 0o755 if mode == "100755" else 0o644)
+            finally:
+                for fd in opened:
+                    os.close(fd)
 
     def validate(self, stage):
         self.run(["/usr/share/omarchy/bin/omarchy-plugin-validate", "."], cwd=stage, cap=16384)
@@ -1686,13 +1771,14 @@ class Updater:
                 and parts[1] == "refs/heads/" + branch, "Unreadable branch reference")
         return parts[0].lower()
 
-    def vet_stage(self, stage, fetched, request, target_tree):
+    def vet_stage(self, stage, fetched, request, target_tree, extras=None):
         self.git(stage, "checkout", "--quiet", "--detach", fetched)
         require(self.git(stage, "rev-parse", "HEAD").decode().strip() == fetched, "Staged HEAD mismatch")
         manifest = document(read_file(stage, "manifest.json", 65536)[0], 65536)
         require(type(manifest) is dict and manifest.get("id") == request["id"], "Manifest id changed")
         self.validate(stage)
-        require(self.scan(stage, skip_git=True) == target_tree, "Staged contents changed")
+        self.carry_ignored(stage, extras or {}, target_tree)
+        require(self.scan(stage, skip_git=True) == {**target_tree, **(extras or {})}, "Staged contents changed")
         self.scan(stage, sync=True)
 
     def install(self, request):
@@ -1786,30 +1872,36 @@ class Updater:
             require(fetched != request["expectedLocalHead"], "Already at the requested commit")
             base_tree = self.tree(stage, request["expectedLocalHead"])
             target_tree = self.tree(stage, fetched)
-            self.check_clean(stage, base_tree, request, "index-before")
-            self.vet_stage(stage, fetched, request, target_tree)
+            extras = self.check_clean(stage, base_tree, request, "index-before")
+            if extras:
+                # A local file the installed commit's own rules do not ignore
+                # is the user's, whatever the target's rules say about it.
+                self.git(stage, "checkout", "--quiet", "--detach", request["expectedLocalHead"])
+                require(self.ignored(stage, extras) >= set(extras), "Dirty or untracked files present")
+            self.vet_stage(stage, fetched, request, target_tree, extras)
             self.check_anchors()
             create_file(self.tx, "prepared.json", json.dumps({"original": identity(self.original),
                             "replacement": identity(stage)}).encode())
         except Exception as error:
             self.record_refusal(error)
             raise
-        return request, stage, base_tree
+        return request, stage, base_tree, extras
 
     def authorize_update(self, prepared, catalog):
-        request, _, _ = prepared
+        request = prepared[0]
         if request["verified"]:
             authorize(catalog, request)
         self.authorized_update = prepared
 
     def publish_update(self, prepared):
         """Exchange a vetted request and report; the caller closes files."""
-        request, stage, base_tree = prepared
+        request, stage, base_tree, extras = prepared
         try:
             self.check_anchors()
             if getattr(self, "authorized_update", None) is not prepared:
                 self.authorize_update(prepared, self.catalog_bytes() if request["verified"] else None)
-            self.check_clean(stage, base_tree, request, "index-final")
+            require(self.check_clean(stage, base_tree, request, "index-final") == extras,
+                    "Ignored files changed during the update")
             self.check_anchors()
             self.checkpoint("before-exchange")
             # Signals only set a flag, so none can raise between the syscall and

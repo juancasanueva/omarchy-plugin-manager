@@ -1155,8 +1155,8 @@ class TransactionTests(unittest.TestCase):
                        "https://github.com/acme/../plugin", "https://github.com/acme\\plugin"):
             self.assertEqual(u.repository(origin), "", origin)
 
-    def test_dirty_index_untracked_ignored_and_symlink_refuse(self):
-        for kind in ("dirty", "index", "untracked", "ignored", "symlink", "assume-unchanged"):
+    def test_dirty_index_untracked_and_symlink_refuse(self):
+        for kind in ("dirty", "index", "untracked", "symlink", "assume-unchanged"):
             with self.subTest(kind=kind):
                 path = self.plugin / "Main.qml"
                 if kind == "index":
@@ -1165,7 +1165,7 @@ class TransactionTests(unittest.TestCase):
                     path.write_text("base")
                 elif kind == "assume-unchanged":
                     self.git("-C", str(self.plugin), "update-index", "--assume-unchanged", "Main.qml")
-                elif kind in ("untracked", "ignored"):
+                elif kind == "untracked":
                     path = self.plugin / kind
                     path.write_text("user data")
                 elif kind == "symlink":
@@ -1183,10 +1183,93 @@ class TransactionTests(unittest.TestCase):
                     self.git("-C", str(self.plugin), "add", "Main.qml")
                 elif kind == "assume-unchanged":
                     self.git("-C", str(self.plugin), "update-index", "--no-assume-unchanged", "Main.qml")
-                elif kind in ("untracked", "ignored", "symlink"):
+                elif kind in ("untracked", "symlink"):
                     path.unlink()
                 else:
                     path.write_text("base")
+
+    def retarget(self, text, change):
+        """Point the verified request at a new commit made after `change`."""
+        change()
+        target = self.commit(text)
+        self.request = {**self.request, "verifiedCommit": target}
+        self.catalog["plugins"][0]["verificationCommit"] = target
+        return target
+
+    def test_ignored_files_are_carried_into_the_update(self):
+        # A plugin's own build output (omacast's bin/omacast-search) must
+        # survive the exchange: the update copies it into the new checkout.
+        helper = self.plugin / "ignored"
+        helper.write_bytes(b"\x7fELF built helper")
+        helper.chmod(0o755)
+        (self.plugin / "cache").mkdir()
+        nested = self.plugin / "cache/ignored"
+        nested.write_text("nested build output")
+        nested.chmod(0o644)
+        result = self.updater().execute(self.request)
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual((self.plugin / "Main.qml").read_text(), "verified")
+        self.assertEqual(helper.read_bytes(), b"\x7fELF built helper")
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(nested.read_text(), "nested build output")
+        self.assertEqual(nested.stat().st_mode & 0o777, 0o644)
+        # Git sees a clean checkout, so the next update is not refused either.
+        self.assertEqual(self.git("-C", str(self.plugin), "status", "--porcelain"), "")
+        # The originals stay in the backup; nothing was moved or deleted.
+        backup = Path(result["backup"])
+        self.assertEqual((backup / "ignored").read_bytes(), b"\x7fELF built helper")
+        self.assertEqual((backup / "cache/ignored").read_text(), "nested build output")
+
+    def test_ignored_file_the_update_tracks_refuses(self):
+        def track_ignored():
+            (self.remote / "ignored").write_text("upstream")
+            self.git("-C", str(self.remote), "add", "-f", "ignored")
+
+        def track_parent():
+            (self.remote / "cache").write_text("upstream file")
+
+        for name, change, local in (("ignored", track_ignored, "ignored"),
+                                    ("parent", track_parent, "cache/ignored")):
+            with self.subTest(name):
+                self.retarget("tracks " + name, change)
+                path = self.plugin / local
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("local build")
+                with self.assertRaisesRegex(u.Refused, "Ignored file conflicts with the update"):
+                    self.updater().execute(self.request)
+                self.assertEqual(path.read_text(), "local build")
+                self.assertEqual((self.plugin / "Main.qml").read_text(), "base")
+                self.assertFalse(self.reloaded)
+                path.unlink()
+
+    def test_file_the_update_stops_ignoring_refuses(self):
+        self.retarget("unignore", lambda: (self.remote / ".gitignore").write_text("other\n"))
+        (self.plugin / "ignored").write_text("local build")
+        with self.assertRaisesRegex(u.Refused, "Local file not ignored by the update"):
+            self.updater().execute(self.request)
+        self.assertEqual((self.plugin / "ignored").read_text(), "local build")
+        self.assertEqual((self.plugin / "Main.qml").read_text(), "base")
+
+    def test_pathspec_magic_name_refuses(self):
+        # Git would read ":(top)ignored" as pathspec magic and report the
+        # rule-matching "ignored" instead of the literal name.
+        path = self.plugin / ":(top)ignored"
+        path.write_text("local")
+        with self.assertRaisesRegex(u.Refused, "Unsafe ignored path"):
+            self.updater().execute(self.request)
+        self.assertEqual(path.read_text(), "local")
+        self.assertEqual((self.plugin / "Main.qml").read_text(), "base")
+
+    def test_ignored_file_changed_before_exchange_refuses(self):
+        helper = self.plugin / "ignored"
+        helper.write_text("first build")
+        self.assert_late_update_refused(lambda: helper.write_text("second build"),
+                                        "Ignored files changed during the update")
+        self.assertEqual(helper.read_text(), "second build")
+        helper.unlink()
+        self.assert_late_update_refused(lambda: (self.plugin / "ignored").write_text("late"),
+                                        "Ignored files changed during the update")
+        self.assertEqual((self.plugin / "Main.qml").read_text(), "base")
 
     def test_checkout_and_git_directory_symlinks_refuse(self):
         for name in (self.plugin, self.plugin / ".git"):
@@ -1418,7 +1501,7 @@ class TransactionTests(unittest.TestCase):
         updater = self.updater()
         with self.assertRaises(u.Refused):
             updater.execute(self.request)
-        self.assertEqual(updater.reason, "Dirty, untracked or ignored files present")
+        self.assertEqual(updater.reason, "Dirty or untracked files present")
         state = self.home / ".config/omarchy/plugin-manager-updates"
         records = list(state.glob("txn-*/refused.json"))
         self.assertEqual(len(records), 1)
@@ -1447,7 +1530,7 @@ class TransactionTests(unittest.TestCase):
         with os.fdopen(read_end, "rb") as pipe:
             result = json.loads(pipe.read())
         self.assertEqual(result["status"], "unchanged; update refused")
-        self.assertEqual(result["reason"], "Dirty, untracked or ignored files present")
+        self.assertEqual(result["reason"], "Dirty or untracked files present")
 
     def test_unsupported_exchange_is_unchanged(self):
         with patch.object(u, "EXCHANGE", None), self.assertRaises(u.Refused):
