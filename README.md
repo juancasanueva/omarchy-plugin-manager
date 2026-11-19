@@ -938,6 +938,17 @@ returns to the grid, while `Esc` closes the panel. `Backspace` still edits text
 when search has focus, and open dialogs retain their keys. The expanded hint
 bar shows `[BACKSPACE] BACK` alongside the `1` and `2` tab shortcuts.
 
+The search box takes typed text, `Backspace`, `Delete`, `Ctrl+Backspace` and
+`Ctrl+Delete` (a word at a time), cut, copy, select-all, and the usual cursor
+and selection keys. It does not take paste or input-method composition, on
+purpose. An editable Qt Quick text field reads the text of every clipboard
+offer another program makes, so it can tell whether paste is possible, and on
+some Qt builds that read has no size limit or deadline: a huge or endless
+offer could freeze the whole shell while the panel is open. The box is
+therefore read-only as far as Qt is concerned, which skips every clipboard
+read, and the plugin applies the keys itself. The box exists only while its
+panel is open.
+
 ## Install
 
 ```bash
@@ -1083,6 +1094,7 @@ not rendering a full panel or the reporter's exact IPC shutdown sequence.
 | `CatalogCard.qml` | One compact marketplace card: preview, summary, state, metrics, details, and install |
 | `PluginDetails.qml` | The popup's Browse details: full Marketplace metadata, trusted links, limitations, and keyboard actions |
 | `ChoiceDialog.qml` | The modal that asks which one, where ConfirmDialog asks whether |
+| `SearchField.qml` | The search box both surfaces use: read-only to Qt so it never reads the clipboard, with its keys applied by the plugin |
 | `Model.js` | Pure parsing, merging, grouping, searching, and filtering |
 
 ## License

@@ -93,16 +93,23 @@ QtObject {
 ''')
         # The host Ui TextField is a Qt Quick Controls TextField with a few
         # theme properties; the real control keeps the real QQuickTextInput.
-        (fixture / "TextField.qml").write_text('''import QtQuick
+        ui = fixture / "qs" / "Ui"
+        ui.mkdir(parents=True)
+        (ui / "qmldir").write_text("module qs.Ui\nTextField 1.0 TextField.qml\n")
+        (ui / "TextField.qml").write_text('''import QtQuick
 import QtQuick.Controls.Basic as C
 C.TextField {
     property color foreground: "white"
     property real verticalPadding: 0
 }
 ''')
+        # The shipped search box and the model it edits through, unchanged.
+        for name in ("SearchField.qml", "Model.js"):
+            (fixture / name).write_text((ROOT / name).read_text())
         button = SURFACES[surface]
         return source, fixture, f'''import QtQuick
 import qs.Commons
+import qs.Ui
 Item {{
     id: root
     width: 600
@@ -161,6 +168,12 @@ Item {{
                 try:
                     def settle(ms=30):
                         QTest.qWait(ms)
+
+                    def type_text(text):
+                        # QTest.keyClicks takes only widgets; a QQuickWindow gets one key per character.
+                        for ch in text:
+                            key = Qt.Key_Space if ch == " " else getattr(Qt, f"Key_{ch.upper()}")  # lowercase text only
+                            QTest.keyClick(window, key)
 
                     def field():
                         inputs = self.text_inputs(owner)
@@ -221,6 +234,75 @@ Item {{
                     QTest.keyClick(window, Qt.Key_Escape)
                     settle()
                     self.assertEqual(owner.property("listReturns"), returns + 1)
+
+                    # The box is read-only to Qt, so no clipboard offer is ever read:
+                    # canPaste stays false and no paste route inserts anything.
+                    clipboard = QGuiApplication.clipboard()
+                    clipboard.setText("pasted")
+                    settle()
+                    self.assertTrue(field().property("readOnly"))
+                    self.assertFalse(field().property("canPaste"))
+                    QMetaObject.invokeMethod(owner, "focusSearchField")
+                    settle()
+                    for key, modifier in ((Qt.Key_V, Qt.ControlModifier), (Qt.Key_Insert, Qt.ShiftModifier),
+                                          (Qt.Key_Paste, Qt.NoModifier)):
+                        QTest.keyClick(window, key, modifier)
+                    QMetaObject.invokeMethod(field(), "paste")
+                    settle()
+                    self.assertEqual(field().property("text"), "")
+                    self.assertEqual(owner.property("searchText"), "")
+                    self.assertFalse(field().property("canPaste"))
+
+                    # The box applies its own edits: typing, Backspace, Delete and
+                    # word deletion, at the cursor Qt keeps.
+                    arrangeCloses = owner.property("arrangeCloses")
+                    type_text("foo bar")
+                    self.assertEqual(owner.property("searchText"), "foo bar")
+                    QTest.keyClick(window, Qt.Key_Backspace)
+                    QTest.keyClick(window, Qt.Key_Home)
+                    QTest.keyClick(window, Qt.Key_Delete)
+                    self.assertEqual(owner.property("searchText"), "oo ba")
+                    self.assertEqual(field().property("cursorPosition"), 0)
+                    QTest.keyClick(window, Qt.Key_End)
+                    QTest.keyClick(window, Qt.Key_Backspace, Qt.ControlModifier)
+                    self.assertEqual(owner.property("searchText"), "oo ")
+                    QTest.keyClick(window, Qt.Key_Left)
+                    type_text("x")
+                    self.assertEqual(owner.property("searchText"), "oox ")
+                    if surface == "Panel.qml":
+                        self.assertGreater(owner.property("arrangeCloses"), arrangeCloses)
+
+                    # Typing replaces a selection, and select-all then typing starts over.
+                    QTest.keyClick(window, Qt.Key_A, Qt.ControlModifier)
+                    type_text("z")
+                    self.assertEqual(owner.property("searchText"), "z")
+                    # Cut copies the selection out, which writes the clipboard but never reads it.
+                    QTest.keyClick(window, Qt.Key_A, Qt.ControlModifier)
+                    QTest.keyClick(window, Qt.Key_X, Qt.ControlModifier)
+                    self.assertEqual(owner.property("searchText"), "")
+                    self.assertEqual(clipboard.text(), "z")
+
+                    # The cap holds for typed text.
+                    type_text("y" * 300)
+                    self.assertEqual(len(owner.property("searchText")), 256)
+
+                    # Enter still accepts the term and hands the keyboard back.
+                    returns = owner.property("listReturns")
+                    QTest.keyClick(window, Qt.Key_Return)
+                    settle()
+                    self.assertEqual(owner.property("searchQuery"), "y" * 256)
+                    self.assertEqual(owner.property("listReturns"), returns + 1)
+                    QMetaObject.invokeMethod(owner, "clearSearch")
+
+                    # A click focuses the read-only box, which then shows a cursor.
+                    owner.forceActiveFocus()
+                    settle()
+                    self.assertFalse(owner.property("searchFieldFocused"))
+                    centre = field().mapToScene(field().boundingRect().center()).toPoint()
+                    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, centre)
+                    settle()
+                    self.assertTrue(owner.property("searchFieldFocused"))
+                    self.assertTrue(field().property("cursorVisible"))
 
                     # Clearing while closed applies at once and the next open shows it empty.
                     owner.setProperty("searchText", "zz")

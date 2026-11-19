@@ -748,6 +748,53 @@ function matchesQuery(row, query) {
     || String(row.id || "").toLowerCase().indexOf(needle) >= 0
 }
 
+// The search box is read-only to Qt (see SearchField.qml), so its editing
+// keys are applied here. `field` carries the text, cursor, selection and
+// maximum length; `key` is { key: "text", text } for typed text or
+// { key: "backspace" | "delete", word } for the deleting keys, `word` meaning
+// Ctrl was held. The answer replaces text[start, end) with `insert` and puts
+// the cursor at `cursor`; a key the field does nothing with at an edge is
+// still answered, with an empty change, so it is not passed on. Any other key
+// answers null and stays Qt's: arrows, Home and End, selection, copy, Enter.
+function searchFieldEdit(field, key) {
+  if (!field || !key) return null
+  var text = String(field.text || "")
+  var cursor = Math.max(0, Math.min(Number(field.cursorPosition) || 0, text.length))
+  var selStart = Math.max(0, Math.min(Number(field.selectionStart) || 0, text.length))
+  var selEnd = Math.max(selStart, Math.min(Number(field.selectionEnd) || 0, text.length))
+  var max = Number(field.maximumLength)
+  if (!(max >= 0)) max = 32767
+  var start = selStart, end = selEnd
+
+  if (key.key === "text") {
+    var typed = String(key.text || "").replace(/[\u0000-\u001f\u007f]/g, "")
+    if (typed === "") return null
+    if (start === end) start = end = cursor
+    var room = Math.max(0, max - (text.length - (end - start)))
+    var insert = typed.slice(0, room)
+    return { start: start, end: end, insert: insert, cursor: start + insert.length }
+  }
+
+  if (key.key !== "backspace" && key.key !== "delete") return null
+  if (start === end) {
+    start = end = cursor
+    if (key.key === "backspace") {
+      if (key.word) {
+        while (start > 0 && /\s/.test(text.charAt(start - 1))) start--
+        while (start > 0 && !/\s/.test(text.charAt(start - 1))) start--
+      } else if (start > 0) {
+        start--
+      }
+    } else if (key.word) {
+      while (end < text.length && /\s/.test(text.charAt(end))) end++
+      while (end < text.length && !/\s/.test(text.charAt(end))) end++
+    } else if (end < text.length) {
+      end++
+    }
+  }
+  return { start: start, end: end, insert: "", cursor: start }
+}
+
 function filterRows(rows, kind, status, query, group) {
   var byGroup = filterByGroup(rows, group)
   var byKind = filterByKind(byGroup, kind)

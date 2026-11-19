@@ -1538,10 +1538,11 @@ Panel {
             height: filterControls.controlHeight
             active: root.opened
             sourceComponent: Component {
-              TextField {
+              // Read-only to Qt so it never reads the clipboard; see SearchField.qml.
+              SearchField {
                 id: searchField
                 text: root.searchText
-                // A search term never needs more, and the cap holds for pasted text too.
+                // A search term never needs more.
                 maximumLength: 256
                 // The glyph rides in the placeholder rather than sitting in its
                 // own column: the row is the search box and nothing else.
@@ -1554,19 +1555,17 @@ Panel {
 
                 // Enter hands the list back the keyboard with the results in
                 // place, so you can type a name and arrow straight into it.
-                onTextEdited: root.closeArrange()
+                onEdited: root.closeArrange()
                 onTextChanged: root.searchText = text
                 onAccepted: {
                   root.flushSearch()
                   root.returnFocusToList()
                 }
-                Keys.onPressed: function(event) {
-                  if (event.key !== Qt.Key_Escape) return
+                onEscaped: {
                   // Escape clears before it leaves: a search box that keeps a
                   // stale term after you back out of it silently hides plugins.
                   if (root.searchText !== "") root.clearSearch()
                   else root.returnFocusToList()
-                  event.accepted = true
                 }
               }
             }
