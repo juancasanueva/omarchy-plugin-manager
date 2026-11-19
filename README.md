@@ -940,8 +940,8 @@ bar shows `[BACKSPACE] BACK` alongside the `1` and `2` tab shortcuts.
 
 The search box takes typed text, `Backspace`, `Delete`, `Ctrl+Backspace` and
 `Ctrl+Delete` (a word at a time), cut, copy, select-all, and the usual cursor
-and selection keys. It does not take paste or input-method composition, on
-purpose. An editable Qt Quick text field reads the text of every clipboard
+and selection keys. It does not take paste, undo and redo, or input-method
+composition, on purpose. An editable Qt Quick text field reads the text of every clipboard
 offer another program makes, so it can tell whether paste is possible, and on
 some Qt builds that read has no size limit or deadline: a huge or endless
 offer could freeze the whole shell while the panel is open. The box is

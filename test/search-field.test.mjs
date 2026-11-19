@@ -96,6 +96,19 @@ test("searchFieldEdit deletes a word with Ctrl+Backspace and Ctrl+Delete", () =>
     { start: 1, end: 3, insert: "", cursor: 1 })
 })
 
+test("searchFieldEdit never splits a character outside the BMP", () => {
+  // "😀" is one character but two UTF-16 code units, as Qt counts them.
+  assert.deepEqual(searchFieldEdit(field("a😀", 3), { key: "backspace" }),
+    { start: 1, end: 3, insert: "", cursor: 1 })
+  assert.deepEqual(searchFieldEdit(field("😀b", 0), { key: "delete" }),
+    { start: 0, end: 2, insert: "", cursor: 0 })
+  // One code unit of room left is not room for half an emoji.
+  assert.deepEqual(searchFieldEdit(field("x".repeat(255), 255), { key: "text", text: "😀" }),
+    { start: 255, end: 255, insert: "", cursor: 255 })
+  assert.deepEqual(searchFieldEdit(field("", 0, [0, 0], 3), { key: "text", text: "😀😀" }),
+    { start: 0, end: 0, insert: "😀", cursor: 2 })
+})
+
 test("searchFieldEdit leaves other keys to Qt", () => {
   assert.equal(searchFieldEdit(field("abc", 1), { key: "left" }), null)
   assert.equal(searchFieldEdit(field("abc", 1), {}), null)

@@ -67,6 +67,7 @@ TextField {
     }
     if (event.matches(StandardKey.Cut)) {
       if (field.selectedText !== "") {
+        // Delete with a selection removes exactly the selection.
         field.copy()
         field.applyEdit(Model.searchFieldEdit(field, { key: "delete" }))
       }

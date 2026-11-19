@@ -754,8 +754,11 @@ function matchesQuery(row, query) {
 // { key: "backspace" | "delete", word } for the deleting keys, `word` meaning
 // Ctrl was held. The answer replaces text[start, end) with `insert` and puts
 // the cursor at `cursor`; a key the field does nothing with at an edge is
-// still answered, with an empty change, so it is not passed on. Any other key
-// answers null and stays Qt's: arrows, Home and End, selection, copy, Enter.
+// still answered, with an empty change, so it is not passed on. With a
+// selection, Backspace and Delete remove exactly the selection, which is what
+// cut relies on. Any other key answers null and stays Qt's: arrows, Home and
+// End, selection, copy, Enter. Positions count UTF-16 code units, as Qt does,
+// and a character outside the BMP (an emoji) is never split in half.
 function searchFieldEdit(field, key) {
   if (!field || !key) return null
   var text = String(field.text || "")
@@ -763,8 +766,11 @@ function searchFieldEdit(field, key) {
   var selStart = Math.max(0, Math.min(Number(field.selectionStart) || 0, text.length))
   var selEnd = Math.max(selStart, Math.min(Number(field.selectionEnd) || 0, text.length))
   var max = Number(field.maximumLength)
+  // 32767 is Qt's own TextInput default when no maximum is set.
   if (!(max >= 0)) max = 32767
   var start = selStart, end = selEnd
+  var high = function(at) { var c = text.charCodeAt(at); return c >= 0xd800 && c <= 0xdbff }
+  var low = function(at) { var c = text.charCodeAt(at); return c >= 0xdc00 && c <= 0xdfff }
 
   if (key.key === "text") {
     var typed = String(key.text || "").replace(/[\u0000-\u001f\u007f]/g, "")
@@ -772,6 +778,8 @@ function searchFieldEdit(field, key) {
     if (start === end) start = end = cursor
     var room = Math.max(0, max - (text.length - (end - start)))
     var insert = typed.slice(0, room)
+    var last = insert.charCodeAt(insert.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) insert = insert.slice(0, -1)
     return { start: start, end: end, insert: insert, cursor: start + insert.length }
   }
 
@@ -784,12 +792,14 @@ function searchFieldEdit(field, key) {
         while (start > 0 && !/\s/.test(text.charAt(start - 1))) start--
       } else if (start > 0) {
         start--
+        if (start > 0 && low(start) && high(start - 1)) start--
       }
     } else if (key.word) {
       while (end < text.length && /\s/.test(text.charAt(end))) end++
       while (end < text.length && !/\s/.test(text.charAt(end))) end++
     } else if (end < text.length) {
       end++
+      if (end < text.length && high(end - 1) && low(end)) end++
     }
   }
   return { start: start, end: end, insert: "", cursor: start }
